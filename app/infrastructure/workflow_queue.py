@@ -327,7 +327,7 @@ class PostgresWorkflowQueue:
         self._lock = asyncio.Lock()
 
     async def setup(self) -> None:
-        from psycopg import AsyncConnection  # type: ignore[import-not-found]
+        from psycopg import AsyncConnection
 
         self._conn = await AsyncConnection.connect(self._dsn)
         async with self._lock:

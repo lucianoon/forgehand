@@ -47,9 +47,7 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
     do FastAPI segura o contexto pela vida do processo."""
     if settings.checkpointer_backend == "postgres":
         # import tardio: dependência opcional (extra [postgres])
-        from langgraph.checkpoint.postgres.aio import (  # type: ignore[import-not-found]
-            AsyncPostgresSaver,
-        )
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
         async with AsyncPostgresSaver.from_conn_string(
             settings.database_url, serde=build_serde()
