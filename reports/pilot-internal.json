@@ -1,0 +1,698 @@
+{
+  "cases": 9,
+  "completion_rate": 0.7777777777777778,
+  "first_pass_rate": 0.7777777777777778,
+  "total_cost_usd": 0.02828865,
+  "average_cost_usd": 0.003143183333333333,
+  "average_elapsed_seconds": 27.10928781011252,
+  "p95_elapsed_seconds": 46.858150540996576,
+  "timeouts": 0,
+  "human_intervention_rate": 0.2222222222222222,
+  "technical_failure_rate": 0.0,
+  "cost_per_completed_usd": 0.0026015142857142856,
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "completion_rate": false,
+      "first_pass_rate": true,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 0.05,
+      "max_p95_elapsed_seconds": 120.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "architecture-review-run-1",
+      "workflow_id": "5a751d79-4e6c-4b2f-9eae-d322c2492d00",
+      "outcome": "awaiting_decision",
+      "completed": false,
+      "first_pass": false,
+      "cost_usd": 0.0052166999999999995,
+      "tokens": 24827,
+      "elapsed_seconds": 46.858150540996576,
+      "error": "tasks_escalated",
+      "diagnostics": {
+        "pending_decision": {
+          "reason": "tasks_escalated",
+          "escalated_tasks": [
+            {
+              "id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+              "title": "Identificar e priorizar riscos da arquitetura",
+              "last_failure": null
+            }
+          ],
+          "usage": {
+            "tokens": 24827.0,
+            "cost_usd": 0.0052166999999999995
+          },
+          "iteration": 2,
+          "options": [
+            "accept_partial",
+            "retry",
+            "abort"
+          ]
+        },
+        "tasks": [
+          {
+            "id": "b5e5a682-02b6-5458-b71b-5b50d476fdc3",
+            "title": "Mapear evidências da arquitetura do repositório",
+            "capability": "architecture",
+            "status": "completed",
+            "attempts": 1
+          },
+          {
+            "id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+            "title": "Identificar e priorizar riscos da arquitetura",
+            "capability": "architecture",
+            "status": "escalated",
+            "attempts": 3
+          }
+        ],
+        "details": {
+          "workflow_id": "5a751d79-4e6c-4b2f-9eae-d322c2492d00",
+          "project_id": "benchmark",
+          "tasks": [
+            {
+              "id": "b5e5a682-02b6-5458-b71b-5b50d476fdc3",
+              "title": "Mapear evidências da arquitetura do repositório",
+              "description": "Analise os arquivos do repositório para identificar e mapear as evidências relacionadas à arquitetura do sistema. Utilize os arquivos disponíveis, como app/agents/judge.py e app/agents/planner.py, para entender como os componentes interagem e quais são suas responsabilidades. Registre as evidências encontradas que sustentam a análise da arquitetura.",
+              "capability": "architecture",
+              "dependencies": [],
+              "acceptance_criteria": [
+                "Evidências da arquitetura devem ser extraídas de pelo menos dois arquivos reais do repositório."
+              ],
+              "evidence_ids": [
+                "E1",
+                "E2"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 2144,
+                "consumed_cost_usd": 0.0005799,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "completed",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:37:48.485277Z",
+                  "finished_at": "2026-07-20T18:37:57.321362Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2144,
+                  "cost_usd": 0.0005799,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "Foram mapeadas evidências da arquitetura do repositório a partir dos arquivos judge.py e planner.py. O arquivo judge.py define a estrutura e as regras de avaliação de tarefas, enquanto o planner.py descreve como as requisições são transformadas em tarefas executáveis, incluindo a validação de critérios de aceitação.",
+                "files": [
+                  {
+                    "path": "app/architecture_evidence.md",
+                    "content": "# Evidências da Arquitetura do Repositório\n\n## 1. Arquivo: app/agents/judge.py\n\n### Descrição Geral\nO arquivo judge.py implementa a lógica de avaliação das tarefas no sistema Agent Forge. Ele define como os critérios de aceitação são avaliados e quais são as regras para a aprovação das tarefas.\n\n### Evidências Encontradas\n- **Classe `LLMJudge`**: Implementa o protocolo de avaliação, utilizando um roteador para gerenciar provedores e um pipeline de validação para garantir que as tarefas sejam avaliadas corretamente.\n- **Critérios de Avaliação**: A classe `CriterionVerdict` é utilizada para armazenar o resultado da avaliação de cada critério, incluindo a pontuação e a justificativa. Isso demonstra uma abordagem estruturada para a avaliação de tarefas.\n- **Regras de Avaliação**: O sistema exige que todos os critérios sejam atendidos para que uma tarefa seja aprovada, o que garante a consistência e a qualidade das avaliações.\n\n## 2. Arquivo: app/agents/planner.py\n\n### Descrição Geral\nO arquivo planner.py é responsável por transformar requisições em planos de tarefas (AgentTasks). Ele define como as tarefas são organizadas e quais critérios devem ser seguidos durante o planejamento.\n\n### Evidências Encontradas\n- **Decisões de Arquitetura**: O planner utiliza um sistema de indexação para referenciar dependências, evitando problemas com UUIDs não confiáveis. Isso mostra uma preocupação com a robustez e a confiabilidade do sistema.\n- **Validação de Critérios**: O arquivo menciona que o planner é obrigado a definir critérios de aceitação antes da execução, o que é crucial para garantir que as tarefas sejam bem definidas e executáveis.\n- **Estrutura de Tarefas**: O sistema é projetado para decompor requisições em tarefas atômicas, cada uma com um título, descrição, capacidade e critérios de aceitação claros, o que facilita a manutenção e a escalabilidade do sistema."
+                  }
+                ],
+                "notes": [
+                  "As evidências foram extraídas diretamente dos arquivos judge.py e planner.py, conforme solicitado nos critérios de aceitação.",
+                  "A análise focou em como os componentes interagem e suas responsabilidades dentro da arquitetura do sistema."
+                ],
+                "citations": [
+                  "E1",
+                  "E2"
+                ]
+              },
+              "updated_at": "2026-07-20T18:37:59.566058Z"
+            },
+            {
+              "id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+              "title": "Identificar e priorizar riscos da arquitetura",
+              "description": "Com base nas evidências mapeadas na tarefa anterior, identifique três riscos associados à arquitetura do repositório. Os riscos devem ser priorizados com base em sua gravidade e impacto potencial no sistema. Documente cada risco com uma descrição clara e as evidências que o sustentam.\n\nCorreções exigidas pelo judge:\n- Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas.\n\nCorreções exigidas pelo judge:\n- Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas.\n- Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas.\n- Revisar a documentação para garantir que todas as afirmações sobre a consistência interna sejam suportadas por evidências claras.",
+              "capability": "architecture",
+              "dependencies": [
+                "b5e5a682-02b6-5458-b71b-5b50d476fdc3"
+              ],
+              "acceptance_criteria": [
+                "Devem ser entregues três riscos priorizados com descrições e evidências que os sustentem."
+              ],
+              "evidence_ids": [
+                "E1",
+                "E2"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 8139,
+                "consumed_cost_usd": 0.0018859499999999997,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "escalated",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:37:59.572151Z",
+                  "finished_at": "2026-07-20T18:38:05.890399Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2657,
+                  "cost_usd": 0.0006163499999999999,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 2,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:38:08.713997Z",
+                  "finished_at": "2026-07-20T18:38:15.283459Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2712,
+                  "cost_usd": 0.0006353999999999999,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 3,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:38:19.411150Z",
+                  "finished_at": "2026-07-20T18:38:25.267693Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2770,
+                  "cost_usd": 0.0006341999999999999,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "Identificamos e priorizamos três riscos associados à arquitetura do repositório, com base nas evidências extraídas dos arquivos judge.py e planner.py. Cada risco foi documentado com uma descrição clara e as evidências que o sustentam, garantindo a consistência interna das afirmações.",
+                "files": [
+                  {
+                    "path": "app/architecture_risks.md",
+                    "content": "# Riscos da Arquitetura do Repositório\n\n## Risco 1: Dependência de UUIDs Não Confiáveis\n### Descrição\nO sistema depende de UUIDs para referenciar tarefas e suas dependências. A evidência indica que a conversão de índice para UUID é feita no planner, mas a confiabilidade dos UUIDs gerados não é garantida. Isso pode levar a falhas na execução de tarefas se um UUID inválido for referenciado.\n### Evidências\n- \"O LLM referencia dependências por ÍNDICE, não por UUID: modelos não geram UUIDs confiáveis.\" (E2)\n\n## Risco 2: Falta de Validação de Critérios de Aceitação\n### Descrição\nEmbora o sistema exija que os critérios de aceitação sejam definidos antes da execução, a ausência de validação rigorosa pode resultar em tarefas mal definidas, levando a falhas na avaliação das mesmas. Isso compromete a qualidade das entregas do sistema.\n### Evidências\n- \"O planner é OBRIGADO pelo schema a definir critérios antes da execução existir.\" (E2)\n\n## Risco 3: Consistência Interna das Avaliações\n### Descrição\nA lógica de avaliação das tarefas depende da consistência interna entre os critérios de aceitação e as evidências apresentadas. Se houver discrepâncias, isso pode resultar em avaliações incorretas, afetando a confiança no sistema de avaliação.\n### Evidências\n- \"A classe `CriterionVerdict` é utilizada para armazenar o resultado da avaliação de cada critério, incluindo a pontuação e a justificativa.\" (E1)"
+                  }
+                ],
+                "notes": [
+                  "Os riscos foram priorizados com base na gravidade e impacto potencial no sistema, considerando a estrutura e funcionamento do repositório.",
+                  "As evidências foram extraídas diretamente dos arquivos judge.py e planner.py, conforme solicitado nos critérios de aceitação."
+                ],
+                "citations": [
+                  "E1",
+                  "E2"
+                ]
+              },
+              "updated_at": "2026-07-20T18:38:28.527597Z"
+            }
+          ],
+          "evaluations": [
+            {
+              "task_id": "b5e5a682-02b6-5458-b71b-5b50d476fdc3",
+              "approved": true,
+              "score": 1.0,
+              "criteria_scores": {
+                "Evidências da arquitetura devem ser extraídas de pelo menos dois arquivos reais do repositório.": 1.0,
+                "As evidências devem demonstrar como os componentes interagem e suas responsabilidades.": 1.0,
+                "As evidências devem ser registradas de forma clara e estruturada.": 1.0
+              },
+              "failures": [],
+              "required_changes": [],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+              "approved": false,
+              "score": 0.4,
+              "criteria_scores": {
+                "Três riscos priorizados com descrições e evidências": 0.8,
+                "Documentação clara e estruturada": 0.9,
+                "Citações válidas e grounding do repositório": 0.0
+              },
+              "failures": [
+                "Ausência de evidências suficientes que sustentem a estrutura do repositório, resultando em falha estrutural."
+              ],
+              "required_changes": [
+                "Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+              "approved": false,
+              "score": 0.53,
+              "criteria_scores": {
+                "Três riscos priorizados com descrições claras e evidências que os sustentem": 0.8,
+                "Evidências que sustentam a estrutura do repositório e a validade das citações fornecidas": 0.4,
+                "Correção aparente, segurança, manutenibilidade e consistência interna entre os arquivos": 0.6
+              },
+              "failures": [
+                "As citações 'E1' e 'E2' não têm evidências válidas que comprovem a estrutura do repositório, resultando em falha estrutural.",
+                "A documentação não apresenta evidências suficientes para validar a consistência interna entre os arquivos."
+              ],
+              "required_changes": [
+                "Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas.",
+                "Revisar a documentação para garantir que todas as afirmações sobre a consistência interna sejam suportadas por evidências claras."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "7f16165a-2429-5c00-982b-a01982a9fdf7",
+              "approved": false,
+              "score": 0.47,
+              "criteria_scores": {
+                "Três riscos priorizados com descrições e evidências que os sustentem": 0.8,
+                "Evidências que sustentam a estrutura do repositório e a validade das citações": 0.0,
+                "Consistência interna das afirmações": 0.6
+              },
+              "failures": [
+                "Ausência de validação das citações fornecidas, o que compromete a estrutura do repositório.",
+                "Falta de evidências claras que sustentem a consistência interna das afirmações."
+              ],
+              "required_changes": [
+                "Incluir evidências adicionais que comprovem a estrutura do repositório e a validade das citações fornecidas.",
+                "Revisar a documentação para garantir que todas as afirmações sobre a consistência interna sejam suportadas por evidências claras."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "regression-plan-run-1",
+      "workflow_id": "d757bec6-6fa9-4dc0-8209-583d9886a38d",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0021969,
+      "tokens": 10824,
+      "elapsed_seconds": 26.182730874992558,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-1",
+      "workflow_id": "5623742f-4e4f-4cb9-a533-08a699167b2b",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0028553999999999997,
+      "tokens": 15379,
+      "elapsed_seconds": 17.53323033399647,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "architecture-review-run-2",
+      "workflow_id": "aba99c61-eb90-4b81-9cc6-b3d42f22633d",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0028276499999999997,
+      "tokens": 14042,
+      "elapsed_seconds": 21.05227037500299,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "regression-plan-run-2",
+      "workflow_id": "41fd6e42-b798-4cd2-8813-f8603e03fd2e",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0026524499999999998,
+      "tokens": 12136,
+      "elapsed_seconds": 24.16853966700728,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-2",
+      "workflow_id": "144f6a86-cc0b-44d5-a4de-9ebf31aa22fd",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0022227,
+      "tokens": 11239,
+      "elapsed_seconds": 23.622282416996313,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "architecture-review-run-3",
+      "workflow_id": "4e60e14e-d1f1-4d31-96b3-e658a9e228c3",
+      "outcome": "awaiting_decision",
+      "completed": false,
+      "first_pass": false,
+      "cost_usd": 0.0048613499999999995,
+      "tokens": 23910,
+      "elapsed_seconds": 40.22452470799908,
+      "error": "tasks_escalated",
+      "diagnostics": {
+        "pending_decision": {
+          "reason": "tasks_escalated",
+          "escalated_tasks": [
+            {
+              "id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+              "title": "Sintetizar riscos da arquitetura identificados",
+              "last_failure": null
+            }
+          ],
+          "usage": {
+            "tokens": 23910.0,
+            "cost_usd": 0.0048613499999999995
+          },
+          "iteration": 2,
+          "options": [
+            "accept_partial",
+            "retry",
+            "abort"
+          ]
+        },
+        "tasks": [
+          {
+            "id": "5c99df90-1190-5fbc-a690-2f2740916a65",
+            "title": "Mapear evidências da arquitetura do repositório",
+            "capability": "architecture",
+            "status": "completed",
+            "attempts": 1
+          },
+          {
+            "id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+            "title": "Sintetizar riscos da arquitetura identificados",
+            "capability": "architecture",
+            "status": "escalated",
+            "attempts": 3
+          }
+        ],
+        "details": {
+          "workflow_id": "4e60e14e-d1f1-4d31-96b3-e658a9e228c3",
+          "project_id": "benchmark",
+          "tasks": [
+            {
+              "id": "5c99df90-1190-5fbc-a690-2f2740916a65",
+              "title": "Mapear evidências da arquitetura do repositório",
+              "description": "Analise os arquivos do repositório para identificar componentes arquiteturais e suas interações. Utilize os arquivos disponíveis para fundamentar a análise. Os arquivos a serem considerados incluem: app/agents/judge.py e app/agents/planner.py. O objetivo é coletar informações que ajudem a entender a estrutura e a lógica do sistema.",
+              "capability": "architecture",
+              "dependencies": [],
+              "acceptance_criteria": [
+                "Identificar e descrever pelo menos três componentes arquiteturais do repositório.",
+                "Citar pelo menos dois arquivos reais que sustentem a análise."
+              ],
+              "evidence_ids": [
+                "E1",
+                "E2"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 2051,
+                "consumed_cost_usd": 0.00051915,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "completed",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:40:27.755031Z",
+                  "finished_at": "2026-07-20T18:40:34.472078Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2051,
+                  "cost_usd": 0.00051915,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "A análise dos arquivos do repositório revelou três componentes arquiteturais principais: o LLMJudge, que avalia tarefas com base em critérios de aceitação; o Planner, que transforma requisições em tarefas executáveis; e a integração com o sistema de validação e roteamento de provedores. Esses componentes interagem para garantir que as tarefas sejam corretamente avaliadas e executadas.",
+                "files": [
+                  {
+                    "path": "app/architecture_overview.md",
+                    "content": "# Arquitetura do Repositório\n\n## Componentes Arquiteturais\n\n1. **LLMJudge**  \n   O LLMJudge é responsável por avaliar o resultado das tarefas com base em critérios de aceitação. Ele utiliza um sistema de pontuação que considera a presença de evidências e a consistência interna entre os arquivos.  \n   - **Localização:** `app/agents/judge.py`\n   - **Função:** Avaliação de tarefas e critérios de aceitação.\n\n2. **Planner**  \n   O Planner transforma requisições em um plano de tarefas atômicas (AgentTasks). Ele garante que as tarefas sejam bem definidas e que os critérios de aceitação sejam estabelecidos antes da execução.  \n   - **Localização:** `app/agents/planner.py`\n   - **Função:** Decomposição de requisições em tarefas executáveis.\n\n3. **Sistema de Validação e Roteamento**  \n   O sistema de validação é composto por pipelines e validadores que garantem que as tarefas atendam aos requisitos necessários antes de serem executadas. O roteador de provedores é responsável por gerenciar as interações entre diferentes provedores de serviços.  \n   - **Localização:** `app/agents/judge.py` e `app/agents/planner.py`\n   - **Função:** Validação de tarefas e roteamento de provedores."
+                  }
+                ],
+                "notes": [
+                  "A escolha dos componentes foi baseada na análise das classes e funções presentes nos arquivos fornecidos, que revelam a estrutura e as interações do sistema.",
+                  "Os componentes identificados são fundamentais para o funcionamento do sistema multiagente, garantindo a execução correta das tarefas."
+                ],
+                "citations": [
+                  "E1",
+                  "E2"
+                ]
+              },
+              "updated_at": "2026-07-20T18:40:36.562076Z"
+            },
+            {
+              "id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+              "title": "Sintetizar riscos da arquitetura identificados",
+              "description": "Com base na análise das evidências mapeadas na tarefa anterior, identifique e priorize três riscos relacionados à arquitetura do repositório. Os riscos devem ser claros e baseados nas interações e dependências observadas entre os componentes. A entrega deve incluir uma descrição de cada risco e sua priorização.\n\nCorreções exigidas pelo judge:\n- Incluir referências específicas às evidências que suportam a priorização dos riscos, para atender completamente ao critério de aceitação.\n\nCorreções exigidas pelo judge:\n- Incluir referências específicas às evidências que suportam a priorização dos riscos, para atender completamente ao critério de aceitação.\n- Incluir referências específicas e diretas às evidências que suportam a priorização dos riscos, utilizando as citações válidas do repositório.",
+              "capability": "architecture",
+              "dependencies": [
+                "5c99df90-1190-5fbc-a690-2f2740916a65"
+              ],
+              "acceptance_criteria": [
+                "Entregar três riscos priorizados com descrição clara de cada um.",
+                "Basear a priorização em evidências coletadas na tarefa anterior."
+              ],
+              "evidence_ids": [
+                "E1",
+                "E2"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 7725,
+                "consumed_cost_usd": 0.00176985,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "escalated",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:40:36.568758Z",
+                  "finished_at": "2026-07-20T18:40:42.671742Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2524,
+                  "cost_usd": 0.0005792999999999999,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 2,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:40:44.942940Z",
+                  "finished_at": "2026-07-20T18:40:49.937733Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2563,
+                  "cost_usd": 0.0005874,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 3,
+                  "agent_name": "architecture_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T18:40:53.035603Z",
+                  "finished_at": "2026-07-20T18:40:58.516775Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2638,
+                  "cost_usd": 0.00060315,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "Identificamos e priorizamos três riscos arquiteturais no repositório, baseando-nos nas interações e dependências dos componentes principais: LLMJudge, Planner e o sistema de validação e roteamento. Cada risco foi descrito e referenciado com evidências que sustentam sua priorização.",
+                "files": [
+                  {
+                    "path": "app/architecture_risks.md",
+                    "content": "# Riscos Arquiteturais Identificados\n\n## 1. Dependência Crítica entre LLMJudge e Planner\n**Descrição:** A interação entre o LLMJudge e o Planner é fundamental para a execução correta das tarefas. Se o Planner falhar em definir critérios de aceitação adequados, o LLMJudge não poderá avaliar as tarefas corretamente, levando a resultados imprecisos ou rejeições indevidas.\n**Prioridade:** Alta\n**Evidência:** A documentação do LLMJudge menciona que a avaliação depende da presença de critérios de aceitação definidos pelo Planner (E1).\n\n## 2. Falta de Validação no Sistema de Roteamento\n**Descrição:** O sistema de validação e roteamento pode não conseguir gerenciar adequadamente as interações entre provedores de serviços, especialmente se houver mudanças nas APIs ou na estrutura dos dados. Isso pode resultar em falhas na execução das tarefas ou em resultados inesperados.\n**Prioridade:** Média\n**Evidência:** O sistema de validação é responsável por garantir que as tarefas atendam aos requisitos antes da execução, conforme descrito na análise do sistema (E1).\n\n## 3. Ciclos de Dependência no Planner\n**Descrição:** O Planner deve evitar a criação de ciclos de dependência entre tarefas. Se um ciclo for introduzido, isso pode causar um bloqueio na execução das tarefas, impedindo o progresso do sistema.\n**Prioridade:** Média\n**Evidência:** A documentação do Planner destaca que ele deve validar a faixa de dependências e detectar ciclos (E2)."
+                  }
+                ],
+                "notes": [
+                  "Os riscos foram priorizados com base na gravidade do impacto que cada um pode ter no funcionamento do sistema e na frequência com que podem ocorrer, considerando as interações entre os componentes."
+                ],
+                "citations": [
+                  "E1",
+                  "E2"
+                ]
+              },
+              "updated_at": "2026-07-20T18:41:01.076431Z"
+            }
+          ],
+          "evaluations": [
+            {
+              "task_id": "5c99df90-1190-5fbc-a690-2f2740916a65",
+              "approved": true,
+              "score": 1.0,
+              "criteria_scores": {
+                "Identificar e descrever pelo menos três componentes arquiteturais do repositório.": 1.0,
+                "Citar pelo menos dois arquivos reais que sustentem a análise.": 1.0
+              },
+              "failures": [],
+              "required_changes": [],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+              "approved": false,
+              "score": 0.9,
+              "criteria_scores": {
+                "Entregar três riscos priorizados com descrição clara de cada um.": 1.0,
+                "Basear a priorização em evidências coletadas na tarefa anterior.": 0.8
+              },
+              "failures": [],
+              "required_changes": [
+                "Incluir referências específicas às evidências que suportam a priorização dos riscos, para atender completamente ao critério de aceitação."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+              "approved": false,
+              "score": 0.75,
+              "criteria_scores": {
+                "Entregar três riscos priorizados com descrição clara de cada um.": 0.9,
+                "Basear a priorização em evidências coletadas na tarefa anterior.": 0.6
+              },
+              "failures": [
+                "A priorização dos riscos não está suficientemente fundamentada em evidências específicas do repositório, o que é uma falha estrutural."
+              ],
+              "required_changes": [
+                "Incluir referências específicas e diretas às evidências que suportam a priorização dos riscos, utilizando as citações válidas do repositório."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "b81638b9-6113-5326-9446-c1dc1833e5f6",
+              "approved": false,
+              "score": 0.65,
+              "criteria_scores": {
+                "Entregar três riscos priorizados com descrição clara de cada um.": 0.8,
+                "Basear a priorização em evidências coletadas na tarefa anterior.": 0.5
+              },
+              "failures": [
+                "As evidências que suportam a priorização dos riscos não estão claramente referenciadas no texto, o que impede a verificação da fundamentação das prioridades."
+              ],
+              "required_changes": [
+                "Incluir referências específicas e diretas às evidências que suportam a priorização dos riscos, utilizando as citações válidas do repositório."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "regression-plan-run-3",
+      "workflow_id": "07c3f99a-00f9-434c-bcbb-73b9ee0ed1cc",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.00246045,
+      "tokens": 11621,
+      "elapsed_seconds": 19.006678458012175,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-3",
+      "workflow_id": "893c1df0-a5ce-46ea-85bc-0afbb7240123",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.00299505,
+      "tokens": 15398,
+      "elapsed_seconds": 25.335182916009217,
+      "error": null,
+      "diagnostics": null
+    }
+  ],
+  "pilot": {
+    "type": "internal_technical",
+    "rounds": 3,
+    "scenarios": 3,
+    "workflow_budget_cap_usd": 2.25,
+    "automatic_pull_requests": false
+  }
+}

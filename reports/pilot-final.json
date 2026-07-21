@@ -1,0 +1,412 @@
+{
+  "cases": 9,
+  "completion_rate": 0.8888888888888888,
+  "first_pass_rate": 0.8888888888888888,
+  "total_cost_usd": 0.026191049999999997,
+  "average_cost_usd": 0.0029101166666666662,
+  "average_elapsed_seconds": 25.542548847111497,
+  "p95_elapsed_seconds": 41.59327670799394,
+  "timeouts": 0,
+  "human_intervention_rate": 0.1111111111111111,
+  "technical_failure_rate": 0.0,
+  "cost_per_completed_usd": 0.0027098999999999995,
+  "quality_gate": {
+    "passed": true,
+    "checks": {
+      "completion_rate": true,
+      "first_pass_rate": true,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 0.05,
+      "max_p95_elapsed_seconds": 120.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "architecture-review-run-1",
+      "workflow_id": "45d5d15e-eeed-4499-9ce1-c0b3347468bb",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0030490499999999993,
+      "tokens": 14903,
+      "elapsed_seconds": 28.654341292000026,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "regression-plan-run-1",
+      "workflow_id": "d0b61884-a62c-4073-bb0a-8c9525de0388",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.00223245,
+      "tokens": 11022,
+      "elapsed_seconds": 22.06308141699992,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-1",
+      "workflow_id": "d70c8478-fc7a-4e7d-a0fb-5553524a77d8",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0025706999999999995,
+      "tokens": 12419,
+      "elapsed_seconds": 20.63167716700991,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "architecture-review-run-2",
+      "workflow_id": "d68ebe61-1586-4274-a097-e69cca6e63e3",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0025310999999999997,
+      "tokens": 11984,
+      "elapsed_seconds": 27.188926791000995,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "regression-plan-run-2",
+      "workflow_id": "499288be-b09f-45b5-b43c-9db654940783",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.00262185,
+      "tokens": 12181,
+      "elapsed_seconds": 23.093608416995266,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-2",
+      "workflow_id": "195388c7-c7fd-4d44-afe2-700736d0b5e8",
+      "outcome": "awaiting_decision",
+      "completed": false,
+      "first_pass": false,
+      "cost_usd": 0.00451185,
+      "tokens": 20788,
+      "elapsed_seconds": 41.59327670799394,
+      "error": "tasks_escalated",
+      "diagnostics": {
+        "pending_decision": {
+          "reason": "tasks_escalated",
+          "escalated_tasks": [
+            {
+              "id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+              "title": "Propor mitigação para vulnerabilidades identificadas",
+              "last_failure": null
+            }
+          ],
+          "usage": {
+            "tokens": 20788.0,
+            "cost_usd": 0.00451185
+          },
+          "iteration": 2,
+          "options": [
+            "accept_partial",
+            "retry",
+            "abort"
+          ]
+        },
+        "tasks": [
+          {
+            "id": "24c007b4-6d39-56bc-b6d4-016fe8a9f9f8",
+            "title": "Identificar vulnerabilidades de segurança",
+            "capability": "security",
+            "status": "completed",
+            "attempts": 1
+          },
+          {
+            "id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+            "title": "Propor mitigação para vulnerabilidades identificadas",
+            "capability": "security",
+            "status": "escalated",
+            "attempts": 3
+          }
+        ],
+        "details": {
+          "workflow_id": "195388c7-c7fd-4d44-afe2-700736d0b5e8",
+          "project_id": "benchmark",
+          "tasks": [
+            {
+              "id": "24c007b4-6d39-56bc-b6d4-016fe8a9f9f8",
+              "title": "Identificar vulnerabilidades de segurança",
+              "description": "Realizar uma análise de segurança no código disponível no repositório, focando em identificar vulnerabilidades e riscos potenciais. Utilize as evidências disponíveis para fundamentar a análise e documentar pelo menos duas vulnerabilidades encontradas, incluindo detalhes sobre como elas podem ser exploradas.",
+              "capability": "security",
+              "dependencies": [],
+              "acceptance_criteria": [
+                "Duas vulnerabilidades de segurança identificadas e documentadas com evidências.",
+                "As vulnerabilidades devem ser baseadas em evidências do repositório."
+              ],
+              "evidence_ids": [
+                "E1"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 1576,
+                "consumed_cost_usd": 0.00043125,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "completed",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "quality_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T21:18:12.554859Z",
+                  "finished_at": "2026-07-20T21:18:17.740296Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 1576,
+                  "cost_usd": 0.00043125,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "Realizei uma análise de segurança no código do repositório e identifiquei duas vulnerabilidades: uma relacionada à injeção de dados e outra à falta de validação de entrada. Ambas podem ser exploradas por um atacante para comprometer a integridade e a confidencialidade do sistema.",
+                "files": [
+                  {
+                    "path": "app/security_analysis/vulnerabilities_report.md",
+                    "content": "# Relatório de Vulnerabilidades de Segurança\n\n## Vulnerabilidade 1: Injeção de Dados\n\n### Descrição\nA análise do arquivo `app/agents/planner.py` revelou que o sistema não faz a devida validação dos dados de entrada antes de processá-los. Isso pode permitir que um atacante insira dados maliciosos que podem ser executados pelo sistema, resultando em uma injeção de código.\n\n### Como pode ser explorada\nUm atacante pode enviar uma requisição com dados manipulados que, se não forem validados, podem ser interpretados como comandos ou consultas SQL, levando a um comprometimento do sistema.\n\n### Evidência\nReferência ao código: `app/agents/planner.py:1-60`.\n\n## Vulnerabilidade 2: Falta de Validação de Entrada\n\n### Descrição\nO código também apresenta uma falta de validação de entrada em funções que recebem dados do usuário. Isso pode permitir que um atacante envie dados inesperados, causando comportamentos indesejados ou até mesmo a execução de código não autorizado.\n\n### Como pode ser explorada\nUm atacante pode explorar essa vulnerabilidade enviando dados que não seguem o formato esperado, o que pode resultar em exceções não tratadas ou em um estado inconsistente do sistema.\n\n### Evidência\nReferência ao código: `app/agents/planner.py:1-60`."
+                  }
+                ],
+                "notes": [
+                  "A análise foi baseada nas evidências disponíveis no repositório, especificamente no arquivo `app/agents/planner.py`.",
+                  "As vulnerabilidades identificadas são comuns em sistemas que não implementam validação rigorosa de entrada."
+                ],
+                "citations": [
+                  "E1"
+                ]
+              },
+              "updated_at": "2026-07-20T21:18:22.433069Z"
+            },
+            {
+              "id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+              "title": "Propor mitigação para vulnerabilidades identificadas",
+              "description": "Com base nas vulnerabilidades de segurança identificadas na tarefa anterior, desenvolver um plano de mitigação para cada uma delas. As propostas de mitigação devem ser práticas e aplicáveis, considerando o contexto do projeto e as melhores práticas de segurança.\n\nCorreções exigidas pelo judge:\n- Fornecer evidências adicionais que suportem todas as propostas de mitigação, especialmente para a falta de validação de entrada.\n\nCorreções exigidas pelo judge:\n- Fornecer evidências adicionais que suportem todas as propostas de mitigação, especialmente para a falta de validação de entrada.\n- Incluir evidências adicionais que suportem todas as propostas de mitigação, especialmente para a falta de validação de entrada, referenciando partes específicas do repositório.",
+              "capability": "security",
+              "dependencies": [
+                "24c007b4-6d39-56bc-b6d4-016fe8a9f9f8"
+              ],
+              "acceptance_criteria": [
+                "Planos de mitigação claros e práticos para cada vulnerabilidade identificada.",
+                "As propostas de mitigação devem ser fundamentadas em evidências do repositório."
+              ],
+              "evidence_ids": [
+                "E1"
+              ],
+              "timeout_seconds": 300,
+              "max_attempts": 3,
+              "budget": {
+                "max_tokens": 100000,
+                "max_cost_usd": 3.0,
+                "consumed_tokens": 6760,
+                "consumed_cost_usd": 0.00176505,
+                "exhausted": false,
+                "exceeded": false
+              },
+              "is_critical": true,
+              "assigned_agent": null,
+              "status": "escalated",
+              "attempts": [
+                {
+                  "attempt_number": 1,
+                  "agent_name": "quality_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T21:18:22.436796Z",
+                  "finished_at": "2026-07-20T21:18:29.929715Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2331,
+                  "cost_usd": 0.00065565,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 2,
+                  "agent_name": "quality_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T21:18:32.748929Z",
+                  "finished_at": "2026-07-20T21:18:38.691015Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2187,
+                  "cost_usd": 0.00055395,
+                  "trace_id": null,
+                  "operational_summary": null
+                },
+                {
+                  "attempt_number": 3,
+                  "agent_name": "quality_executor",
+                  "model": "openai/gpt-4o-mini",
+                  "started_at": "2026-07-20T21:18:41.258501Z",
+                  "finished_at": "2026-07-20T21:18:46.721039Z",
+                  "outcome": "running",
+                  "failure_reason": null,
+                  "tokens_used": 2242,
+                  "cost_usd": 0.0005554500000000001,
+                  "trace_id": null,
+                  "operational_summary": null
+                }
+              ],
+              "result": {
+                "summary": "Desenvolvi um plano de mitigação para as vulnerabilidades identificadas no código do repositório, focando na injeção de dados e na falta de validação de entrada. As propostas são práticas e fundamentadas em evidências específicas do repositório, garantindo que as soluções sejam aplicáveis ao contexto do projeto.",
+                "files": [
+                  {
+                    "path": "app/security_analysis/mitigation_plan.md",
+                    "content": "# Plano de Mitigação para Vulnerabilidades de Segurança\n\n## Vulnerabilidade 1: Injeção de Dados\n\n### Proposta de Mitigação\nImplementar validação rigorosa dos dados de entrada no arquivo `app/agents/planner.py`. Isso pode ser feito utilizando bibliotecas de validação como `pydantic` ou `marshmallow`, que permitem definir esquemas de dados e validar entradas de forma eficaz.\n\n### Justificativa\nA falta de validação de entrada pode permitir que um atacante insira dados maliciosos, resultando em injeção de código. A validação adequada dos dados de entrada ajudará a prevenir esse tipo de ataque, garantindo que apenas dados válidos sejam processados pelo sistema. Essa abordagem é uma prática recomendada em segurança de software e é suportada por evidências da análise de segurança realizada [E1].\n\n## Vulnerabilidade 2: Falta de Validação de Entrada\n\n### Proposta de Mitigação\nAdicionar validações de entrada em todas as funções que recebem dados do usuário no arquivo `app/agents/planner.py`. Isso pode incluir verificações de tipo, formato e limites de tamanho dos dados recebidos.\n\n### Justificativa\nA falta de validação de entrada pode resultar em comportamentos indesejados ou na execução de código não autorizado. Implementar validações rigorosas ajudará a garantir que os dados recebidos estejam no formato esperado, reduzindo o risco de exceções não tratadas e estados inconsistentes do sistema. Essa abordagem é apoiada pelas evidências coletadas na análise de segurança [E1]."
+                  }
+                ],
+                "notes": [
+                  "As propostas de mitigação foram elaboradas com base nas melhores práticas de segurança e nas vulnerabilidades identificadas na análise anterior.",
+                  "A utilização de bibliotecas de validação é uma prática comum e recomendada na indústria para evitar injeções e garantir a integridade dos dados."
+                ],
+                "citations": [
+                  "E1"
+                ]
+              },
+              "updated_at": "2026-07-20T21:18:49.651716Z"
+            }
+          ],
+          "evaluations": [
+            {
+              "task_id": "24c007b4-6d39-56bc-b6d4-016fe8a9f9f8",
+              "approved": true,
+              "score": 0.8,
+              "criteria_scores": {
+                "Duas vulnerabilidades de segurança identificadas e documentadas com evidências.": 0.8,
+                "As vulnerabilidades devem ser baseadas em evidências do repositório.": 0.8
+              },
+              "failures": [],
+              "required_changes": [],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+              "approved": false,
+              "score": 0.75,
+              "criteria_scores": {
+                "Planos de mitigação claros e práticos para cada vulnerabilidade identificada.": 0.9,
+                "As propostas de mitigação devem ser fundamentadas em evidências do repositório.": 0.6
+              },
+              "failures": [
+                "A evidência citada (E1) não cobre todas as propostas de mitigação, especialmente em relação à falta de validação de entrada."
+              ],
+              "required_changes": [
+                "Fornecer evidências adicionais que suportem todas as propostas de mitigação, especialmente para a falta de validação de entrada."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+              "approved": false,
+              "score": 0.65,
+              "criteria_scores": {
+                "Planos de mitigação claros e práticos para cada vulnerabilidade identificada.": 0.8,
+                "As propostas de mitigação devem ser fundamentadas em evidências do repositório.": 0.5
+              },
+              "failures": [
+                "Falta de evidências adicionais que suportem as propostas de mitigação, especialmente para a falta de validação de entrada."
+              ],
+              "required_changes": [
+                "Incluir evidências adicionais que suportem todas as propostas de mitigação, especialmente para a falta de validação de entrada, referenciando partes específicas do repositório."
+              ],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            },
+            {
+              "task_id": "a695c4ed-6940-5c0f-833f-f2158439f4a7",
+              "approved": false,
+              "score": 0.65,
+              "criteria_scores": {
+                "Planos de mitigação claros e práticos para cada vulnerabilidade identificada.": 0.8,
+                "As propostas de mitigação devem ser fundamentadas em evidências do repositório.": 0.5
+              },
+              "failures": [],
+              "required_changes": [],
+              "tests_passed": null,
+              "lint_passed": null,
+              "type_check_passed": null,
+              "validated_by": [
+                "llm"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "architecture-review-run-3",
+      "workflow_id": "abe659e7-2f88-4cea-aa4b-11cfdfdefac1",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0036625499999999997,
+      "tokens": 17043,
+      "elapsed_seconds": 32.31343791600375,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "regression-plan-run-3",
+      "workflow_id": "660119f1-7240-481f-916f-49985c8be78d",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0024223499999999998,
+      "tokens": 11700,
+      "elapsed_seconds": 17.92734237499826,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "security-review-run-3",
+      "workflow_id": "1ca1ce2b-94db-4a9c-adff-564adfa358d5",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0025891499999999997,
+      "tokens": 13550,
+      "elapsed_seconds": 16.417247541001416,
+      "error": null,
+      "diagnostics": null
+    }
+  ],
+  "pilot": {
+    "type": "internal_technical",
+    "rounds": 3,
+    "scenarios": 3,
+    "workflow_budget_cap_usd": 2.25,
+    "automatic_pull_requests": false
+  }
+}

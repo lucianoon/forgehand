@@ -1,0 +1,26 @@
+[
+  {
+    "id": "architecture-review",
+    "project_id": "benchmark",
+    "request": "Analise a arquitetura do repositório, cite evidências e entregue três riscos priorizados.",
+    "acceptance_criteria": ["Citar arquivos reais", "Entregar três riscos"],
+    "max_cost_usd": 0.25,
+    "timeout_seconds": 120
+  },
+  {
+    "id": "regression-plan",
+    "project_id": "benchmark",
+    "request": "Identifique uma área sem cobertura suficiente e proponha um plano de testes objetivo sem alterar arquivos.",
+    "acceptance_criteria": ["Não alterar arquivos", "Propor testes executáveis"],
+    "max_cost_usd": 0.25,
+    "timeout_seconds": 120
+  },
+  {
+    "id": "security-review",
+    "project_id": "benchmark",
+    "request": "Faça uma revisão de segurança grounded e entregue duas vulnerabilidades ou riscos com mitigação.",
+    "acceptance_criteria": ["Usar evidências", "Incluir mitigação"],
+    "max_cost_usd": 0.25,
+    "timeout_seconds": 120
+  }
+]

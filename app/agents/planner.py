@@ -1,0 +1,274 @@
+"""Planner — transforma requisição em plano de AgentTasks.
+
+Decisões:
+- O LLM referencia dependências por ÍNDICE, não por UUID: modelos não geram
+  UUIDs confiáveis. A conversão índice→UUID acontece aqui, com validação de
+  faixa e detecção de ciclo (Kahn) — plano cíclico nunca entra no grafo.
+- Regra 3 no schema: acceptance_criteria com min_length=1. O planner é
+  OBRIGADO pelo schema a definir critérios antes da execução existir.
+- Tier configurável, default STANDARD (regra 9: caro só por escalonamento).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+from pydantic import BaseModel, Field
+
+from app.agents.grounding import (
+    format_repository_grounding,
+    get_evidence_index,
+    grounding_required,
+)
+from app.models.task import TaskBudget
+from app.models.task import AgentTask, Capability
+from app.graph.nodes import PlanningOutcome, UsageReport
+from app.providers.base import CompletionRequest, Message
+from app.providers.registry import ModelTier, ProviderRouter
+
+SYSTEM_PROMPT = """Você é o planner do Agent Forge, um sistema multiagente \
+de desenvolvimento de software.
+
+Decomponha a requisição em tarefas atômicas e executáveis. Para cada tarefa:
+- title: curto e específico;
+- description: o que fazer, com contexto suficiente para um executor \
+independente que NÃO viu a requisição original;
+- capability: exatamente uma competência;
+- acceptance_criteria: critérios objetivos e verificáveis (mínimo 1) — \
+serão usados pelo judge para aprovar ou rejeitar;
+- evidence_ids: IDs das evidências do repositório que justificam a tarefa; \
+  quando houver grounding no contexto, cada tarefa DEVE citar pelo menos 1 \
+  evidência real;
+- depends_on: índices (base 0) das tarefas que precisam estar COMPLETAS \
+antes desta iniciar. Use apenas dependências reais — tarefas independentes \
+executam em paralelo;
+- is_critical: true apenas para tarefas cujo erro compromete todo o projeto \
+(ex.: arquitetura, segurança).
+
+Prefira menos tarefas bem definidas a muitas tarefas vagas. Não crie tarefa \
+de "revisão final" — o judge já existe.
+
+Se o contexto trouxer evidências do repositório:
+- use SOMENTE tecnologias, componentes e afirmações sustentadas por essas evidências;
+- não invente arquivos, frameworks, serviços ou diretórios ausentes;
+- quando a evidência for insuficiente, restrinja o plano ao que está demonstrado.
+
+Para pedidos de análise do repositório/código:
+- prefira no máximo 2 tarefas quando possível;
+- use uma tarefa factual para mapear evidências e uma segunda, dependente da primeira,
+  apenas se a síntese final realmente precisar ser separada;
+- evite planos amplos que reavaliem a mesma evidência em múltiplas tarefas."""
+
+
+class PlannedTask(BaseModel):
+    title: str
+    description: str
+    capability: Capability
+    acceptance_criteria: list[str] = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    depends_on: list[int] = Field(default_factory=list)
+    is_critical: bool = False
+
+
+class PlanOutput(BaseModel):
+    rationale: str = Field(description="Por que o plano foi dividido assim.")
+    tasks: list[PlannedTask] = Field(min_length=1)
+
+
+class PlanValidationError(ValueError):
+    """Plano estruturalmente inválido — índices fora de faixa ou ciclo."""
+
+
+def _task_stable_id(task: PlannedTask) -> UUID:
+    fingerprint = json.dumps(
+        {
+            "title": task.title,
+            "description": task.description,
+            "capability": task.capability.value,
+            "acceptance_criteria": task.acceptance_criteria,
+            "evidence_ids": task.evidence_ids,
+            "depends_on": task.depends_on,
+            "is_critical": task.is_critical,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    return uuid5(NAMESPACE_URL, f"agent-forge-plan:{fingerprint}")
+
+
+def _to_agent_tasks(plan: PlanOutput) -> list[AgentTask]:
+    n = len(plan.tasks)
+    for i, t in enumerate(plan.tasks):
+        bad = [d for d in t.depends_on if d < 0 or d >= n or d == i]
+        if bad:
+            raise PlanValidationError(
+                f"Tarefa {i} ('{t.title}') com dependências inválidas: {bad}"
+            )
+
+    # Kahn: se não conseguimos ordenar topologicamente, há ciclo
+    indegree = {i: len(t.depends_on) for i, t in enumerate(plan.tasks)}
+    queue = [i for i, d in indegree.items() if d == 0]
+    visited = 0
+    dependents: dict[int, list[int]] = {i: [] for i in range(n)}
+    for i, t in enumerate(plan.tasks):
+        for d in t.depends_on:
+            dependents[d].append(i)
+    while queue:
+        node = queue.pop()
+        visited += 1
+        for dep in dependents[node]:
+            indegree[dep] -= 1
+            if indegree[dep] == 0:
+                queue.append(dep)
+    if visited != n:
+        raise PlanValidationError("Plano contém ciclo de dependências.")
+
+    tasks = [
+        AgentTask(
+            id=_task_stable_id(t),
+            title=t.title,
+            description=t.description,
+            capability=t.capability,
+            acceptance_criteria=t.acceptance_criteria,
+            evidence_ids=t.evidence_ids,
+            is_critical=t.is_critical,
+        )
+        for t in plan.tasks
+    ]
+    for i, t in enumerate(plan.tasks):
+        tasks[i].dependencies = [tasks[d].id for d in t.depends_on]
+    return tasks
+
+
+class LLMPlanner:
+    """Implementa o protocolo Planner de app.graph.nodes."""
+
+    def __init__(
+        self,
+        router: ProviderRouter,
+        tier: ModelTier = ModelTier.STANDARD,
+        default_task_budget: TaskBudget | None = None,
+        max_validation_attempts: int = 2,
+    ):
+        self._router = router
+        self._tier = tier
+        self._default_task_budget = default_task_budget or TaskBudget()
+        self._max_validation_attempts = max(1, max_validation_attempts)
+
+    @staticmethod
+    def _non_grounding_context(context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in context.items()
+            if key != "repository_grounding"
+        }
+
+    @staticmethod
+    def _is_repository_analysis(request: str, context: dict[str, Any]) -> bool:
+        lowered = request.lower()
+        return "repository_grounding" in context and any(
+            token in lowered
+            for token in (
+                "reposit",
+                "repo",
+                "codebase",
+                "código",
+                "arquitet",
+                "módulo",
+            )
+        )
+
+    @staticmethod
+    def _validate_grounding(plan: PlanOutput, context: dict[str, Any]) -> None:
+        if not grounding_required(context):
+            return
+
+        evidence_index = get_evidence_index(context)
+        for task in plan.tasks:
+            if not task.evidence_ids:
+                raise PlanValidationError(
+                    f"Tarefa '{task.title}' sem evidence_ids em modo grounded."
+                )
+            invalid = [
+                evidence_id
+                for evidence_id in task.evidence_ids
+                if evidence_id not in evidence_index
+            ]
+            if invalid:
+                raise PlanValidationError(
+                    f"Tarefa '{task.title}' referencia evidências inexistentes: {invalid}"
+                )
+
+    def _apply_defaults(self, tasks: list[AgentTask]) -> list[AgentTask]:
+        return [
+            task.model_copy(
+                update={
+                    "budget": task.budget.model_copy(
+                        update={
+                            "max_tokens": self._default_task_budget.max_tokens,
+                            "max_cost_usd": self._default_task_budget.max_cost_usd,
+                        }
+                    )
+                }
+            )
+            for task in tasks
+        ]
+
+    async def create_plan(
+        self, request: str, context: dict[str, Any]
+    ) -> PlanningOutcome:
+        user_content = f"Requisição:\n{request}"
+        extra_context = self._non_grounding_context(context)
+        if extra_context:
+            user_content += f"\n\nContexto adicional do projeto:\n{extra_context}"
+        grounding_block = format_repository_grounding(context, max_items=8)
+        if grounding_block:
+            user_content += f"\n\n{grounding_block}"
+        if self._is_repository_analysis(request, context):
+            user_content += (
+                "\n\nDiretriz de economia para análise grounded do repositório:\n"
+                "- prefira 1 tarefa factual ou no máximo 2 tarefas;\n"
+                "- não replique a mesma análise em capabilities diferentes sem necessidade;\n"
+                "- use a segunda tarefa apenas para sintetizar um artefato final dependente da primeira."
+            )
+
+        total_tokens = 0
+        total_cost = 0.0
+        validation_feedback = ""
+        for attempt in range(1, self._max_validation_attempts + 1):
+            attempt_content = user_content
+            if validation_feedback:
+                attempt_content += (
+                    "\n\nO plano anterior foi rejeitado pela validação estrutural:\n"
+                    f"{validation_feedback}\n"
+                    "Gere o plano completo novamente, corrigindo índices, ciclos e "
+                    "evidence_ids."
+                )
+            result = await self._router.complete(
+                self._tier,
+                CompletionRequest(
+                    model="",  # resolvido pelo router
+                    system=SYSTEM_PROMPT,
+                    messages=[Message(role="user", content=attempt_content)],
+                    response_schema=PlanOutput,
+                    max_tokens=8192,
+                ),
+            )
+            total_tokens += result.usage.total_tokens
+            total_cost += result.cost_usd
+            parsed = result.parse_as(PlanOutput)
+            try:
+                self._validate_grounding(parsed, context)
+                tasks = _to_agent_tasks(parsed)
+            except PlanValidationError as exc:
+                if attempt == self._max_validation_attempts:
+                    raise
+                validation_feedback = str(exc)
+                continue
+            return PlanningOutcome(
+                plan=self._apply_defaults(tasks),
+                usage=UsageReport(tokens=total_tokens, cost_usd=total_cost),
+            )
+        raise AssertionError("loop de validação do planner terminou sem resultado")

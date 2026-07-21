@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Agent Forge mission control" />
+    <title>Agent Forge · Mission Control</title>
+    <link rel="stylesheet" href="/dashboard/assets/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/dashboard" aria-label="Agent Forge">
+          <span class="brand-mark" aria-hidden="true">AF</span>
+          <span>
+            <strong>Agent Forge</strong>
+            <small>Mission control</small>
+          </span>
+        </a>
+        <div class="runtime" aria-live="polite">
+          <span id="runtime-dot" class="status-dot"></span>
+          <span id="runtime-label">Conectando ao runtime</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Execução governada</p>
+            <h1>Da intenção à entrega,<br />com cada decisão visível.</h1>
+            <p class="hero-copy">
+              Planeje, execute e valide trabalho de engenharia com orçamento,
+              evidências e aprovação humana no mesmo fluxo.
+            </p>
+          </div>
+          <div class="health-grid" aria-label="Saúde do sistema">
+            <article><span>Fila</span><strong id="queue-value">—</strong></article>
+            <article><span>Workers</span><strong id="workers-value">—</strong></article>
+            <article><span>Em execução</span><strong id="active-value">—</strong></article>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <aside class="composer panel">
+            <div class="panel-heading">
+              <span class="step-number">01</span>
+              <div><h2>Novo workflow</h2><p>Defina o resultado esperado.</p></div>
+            </div>
+            <form id="workflow-form">
+              <label>
+                API key
+                <input id="api-key" type="password" autocomplete="off" required placeholder="dev-key" />
+              </label>
+              <label>
+                Projeto
+                <input id="project-id" required value="agent-forge" minlength="1" />
+              </label>
+              <label>
+                Solicitação
+                <textarea id="request" required minlength="10" rows="7" placeholder="Analise este repositório e entregue…"></textarea>
+              </label>
+              <label>
+                Critérios de aceitação
+                <textarea id="criteria" rows="4" placeholder="Um critério por linha"></textarea>
+              </label>
+              <div class="budget-row">
+                <label>Máx. tokens<input id="max-tokens" type="number" min="1" value="60000" /></label>
+                <label>Máx. USD<input id="max-cost" type="number" min="0.01" step="0.01" value="1.50" /></label>
+              </div>
+              <button id="submit-button" class="primary" type="submit">
+                <span>Iniciar workflow</span><span aria-hidden="true">→</span>
+              </button>
+              <p id="form-error" class="error" role="alert"></p>
+            </form>
+            <div class="history-heading">
+              <h3>Execuções recentes</h3>
+              <button id="refresh-history" class="text-button" type="button">Atualizar</button>
+            </div>
+            <div id="workflow-history" class="workflow-history empty-history">
+              Informe a API key para carregar o histórico.
+            </div>
+          </aside>
+
+          <section class="run panel" aria-live="polite">
+            <div class="panel-heading run-heading">
+              <span class="step-number">02</span>
+              <div><h2>Execução</h2><p id="workflow-id">Aguardando uma missão.</p></div>
+              <div class="run-actions">
+                <button id="cancel-workflow" class="cancel-button hidden" type="button">Cancelar</button>
+                <span id="run-badge" class="badge neutral">standby</span>
+              </div>
+            </div>
+
+            <ol id="stage-track" class="stage-track" aria-label="Etapas do workflow">
+              <li data-stage="queued">Fila</li><li data-stage="planning">Plano</li>
+              <li data-stage="executing">Execução</li><li data-stage="evaluating">Judge</li>
+              <li data-stage="completed">Entrega</li>
+            </ol>
+
+            <div class="metrics-row">
+              <article><span>Tokens</span><strong id="tokens">0</strong></article>
+              <article><span>Custo</span><strong id="cost">US$ 0,00</strong></article>
+              <article><span>Iteração</span><strong id="iteration">0</strong></article>
+            </div>
+
+            <div class="section-title"><h3>Tarefas</h3><span id="task-count">0 tarefas</span></div>
+            <div id="tasks" class="tasks empty-state">
+              <p>As tarefas aparecerão aqui após o planejamento.</p>
+            </div>
+
+            <div id="operations" class="operations hidden">
+              <div class="section-title"><h3>Diffs e validações</h3><span id="operation-count"></span></div>
+              <div id="operation-list" class="operation-list"></div>
+            </div>
+
+            <div id="decision" class="decision hidden">
+              <div><p class="eyebrow">Decisão necessária</p><h3>O agente precisa da sua orientação.</h3></div>
+              <div class="decision-actions">
+                <button data-decision="accept_partial">Aceitar parcial</button>
+                <button data-decision="retry">Tentar novamente</button>
+                <button data-decision="abort" class="danger">Abortar</button>
+              </div>
+            </div>
+
+            <div id="delivery" class="delivery hidden">
+              <div class="section-title"><h3>Entrega</h3><button id="copy-output" class="text-button">Copiar</button></div>
+              <pre id="final-output"></pre>
+              <div class="publish-row">
+                <label>Repositório GitHub<input id="github-repository" placeholder="owner/repository" /></label>
+                <button id="publish-pr" class="primary" type="button"><span>Publicar pull request</span><span>↗</span></button>
+              </div>
+              <p id="publish-result" class="publish-result"></p>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script src="/dashboard/assets/app.js" defer></script>
+  </body>
+</html>

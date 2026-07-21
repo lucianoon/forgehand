@@ -1,0 +1,57 @@
+{
+  "cases": 3,
+  "completion_rate": 0.6666666666666666,
+  "first_pass_rate": 0.6666666666666666,
+  "total_cost_usd": 0.013160400000000001,
+  "average_cost_usd": 0.004386800000000001,
+  "average_elapsed_seconds": 29.600605945001007,
+  "p95_elapsed_seconds": 38.26276445899566,
+  "timeouts": 0,
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "completion_rate": false,
+      "first_pass_rate": true,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 1.0,
+      "max_p95_elapsed_seconds": 300.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "architecture-review",
+      "workflow_id": "53c54b14-07b2-4cfc-abe0-5bd96a0800aa",
+      "completed": false,
+      "first_pass": false,
+      "cost_usd": 0.008234700000000001,
+      "tokens": 49180,
+      "elapsed_seconds": 38.26276445899566,
+      "error": null
+    },
+    {
+      "case_id": "regression-plan",
+      "workflow_id": "6e4129d0-87d2-46ac-98e7-5c27c186023f",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0022448999999999998,
+      "tokens": 10583,
+      "elapsed_seconds": 26.13685245900706,
+      "error": null
+    },
+    {
+      "case_id": "security-review",
+      "workflow_id": "b93a4b88-0bcc-4214-bd47-d93aa985f9bb",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0026808,
+      "tokens": 13516,
+      "elapsed_seconds": 24.4022009170003,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "cases": 1,
+  "completion_rate": 1.0,
+  "first_pass_rate": 0.0,
+  "total_cost_usd": 0.0038728499999999997,
+  "average_cost_usd": 0.0038728499999999997,
+  "average_elapsed_seconds": 57.403376916001434,
+  "p95_elapsed_seconds": 57.403376916001434,
+  "timeouts": 0,
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "completion_rate": true,
+      "first_pass_rate": false,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 1.0,
+      "max_p95_elapsed_seconds": 300.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "regression-plan",
+      "workflow_id": "52a60cf1-4e7d-487a-87ac-345578997d85",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": false,
+      "cost_usd": 0.0038728499999999997,
+      "tokens": 16786,
+      "elapsed_seconds": 57.403376916001434,
+      "error": null,
+      "diagnostics": null
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: agent_forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge -d agent_forge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      ENVIRONMENT: dev
+      WORKFLOW_QUEUE_BACKEND: postgres
+      RUN_EMBEDDED_WORKFLOW_WORKERS: "false"
+      CHECKPOINTER_BACKEND: postgres
+      DATABASE_URL: postgresql://forge:forge@postgres:5432/agent_forge
+      API_KEYS_JSON: ${API_KEYS_JSON:?defina API_KEYS_JSON no .env}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM_PROVIDER_BACKEND: ${LLM_PROVIDER_BACKEND:-openrouter}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # PRICING_JSON e TIER_BINDINGS_JSON: descomentar para sobrescrever
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    # A imagem compartilha o healthcheck HTTP da API, mas o worker não serve
+    # HTTP. A saúde dele é refletida pela fila/readiness da API.
+    healthcheck:
+      disable: true
+    environment:
+      ENVIRONMENT: dev
+      WORKFLOW_QUEUE_BACKEND: postgres
+      RUN_EMBEDDED_WORKFLOW_WORKERS: "true"
+      CHECKPOINTER_BACKEND: postgres
+      DATABASE_URL: postgresql://forge:forge@postgres:5432/agent_forge
+      API_KEYS_JSON: ${API_KEYS_JSON:?defina API_KEYS_JSON no .env}
+      LLM_PROVIDER_BACKEND: ${LLM_PROVIDER_BACKEND:-openrouter}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,73 @@
+{
+  "cases": 3,
+  "completion_rate": 1.0,
+  "first_pass_rate": 0.6666666666666666,
+  "total_cost_usd": 0.009396,
+  "average_cost_usd": 0.003132,
+  "average_elapsed_seconds": 25.889070138669922,
+  "p95_elapsed_seconds": 28.121959000010975,
+  "timeouts": 0,
+  "human_intervention_rate": 0.0,
+  "technical_failure_rate": 0.0,
+  "cost_per_completed_usd": 0.003132,
+  "quality_gate": {
+    "passed": true,
+    "checks": {
+      "completion_rate": true,
+      "first_pass_rate": true,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 0.05,
+      "max_p95_elapsed_seconds": 120.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "architecture-review-run-1",
+      "workflow_id": "3ba73385-dcd9-4b72-bcb8-b1ac7d07a071",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": false,
+      "cost_usd": 0.0039562500000000006,
+      "tokens": 21707,
+      "elapsed_seconds": 28.121959000010975,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "architecture-review-run-2",
+      "workflow_id": "f637bf29-b541-4899-875f-33099c282ba7",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.00288495,
+      "tokens": 14421,
+      "elapsed_seconds": 22.1901682500029,
+      "error": null,
+      "diagnostics": null
+    },
+    {
+      "case_id": "architecture-review-run-3",
+      "workflow_id": "12707451-da47-4cb8-9181-bfe0c6d10b73",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": true,
+      "cost_usd": 0.0025548,
+      "tokens": 12100,
+      "elapsed_seconds": 27.355083165995893,
+      "error": null,
+      "diagnostics": null
+    }
+  ],
+  "pilot": {
+    "type": "internal_technical",
+    "rounds": 3,
+    "scenarios": 1,
+    "workflow_budget_cap_usd": 0.75,
+    "automatic_pull_requests": false
+  }
+}

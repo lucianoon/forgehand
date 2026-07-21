@@ -1,0 +1,46 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+          POSTGRES_DB: agent_forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forge -d agent_forge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev --extra postgres --locked
+      - run: uv run ruff check .
+      - run: uv run mypy app
+      - run: node --check app/web/app.js
+      - run: docker compose config --quiet
+        env:
+          API_KEYS_JSON: '{"ci-key":{"client_id":"ci","projects":["*"],"role":"admin"}}'
+          OPENROUTER_API_KEY: ci-placeholder
+      - run: uv run pytest -q
+        env:
+          RUN_POSTGRES_TESTS: "1"
+      - run: docker build --tag agent-forge:ci .

@@ -1,0 +1,43 @@
+services:
+  audit-init:
+    image: alpine:3.22
+    user: root
+    command: ["chown", "-R", "1000:1000", "/data"]
+    volumes:
+      - auditdata:/data
+    restart: "no"
+
+  postgres:
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: prod
+      AUDIT_LOG_BACKEND: jsonl
+      AUDIT_LOG_PATH: /srv/agent-forge/data/audit.jsonl
+    volumes:
+      - auditdata:/srv/agent-forge/data
+    depends_on:
+      audit-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  worker:
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: prod
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+volumes:
+  auditdata:

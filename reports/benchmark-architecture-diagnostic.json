@@ -1,0 +1,39 @@
+{
+  "cases": 1,
+  "completion_rate": 1.0,
+  "first_pass_rate": 0.0,
+  "total_cost_usd": 0.0095811,
+  "average_cost_usd": 0.0095811,
+  "average_elapsed_seconds": 67.30994620801357,
+  "p95_elapsed_seconds": 67.30994620801357,
+  "timeouts": 0,
+  "quality_gate": {
+    "passed": false,
+    "checks": {
+      "completion_rate": true,
+      "first_pass_rate": false,
+      "average_cost_usd": true,
+      "p95_elapsed_seconds": true
+    },
+    "policy": {
+      "min_completion_rate": 0.8,
+      "min_first_pass_rate": 0.6,
+      "max_average_cost_usd": 1.0,
+      "max_p95_elapsed_seconds": 300.0
+    }
+  },
+  "results": [
+    {
+      "case_id": "architecture-review",
+      "workflow_id": "4f7e51bd-80f9-4faa-9948-2571ac381e67",
+      "outcome": "completed",
+      "completed": true,
+      "first_pass": false,
+      "cost_usd": 0.0095811,
+      "tokens": 52666,
+      "elapsed_seconds": 67.30994620801357,
+      "error": null,
+      "diagnostics": null
+    }
+  ]
+}
