@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.container import build_container, checkpointer_context
 from app.api.routes.operations import router as operations_router
 from app.api.routes.workflows import router as workflows_router
+from app.infrastructure.memory import project_memory_context
 from app.infrastructure.settings import get_settings
 from app.infrastructure.telemetry import HttpMetrics
 from app.infrastructure.workflow_queue import workflow_queue_context
@@ -28,17 +29,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = app.state.settings
     async with checkpointer_context(settings) as checkpointer:
         async with workflow_queue_context(settings) as job_queue:
-            app.state.container = build_container(
-                settings,
-                checkpointer,
-                job_queue,
-                run_workers=settings.run_embedded_workflow_workers,
-            )
-            app.state.container.workflow_service.start_workers()
-            try:
-                yield
-            finally:
-                await app.state.container.workflow_service.shutdown()
+            async with project_memory_context(settings) as memory:
+                app.state.container = build_container(
+                    settings,
+                    checkpointer,
+                    job_queue,
+                    run_workers=settings.run_embedded_workflow_workers,
+                    memory=memory,
+                )
+                app.state.container.workflow_service.start_workers()
+                try:
+                    yield
+                finally:
+                    await app.state.container.workflow_service.shutdown()
 
 
 def create_app() -> FastAPI:

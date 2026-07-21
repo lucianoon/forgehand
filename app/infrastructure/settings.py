@@ -132,6 +132,15 @@ class Settings(BaseSettings):
     checkpointer_backend: Literal["memory", "postgres"] = "memory"
     database_url: str = "postgresql://forge:forge@localhost:5432/agent_forge"
 
+    # Memória de projeto (Fase 4): memory para dev/testes, neo4j para
+    # histórico que sobrevive a restart. NEO4J_PASSWORD é lido direto do
+    # ambiente pelo project_memory_context — segredo não passa por Settings.
+    memory_backend: Literal["memory", "neo4j"] = "memory"
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_username: str = "neo4j"
+    neo4j_database: str = "neo4j"
+    memory_recent_workflows_limit: int = Field(default=5, ge=1, le=20)
+
     # ANTHROPIC_API_KEY é lida pelo SDK direto do ambiente — não passa por aqui
     # de propósito: settings são logáveis, segredos não.
 

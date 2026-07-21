@@ -15,6 +15,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # Memória de projeto persistente (Fase 4) — opcional:
+  #   MEMORY_BACKEND=neo4j docker compose --profile neo4j up
+  neo4j:
+    image: neo4j:5
+    profiles: ["neo4j"]
+    environment:
+      # Sem NEO4J_PASSWORD o container recusa subir com erro claro do próprio
+      # Neo4j — não usar :? aqui: quebraria `docker compose config` da CI
+      # mesmo com o profile inativo.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   api:
     build: .
     ports:
@@ -25,6 +46,9 @@ services:
       RUN_EMBEDDED_WORKFLOW_WORKERS: "false"
       CHECKPOINTER_BACKEND: postgres
       DATABASE_URL: postgresql://forge:forge@postgres:5432/agent_forge
+      MEMORY_BACKEND: ${MEMORY_BACKEND:-memory}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
       API_KEYS_JSON: ${API_KEYS_JSON:?defina API_KEYS_JSON no .env}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LLM_PROVIDER_BACKEND: ${LLM_PROVIDER_BACKEND:-openrouter}
@@ -48,6 +72,9 @@ services:
       RUN_EMBEDDED_WORKFLOW_WORKERS: "true"
       CHECKPOINTER_BACKEND: postgres
       DATABASE_URL: postgresql://forge:forge@postgres:5432/agent_forge
+      MEMORY_BACKEND: ${MEMORY_BACKEND:-memory}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
       API_KEYS_JSON: ${API_KEYS_JSON:?defina API_KEYS_JSON no .env}
       LLM_PROVIDER_BACKEND: ${LLM_PROVIDER_BACKEND:-openrouter}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -58,3 +85,4 @@ services:
 
 volumes:
   pgdata:
+  neo4jdata:

@@ -22,10 +22,9 @@ from app.agents.planner import LLMPlanner
 from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
-from app.graph.state import WorkflowState
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog
-from app.infrastructure.repository_grounding import RepositoryGroundingCollector
+from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
@@ -39,32 +38,6 @@ from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import LLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
 from app.providers.registry import ProviderRouter
-
-
-class InMemoryProjectMemory:
-    """Placeholder da Fase 1. Fase 4 substitui por project/graph memory —
-    mesma interface (protocolo MemoryStore de app.graph.nodes)."""
-
-    def __init__(self, settings: Settings) -> None:
-        self._by_project: dict[str, dict[str, Any]] = {}
-        self._collector = RepositoryGroundingCollector(
-            settings.repository_root,
-            max_files=settings.repository_grounding_max_files,
-            max_excerpt_lines=settings.repository_grounding_max_lines_per_file,
-            max_file_bytes=settings.repository_grounding_max_file_bytes,
-        )
-        self._grounding_enabled = settings.repository_grounding_enabled
-
-    async def load_context(self, project_id: str, request: str = "") -> dict[str, Any]:
-        context = dict(self._by_project.get(project_id, {}))
-        if self._grounding_enabled:
-            context["repository_grounding"] = self._collector.collect(request)
-        return context
-
-    async def persist(self, state: WorkflowState) -> None:
-        self._by_project.setdefault(state.project_id, {})["last_workflow_id"] = (
-            state.workflow_id
-        )
 
 
 @asynccontextmanager
@@ -104,10 +77,12 @@ def build_container(
     anthropic_client: anthropic.AsyncAnthropic | None = None,
     openrouter_client: Any | None = None,
     audit_log: Any | None = None,
+    memory: Any | None = None,
 ) -> Container:
-    """Checkpointer vem de fora (checkpointer_context no lifespan) porque
-    tem lifecycle próprio. anthropic_client injetável: testes passam
-    transporte mockado sem tocar em variáveis de ambiente."""
+    """Checkpointer e memória vêm de fora (checkpointer_context e
+    project_memory_context no lifespan) porque têm lifecycle próprio.
+    anthropic_client injetável: testes passam transporte mockado sem tocar
+    em variáveis de ambiente."""
     router = build_provider_router(
         settings,
         anthropic_client=anthropic_client,
@@ -135,7 +110,7 @@ def build_container(
             execution_strategies=execution_strategies,
         ),
         judge=LLMJudge(router, validation_pipeline=validation_pipeline),
-        memory=InMemoryProjectMemory(settings),
+        memory=memory or InMemoryProjectMemory(settings),
         checkpointer=checkpointer,
         advisor=LLMAdvisor(router),
     )

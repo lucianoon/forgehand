@@ -15,6 +15,14 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Memória de projeto persistente (Fase 4) é opt-in — sem ela o backend é em
+memória de processo:
+
+```bash
+# no .env: MEMORY_BACKEND=neo4j e NEO4J_PASSWORD=<senha>
+docker compose --profile neo4j up --build
+```
+
 Se a porta 8000 já estiver ocupada, escolha outra porta sem alterar o
 container:
 
@@ -233,11 +241,12 @@ Camadas:
 uv run pytest tests/unit tests/integration
 ```
 
-O teste de restart com PostgreSQL é opt-in para que a suíte padrão seja
-portável. Com o banco local disponível:
+Os testes de restart com PostgreSQL e de memória com Neo4j são opt-in para
+que a suíte padrão seja portável. Com os bancos locais disponíveis:
 
 ```bash
 RUN_POSTGRES_TESTS=1 uv run pytest tests/integration/test_postgres_restart.py
+RUN_NEO4J_TESTS=1 NEO4J_PASSWORD=<senha> uv run pytest tests/integration/test_neo4j_memory.py
 ```
 
 Esse módulo também valida renovação de lease e ownership da entrega. Enquanto
@@ -245,7 +254,7 @@ um workflow está em execução, o worker atualiza `locked_at` periodicamente;
 confirmações e falhas só são aceitas quando `locked_by` ainda pertence ao
 worker que recebeu o job. Workers externos também registram heartbeat no
 PostgreSQL; `/readyz` deixa de responder 200 quando nenhum worker registrado
-está ativo. A CI sobe PostgreSQL 16 e executa esses cenários.
+está ativo. A CI sobe PostgreSQL 16 e Neo4j 5 e executa esses cenários.
 
 O consumo agregado inclui chamadas de planner, executores e judge. O budget
 por tarefa é verificado antes da execução e qualquer ultrapassagem vira
@@ -263,8 +272,9 @@ verdade é parseado.
 - [x] **Fase 3** — advisor: consultado no replan quando os sinais objetivos do
   `AdvisorTrigger` disparam; injeta diagnóstico/orientação na próxima tentativa
   e é o único fluxo que escala tier (`tier_escalated`)
-- [ ] **Fase 4** — memória Neo4j (protocolo `MemoryStore` já é a fronteira; hoje
-  o placeholder é `InMemoryProjectMemory`)
+- [x] **Fase 4** — memória de projeto persistente em Neo4j
+  (`(Project)-[:HAS_WORKFLOW]->(Workflow)-[:EXECUTED]->(Task)`); backend via
+  `MEMORY_BACKEND=memory|neo4j`, histórico recente entra no contexto do planner
 - [x] **Fase 5** — ferramentas reais no judge (pipeline objetiva com
   `pytest`/`ruff`/`mypy` — ver "Executor operacional" acima)
 - [x] **Fase 6** — filas/workers (Postgres com lease/heartbeat), auth com RBAC,
