@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     neo4j_database: str = "neo4j"
     memory_recent_workflows_limit: int = Field(default=5, ge=1, le=20)
 
+    # Tracing (Fase 7): otlp cobre qualquer backend OTel, incluindo Langfuse.
+    # Endpoint e credenciais via variáveis padrão do OTel
+    # (OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS) — lidas pelo exporter, não por
+    # Settings: settings são logáveis, segredos não.
+    tracing_backend: Literal["none", "otlp"] = "none"
+    tracing_service_name: str = "agent-forge"
+
     # ANTHROPIC_API_KEY é lida pelo SDK direto do ambiente — não passa por aqui
     # de propósito: settings são logáveis, segredos não.
 

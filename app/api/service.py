@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime, timezone
 from typing import Any
 from typing import cast
@@ -54,11 +54,13 @@ class WorkflowService:
         job_queue: Any,
         run_workers: bool,
         event_publisher: Any | None = None,
+        tracer: Any | None = None,
     ):
         self._app = graph_app
         self._settings = settings
         self._job_queue = job_queue
         self._run_workers = run_workers
+        self._tracer = tracer
         self._workers: list[asyncio.Task[Any]] = []
         self._running: dict[str, str] = {}
         self._failures: dict[str, str] = {}
@@ -148,12 +150,27 @@ class WorkflowService:
     async def _invoke_job(self, job: Any) -> None:
         from langgraph.types import Command
 
-        if job.kind == "start":
-            await self._app.ainvoke(job.payload, self._config(job.workflow_id))
-        else:
-            await self._app.ainvoke(
-                Command(resume=job.payload), self._config(job.workflow_id)
+        # Span raiz do job: os spans de LLM do grafo aninham aqui via
+        # contexto do OTel (contextvars sobrevivem ao fan-out paralelo).
+        span = (
+            self._tracer.span(
+                "workflow",
+                {
+                    "agent_forge.workflow_id": job.workflow_id,
+                    "agent_forge.project_id": getattr(job, "project_id", ""),
+                    "agent_forge.job_kind": job.kind,
+                },
             )
+            if self._tracer is not None
+            else nullcontext()
+        )
+        with span:
+            if job.kind == "start":
+                await self._app.ainvoke(job.payload, self._config(job.workflow_id))
+            else:
+                await self._app.ainvoke(
+                    Command(resume=job.payload), self._config(job.workflow_id)
+                )
 
     async def _maintain_lease(self, job: Any) -> None:
         interval = max(self._settings.workflow_queue_lease_seconds / 3, 0.01)

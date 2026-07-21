@@ -23,6 +23,19 @@ memória de processo:
 docker compose --profile neo4j up --build
 ```
 
+Tracing OTel/Langfuse (Fase 7) também é opt-in. Uma única integração OTLP
+cobre qualquer backend OTel — para Langfuse, basta apontar o endpoint OTLP:
+
+```bash
+export TRACING_BACKEND=otlp
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(pk-lf:sk-lf)>"
+```
+
+Cada chamada de LLM vira um span `gen_ai` (modelo, tier, tokens, custo,
+latência, erro) aninhado no span do job; o `trace_id` fica gravado em cada
+`TaskAttempt` para correlação.
+
 Se a porta 8000 já estiver ocupada, escolha outra porta sem alterar o
 container:
 
@@ -279,4 +292,6 @@ verdade é parseado.
   `pytest`/`ruff`/`mypy` — ver "Executor operacional" acima)
 - [x] **Fase 6** — filas/workers (Postgres com lease/heartbeat), auth com RBAC,
   auditoria, métricas Prometheus
-- [ ] **Fase 7** — tracing Langfuse/OTel (`trace_id` já reservado em `TaskAttempt`)
+- [x] **Fase 7** — tracing OTel/Langfuse via OTLP: span `gen_ai` por chamada na
+  porta única do `ProviderRouter`, span raiz por job no worker e `trace_id`
+  gravado em cada `TaskAttempt`

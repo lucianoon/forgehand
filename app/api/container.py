@@ -78,15 +78,17 @@ def build_container(
     openrouter_client: Any | None = None,
     audit_log: Any | None = None,
     memory: Any | None = None,
+    tracer: Any | None = None,
 ) -> Container:
-    """Checkpointer e memória vêm de fora (checkpointer_context e
-    project_memory_context no lifespan) porque têm lifecycle próprio.
-    anthropic_client injetável: testes passam transporte mockado sem tocar
-    em variáveis de ambiente."""
+    """Checkpointer, memória e tracer vêm de fora (checkpointer_context,
+    project_memory_context e tracing_context no lifespan) porque têm
+    lifecycle próprio. anthropic_client injetável: testes passam transporte
+    mockado sem tocar em variáveis de ambiente."""
     router = build_provider_router(
         settings,
         anthropic_client=anthropic_client,
         openrouter_client=openrouter_client,
+        tracer=tracer,
     )
     objective_validators = build_objective_validators(settings)
     validation_pipeline = build_objective_validation_pipeline(
@@ -124,7 +126,14 @@ def build_container(
         os.getenv("WEBHOOK_SIGNING_SECRET", ""),
     )
     return Container(
-        WorkflowService(graph_app, settings, job_queue, run_workers, event_publisher),
+        WorkflowService(
+            graph_app,
+            settings,
+            job_queue,
+            run_workers,
+            event_publisher,
+            tracer=tracer,
+        ),
         job_queue,
         audit_log,
     )
@@ -235,6 +244,7 @@ def build_provider_router(
     settings: Settings,
     anthropic_client: anthropic.AsyncAnthropic | None = None,
     openrouter_client: Any | None = None,
+    tracer: Any | None = None,
 ) -> ProviderRouter:
     provider: LLMProvider
     providers: dict[str, LLMProvider]
@@ -271,4 +281,5 @@ def build_provider_router(
     return ProviderRouter(
         providers=providers,
         bindings=settings.tier_bindings,
+        tracer=tracer,
     )

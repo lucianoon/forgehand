@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.validation import format_validation_feedback
 from app.graph.state import WorkflowPhase, WorkflowState
+from app.infrastructure.tracing import current_trace_id
 from app.models.task import (
     AdvisorTrigger,
     AgentTask,
@@ -251,6 +252,7 @@ def build_nodes(
                 finished_at=datetime.now(timezone.utc),
                 outcome=TaskStatus.FAILED,
                 failure_reason="budget da tarefa esgotado antes da execução",
+                trace_id=current_trace_id(),
             )
             failed = task.model_copy(
                 update={
@@ -289,6 +291,7 @@ def build_nodes(
                 ),
                 tokens_used=tokens,
                 cost_usd=cost,
+                trace_id=current_trace_id(),
                 operational_summary=attempt_operational_summary(outcome.get("result")),
             )
             updated = task.model_copy(
@@ -320,6 +323,7 @@ def build_nodes(
                 finished_at=datetime.now(timezone.utc),
                 outcome=TaskStatus.FAILED,
                 failure_reason=reason,
+                trace_id=current_trace_id(),
             )
             failed = task.model_copy(
                 update={
