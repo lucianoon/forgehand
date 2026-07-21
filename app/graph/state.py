@@ -67,8 +67,14 @@ def merge_tasks_by_id(
 
 
 def keep_latest(existing: Any, incoming: Any) -> Any:
-    """Last-write-wins para campos escalares atualizados por um nó por vez."""
-    return incoming if incoming is not None else existing
+    """Last-write-wins para campos escalares atualizados por um nó por vez.
+
+    O LangGraph só invoca o reducer quando um nó ESCREVEU a chave — logo,
+    None entrante é sempre escrita intencional (ex.: authorize_retry limpa
+    human_decision após consumir a decisão). Descartar None aqui silenciaria
+    exatamente essa intenção; quem não quer alterar o campo simplesmente
+    não retorna a chave."""
+    return incoming
 
 
 # --------------------------------------------------------------------------

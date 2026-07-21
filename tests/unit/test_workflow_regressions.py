@@ -120,6 +120,43 @@ class FakeGraphApp:
         self.values_by_thread[thread_id] = {**current, **values}
 
 
+@pytest.mark.asyncio
+async def test_authorize_retry_clears_human_decision_in_state():
+    """Regressão do reducer keep_latest: escrever None é limpeza intencional.
+    A versão antiga descartava o None e human_decision ficava com o valor
+    consumido ("retry") pendurado no estado até o gate seguinte."""
+
+    class OneTaskPlanner:
+        async def create_plan(self, request, context):
+            return [
+                AgentTask(
+                    title="t",
+                    description="d",
+                    capability=Capability.BACKEND,
+                    acceptance_criteria=["ok"],
+                )
+            ]
+
+    app = build_workflow(
+        OneTaskPlanner(),
+        Registry(Executor()),
+        RejectingJudge(),
+        Memory(),
+        MemorySaver(serde=build_serde()),
+    )
+    config = {"configurable": {"thread_id": "clear-decision"}}
+    await app.ainvoke(
+        initial("clear-decision", WorkflowBudget(max_iterations=1)), config
+    )
+
+    # retry: authorize_retry consome a decisão e limpa o campo; o fluxo
+    # segue até escalar de novo e pausar no segundo gate
+    await app.ainvoke(Command(resume="retry"), config)
+
+    snapshot = await app.aget_state(config)
+    assert snapshot.values["human_decision"] is None
+
+
 def test_postgres_queue_payload_serializes_pydantic_budget():
     payload = _serialize_payload(
         {
