@@ -72,6 +72,15 @@ def handler(request):
         )
     if "files" in props:
         return tool_result({"summary": "ok", "files": [], "notes": []}, model)
+    if "diagnosis" in props:  # advisor consultado no replan (Fase 3)
+        return tool_result(
+            {
+                "diagnosis": "backend segue incompleto após as tentativas",
+                "guidance": ["Refazer o CRUD completo"],
+                "escalate_tier": False,
+            },
+            model,
+        )
     if "criteria" in props:
         title = user.split("Tarefa: ")[1].split("\n")[0]
         if title == "backend":  # rejeita sempre -> escala -> gate
@@ -197,7 +206,10 @@ async def test_postgres_restart():
     reason="defina RUN_POSTGRES_TESTS=1 com PostgreSQL local disponível",
 )
 async def test_postgres_queue_heartbeat_and_lease_ownership():
-    lease_settings = SETTINGS.model_copy(update={"workflow_queue_lease_seconds": 0.2})
+    # Lease de 1s com heartbeats por 1.5s: prova que a renovação segura o
+    # lock além do lease original, com folga para runners lentos de CI —
+    # 0.2s de lease flakava quando um único roundtrip de DB passava disso.
+    lease_settings = SETTINGS.model_copy(update={"workflow_queue_lease_seconds": 1.0})
     workflow_id = f"lease-{uuid4()}"
 
     async with workflow_queue_context(lease_settings) as queue:
@@ -211,8 +223,8 @@ async def test_postgres_queue_heartbeat_and_lease_ownership():
         delivery = await queue.dequeue("worker-a", 0.01)
         assert delivery is not None
 
-        for _ in range(3):
-            await asyncio.sleep(0.1)
+        for _ in range(6):
+            await asyncio.sleep(0.25)
             assert await queue.heartbeat(delivery) is True
 
         assert await queue.dequeue("worker-b", 0.01) is None
