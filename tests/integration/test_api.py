@@ -122,6 +122,15 @@ def handler(request):
             },
             model,
         )
+    if "diagnosis" in props:
+        return tool_result(
+            {
+                "diagnosis": "backend segue incompleto após as tentativas",
+                "guidance": ["Implementar o CRUD completo antes de retornar"],
+                "escalate_tier": False,
+            },
+            model,
+        )
     raise AssertionError(f"schema inesperado: {list(props)}")
 
 

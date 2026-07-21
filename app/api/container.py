@@ -15,6 +15,7 @@ from typing import Any
 
 import anthropic
 
+from app.agents.advisor import LLMAdvisor
 from app.agents.executor import ExecutionStrategy
 from app.agents.judge import LLMJudge
 from app.agents.planner import LLMPlanner
@@ -136,6 +137,7 @@ def build_container(
         judge=LLMJudge(router, validation_pipeline=validation_pipeline),
         memory=InMemoryProjectMemory(settings),
         checkpointer=checkpointer,
+        advisor=LLMAdvisor(router),
     )
     audit_log = audit_log or (
         JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)

@@ -203,8 +203,8 @@ Camadas:
 - `app/graph/` — estado (fonte única de verdade em `plan`, reducers para
   fan-out seguro), nós e montagem do grafo. Ondas normais de dependências
   não consomem iterações de replan;
-- `app/agents/` — planner, executores por capability, judge. Falam apenas
-  com o `ProviderRouter`;
+- `app/agents/` — planner, executores por capability, judge e advisor.
+  Falam apenas com o `ProviderRouter`;
 - `app/providers/` — porta única para LLMs: retry, circuit breaker, custo
   por tabela injetada, saída estruturada validada. Anthropic + qualquer
   endpoint OpenAI-compatible (locais inclusos);
@@ -260,7 +260,9 @@ verdade é parseado.
 
 - [x] **Fase 1** — núcleo funcional vertical (com paralelismo e gate humano antecipados)
 - [x] **Fase 2** — execução paralela (Send + reducers), timeouts, retries, budgets
-- [ ] **Fase 3** — advisor (`AdvisorTrigger` já nos modelos; falta o agente)
+- [x] **Fase 3** — advisor: consultado no replan quando os sinais objetivos do
+  `AdvisorTrigger` disparam; injeta diagnóstico/orientação na próxima tentativa
+  e é o único fluxo que escala tier (`tier_escalated`)
 - [ ] **Fase 4** — memória Neo4j (protocolo `MemoryStore` já é a fronteira; hoje
   o placeholder é `InMemoryProjectMemory`)
 - [x] **Fase 5** — ferramentas reais no judge (pipeline objetiva com

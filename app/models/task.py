@@ -123,6 +123,9 @@ class AgentTask(BaseModel):
     # Execução
     assigned_agent: str | None = None
     status: TaskStatus = TaskStatus.PENDING
+    # Concedido SOMENTE pelo advisor (regra 8) — o registry seleciona o
+    # executor um tier acima; executor nunca escala a si mesmo.
+    tier_escalated: bool = False
     attempts: list[TaskAttempt] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

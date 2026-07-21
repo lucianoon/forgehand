@@ -87,9 +87,24 @@ class CapabilityExecutorRegistry:
             )
             for p in self._profiles
         }
+        # Um tier acima do perfil — usado só quando o advisor concedeu
+        # task.tier_escalated (regra 8: modelo caro entra por escalonamento).
+        self._escalated_executors: dict[str, LLMExecutor] = {
+            p.name: LLMExecutor(
+                router,
+                agent_name=p.name,
+                tier=router.escalate(p.tier),
+                workspace_runtime=workspace_runtime,
+                max_autocorrect_rounds=max_autocorrect_rounds,
+                execution_strategies=execution_strategies,
+            )
+            for p in self._profiles
+        }
 
     def select(self, task: AgentTask) -> LLMExecutor:
         profile = self._profile_for(task)
+        if task.tier_escalated:
+            return self._escalated_executors[profile.name]
         return self._executors[profile.name]
 
     def dispatch_policy(self, task: AgentTask) -> tuple[str, int]:

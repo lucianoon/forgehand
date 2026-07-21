@@ -58,8 +58,9 @@ def build_workflow(
     judge: Any,
     memory: Any,
     checkpointer: Any,
+    advisor: Any = None,
 ) -> Any:
-    nodes = build_nodes(planner, registry, judge, memory)
+    nodes = build_nodes(planner, registry, judge, memory, advisor)
 
     graph = StateGraph(WorkflowState)
 

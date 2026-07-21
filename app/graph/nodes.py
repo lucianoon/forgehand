@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from app.agents.validation import format_validation_feedback
 from app.graph.state import WorkflowPhase, WorkflowState
 from app.models.task import (
+    AdvisorTrigger,
     AgentTask,
     EvaluationResult,
     TaskAttempt,
@@ -94,6 +95,22 @@ class JudgingOutcome(BaseModel):
     usage: UsageReport = Field(default_factory=UsageReport)
 
 
+class AdvisingOutcome(BaseModel):
+    diagnosis: str
+    guidance: list[str] = Field(default_factory=list)
+    escalate_tier: bool = False
+    usage: UsageReport = Field(default_factory=UsageReport)
+
+
+class Advisor(Protocol):
+    async def advise(
+        self,
+        trigger: AdvisorTrigger,
+        evaluations: list[EvaluationResult],
+        context: dict[str, Any],
+    ) -> AdvisingOutcome: ...
+
+
 # --------------------------------------------------------------------------
 # Fábrica de nós
 # --------------------------------------------------------------------------
@@ -104,6 +121,7 @@ def build_nodes(
     registry: ExecutorRegistry,
     judge: Judge,
     memory: MemoryStore,
+    advisor: Advisor | None = None,
 ) -> dict[str, Any]:
     def attempt_operational_summary(
         result: dict[str, Any] | None,
@@ -377,8 +395,48 @@ def build_nodes(
             "phase": WorkflowPhase.EVALUATING,
         }
 
+    def repeated_diff_detected(task: AgentTask) -> bool:
+        """Mesma solução em tentativas seguidas: diff_paths não vazios e
+        idênticos nos dois últimos operational_summary."""
+        if len(task.attempts) < 2:
+            return False
+
+        def diff_paths(attempt: TaskAttempt) -> list[Any]:
+            summary = attempt.operational_summary or {}
+            paths = summary.get("diff_paths")
+            return paths if isinstance(paths, list) else []
+
+        last = diff_paths(task.attempts[-1])
+        return bool(last) and last == diff_paths(task.attempts[-2])
+
+    async def consult_advisor(
+        task: AgentTask, state: WorkflowState
+    ) -> AdvisingOutcome | None:
+        """Consulta condicionada aos sinais OBJETIVOS do AdvisorTrigger.
+        Sem tentativa registrada não há falha a diagnosticar; falha do
+        próprio advisor nunca bloqueia o replan — ele é conselheiro."""
+        if advisor is None or task.attempt_count == 0:
+            return None
+        trigger = AdvisorTrigger(
+            task=task,
+            judge_rejections=sum(
+                1
+                for ev in state.evaluations
+                if ev.task_id == task.id and not ev.approved
+            ),
+            repeated_diff_detected=repeated_diff_detected(task),
+        )
+        if not trigger.should_consult:
+            return None
+        try:
+            return await advisor.advise(trigger, state.evaluations, state.context)
+        except Exception:  # noqa: BLE001
+            return None
+
     async def replan(state: WorkflowState) -> dict[str, Any]:
-        """Anexa required_changes do judge à descrição das tarefas rejeitadas.
+        """Anexa required_changes do judge — e, quando os sinais do
+        AdvisorTrigger disparam, diagnóstico e orientação do advisor — à
+        descrição das tarefas rejeitadas. Só o advisor escala tier (regra 8).
         Contrato: só toca tarefas redispatcháveis — COMPLETED nunca re-executa."""
         changes_by_task: dict[UUID, list[str]] = {}
         for ev in state.evaluations:
@@ -386,26 +444,39 @@ def build_nodes(
                 changes_by_task.setdefault(ev.task_id, []).extend(ev.required_changes)
 
         updates = []
+        total_tokens = 0
+        total_cost = 0.0
         for task in state.redispatchable_tasks:
             changes = changes_by_task.get(task.id)
+            advice = await consult_advisor(task, state)
+            if advice is not None:
+                total_tokens += advice.usage.tokens
+                total_cost += advice.usage.cost_usd
+            if not changes and advice is None:
+                continue
+            description = task.description
             if changes:
-                amended = (
-                    task.description
-                    + "\n\nCorreções exigidas pelo judge:\n"
-                    + "\n".join(f"- {c}" for c in changes)
+                description += "\n\nCorreções exigidas pelo judge:\n" + "\n".join(
+                    f"- {c}" for c in changes
                 )
-                updates.append(
-                    task.model_copy(
-                        update={
-                            "description": amended,
-                            "status": TaskStatus.PENDING,
-                            "updated_at": datetime.now(timezone.utc),
-                        }
-                    )
+            task_update: dict[str, Any] = {
+                "status": TaskStatus.PENDING,
+                "updated_at": datetime.now(timezone.utc),
+            }
+            if advice is not None:
+                description += (
+                    f"\n\nDiagnóstico do advisor:\n{advice.diagnosis}\n"
+                    "\nOrientação do advisor para esta tentativa:\n"
+                    + "\n".join(f"- {g}" for g in advice.guidance)
                 )
+                if advice.escalate_tier:
+                    task_update["tier_escalated"] = True
+            task_update["description"] = description
+            updates.append(task.model_copy(update=task_update))
         return {
             "plan": updates,
             "iteration": state.iteration + 1,
+            "usage": {"tokens": total_tokens, "cost_usd": total_cost},
             "phase": WorkflowPhase.EXECUTING,
         }
 
