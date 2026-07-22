@@ -86,7 +86,9 @@ def build_workflow(
         ["execute_task", "evaluate_results", "human_gate"],
     )
 
-    # Join: LangGraph sincroniza todos os Sends antes deste passo
+    # Join: cada branch já executou E julgou sua tarefa (julgamento
+    # incremental); o LangGraph sincroniza todos os Sends antes deste passo
+    # e o judge_router decide sobre o estado consolidado.
     graph.add_edge("execute_task", "evaluate_results")
 
     graph.add_conditional_edges(

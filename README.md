@@ -209,9 +209,10 @@ POST /workflows
       │
 worker dedicado → load_context → create_plan → [route_to_execution]
                                     │ Send × N (paralelo, só ready_tasks)
-                              execute_task (timeout + budget por tarefa)
+                              execute_task (timeout + budget por tarefa,
+                                    │        judge incremental no branch)
                                     │ join
-                            evaluate_results (judge: LLM + veto objetivo)
+                            evaluate_results (consolidação + judge_router)
                           ┌─────────┼──────────┐
                        replan   synthesize  human_gate (interrupt)
                           │         │       accept_partial | retry | abort

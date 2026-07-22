@@ -483,6 +483,61 @@ async def test_judge_failure_escalates_task_instead_of_leaving_it_running():
 
 
 @pytest.mark.asyncio
+async def test_judge_runs_incrementally_without_waiting_for_slow_sibling():
+    """Julgamento incremental: cada branch julga a própria tarefa assim que
+    ela termina. A tarefa rápida deve receber veredito ANTES de a tarefa
+    lenta terminar de executar — no fluxo antigo (judge só após o join) o
+    veredito da rápida esperava a lenta."""
+    events: list[str] = []
+
+    class TwoTaskPlanner:
+        async def create_plan(self, request, context):
+            return [
+                AgentTask(
+                    title="rapida",
+                    description="ok",
+                    capability=Capability.BACKEND,
+                    acceptance_criteria=["ok"],
+                ),
+                AgentTask(
+                    title="lenta",
+                    description="ok",
+                    capability=Capability.BACKEND,
+                    acceptance_criteria=["ok"],
+                ),
+            ]
+
+    class PacedExecutor(Executor):
+        async def execute(self, task, context):
+            if task.title == "lenta":
+                await asyncio.sleep(0.05)
+            events.append(f"exec:{task.title}")
+            return await super().execute(task, context)
+
+    class TrackingJudge(ApprovingJudge):
+        async def evaluate(self, task, context):
+            events.append(f"judge:{task.title}")
+            return await super().evaluate(task, context)
+
+    app = build_workflow(
+        TwoTaskPlanner(),
+        Registry(PacedExecutor()),
+        TrackingJudge(),
+        Memory(),
+        MemorySaver(serde=build_serde()),
+    )
+    output = await app.ainvoke(
+        initial("incremental-judge"),
+        {"configurable": {"thread_id": "incremental-judge"}},
+    )
+
+    assert output["phase"].value == "completed"
+    assert all(task.status == TaskStatus.COMPLETED for task in output["plan"])
+    assert events.index("judge:rapida") < events.index("exec:lenta")
+    assert len(output["evaluations"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_start_enqueues_and_exposes_queued_state_before_worker_finishes():
     app = FakeGraphApp(delay=0.05)
     queue = InMemoryWorkflowQueue()

@@ -7,8 +7,10 @@ Decisões estruturais:
    e o acoplamento a fornecedor fica confinado em app/providers (regra 1).
 
 2. FAN-OUT VIA Send(): o roteador `route_to_execution` emite um Send por
-   tarefa em state.ready_tasks. Cada worker retorna APENAS as tarefas que
-   tocou; o reducer merge_tasks_by_id consolida sem colisão.
+   tarefa em state.ready_tasks. Cada worker executa E JULGA a própria
+   tarefa (julgamento incremental — a rápida não espera a lenta) e retorna
+   APENAS as tarefas que tocou; o reducer merge_tasks_by_id consolida sem
+   colisão. O veredito agregado continua no join (judge_router).
 
 3. TIMEOUT NO WORKER: asyncio.wait_for com task.timeout_seconds (regra 4).
    Estouro vira FAILED/ESCALATED — nunca exceção não tratada no grafo.
@@ -237,6 +239,50 @@ def build_nodes(
             return "human_gate"
         return sends
 
+    async def judge_task(
+        task: AgentTask, context: dict[str, Any]
+    ) -> tuple[AgentTask, EvaluationResult | None, UsageReport]:
+        """Julga uma tarefa executada e devolve a cópia com status final.
+
+        Falha do judge escala a tarefa (nunca fica presa em RUNNING);
+        sinais objetivos têm veto (validator do EvaluationResult)."""
+        try:
+            raw = await judge.evaluate(task, context)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"judge {type(exc).__name__}: {exc}"
+            attempts = list(task.attempts)
+            if attempts:
+                attempts[-1] = attempts[-1].model_copy(
+                    update={
+                        "outcome": TaskStatus.FAILED,
+                        "failure_reason": reason,
+                        "finished_at": datetime.now(timezone.utc),
+                    }
+                )
+            escalated = task.model_copy(
+                update={
+                    "status": TaskStatus.ESCALATED,
+                    "attempts": attempts,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            return escalated, None, UsageReport()
+        if isinstance(raw, JudgingOutcome):
+            evaluation = raw.evaluation
+            judge_usage = raw.usage
+        else:
+            evaluation = raw
+            judge_usage = UsageReport()
+        new_status = (
+            TaskStatus.COMPLETED
+            if evaluation.approved
+            else task.next_status_after_failure()
+        )
+        judged = task.model_copy(
+            update={"status": new_status, "updated_at": datetime.now(timezone.utc)}
+        )
+        return judged, evaluation, judge_usage
+
     async def execute_task(payload: ExecutionPayload) -> dict[str, Any]:
         task = payload.task
         executor = registry.select(task)
@@ -307,7 +353,27 @@ def build_nodes(
                 updated = updated.model_copy(
                     update={"status": updated.next_status_after_failure()}
                 )
-            return {"plan": [updated], "usage": {"tokens": tokens, "cost_usd": cost}}
+                return {
+                    "plan": [updated],
+                    "usage": {"tokens": tokens, "cost_usd": cost},
+                }
+            # Julgamento incremental: a tarefa é julgada no próprio branch,
+            # em paralelo com as demais — a rápida não espera a lenta para
+            # receber veredito. O judge_router segue decidindo no join,
+            # sobre o estado consolidado.
+            judged, evaluation, judge_usage = await judge_task(
+                updated, payload.context
+            )
+            update: dict[str, Any] = {
+                "plan": [judged],
+                "usage": {
+                    "tokens": tokens + judge_usage.tokens,
+                    "cost_usd": cost + judge_usage.cost_usd,
+                },
+            }
+            if evaluation is not None:
+                update["evaluations"] = [evaluation]
+            return update
 
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
             reason = (
@@ -337,8 +403,10 @@ def build_nodes(
             return {"plan": [failed]}
 
     async def evaluate_results(state: WorkflowState) -> dict[str, Any]:
-        """Julga tarefas em RUNNING. Sinais objetivos têm veto (validator
-        do EvaluationResult garante isso no contrato)."""
+        """Ponto de consolidação no join. O julgamento acontece de forma
+        incremental dentro do branch de execute_task; aqui só se julgam
+        tarefas que cheguem ainda em RUNNING — fallback para checkpoints
+        criados antes do julgamento incremental."""
         updates: list[AgentTask] = []
         evaluations: list[EvaluationResult] = []
         total_tokens = 0
@@ -347,50 +415,12 @@ def build_nodes(
         for task in state.plan:
             if task.status != TaskStatus.RUNNING:
                 continue
-            try:
-                raw = await judge.evaluate(task, state.context)
-            except Exception as exc:  # noqa: BLE001
-                reason = f"judge {type(exc).__name__}: {exc}"
-                attempts = list(task.attempts)
-                if attempts:
-                    attempts[-1] = attempts[-1].model_copy(
-                        update={
-                            "outcome": TaskStatus.FAILED,
-                            "failure_reason": reason,
-                            "finished_at": datetime.now(timezone.utc),
-                        }
-                    )
-                updates.append(
-                    task.model_copy(
-                        update={
-                            "status": TaskStatus.ESCALATED,
-                            "attempts": attempts,
-                            "updated_at": datetime.now(timezone.utc),
-                        }
-                    )
-                )
-                continue
-            if isinstance(raw, JudgingOutcome):
-                evaluation = raw.evaluation
-                judge_usage = raw.usage
-            else:
-                evaluation = raw
-                judge_usage = UsageReport()
-            evaluations.append(evaluation)
+            judged, evaluation, judge_usage = await judge_task(task, state.context)
+            updates.append(judged)
+            if evaluation is not None:
+                evaluations.append(evaluation)
             total_tokens += judge_usage.tokens
             total_cost += judge_usage.cost_usd
-            if evaluation.approved:
-                new_status = TaskStatus.COMPLETED
-            else:
-                new_status = task.next_status_after_failure()
-            updates.append(
-                task.model_copy(
-                    update={
-                        "status": new_status,
-                        "updated_at": datetime.now(timezone.utc),
-                    }
-                )
-            )
 
         return {
             "plan": updates,
