@@ -31,7 +31,7 @@ from app.graph.state import WorkflowState
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.settings import Settings
 
-logger = logging.getLogger("agent_forge")
+logger = logging.getLogger("forgehand")
 
 _MAX_REQUEST_CHARS = 200
 _MAX_OUTPUT_CHARS = 500

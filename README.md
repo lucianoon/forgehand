@@ -182,7 +182,7 @@ curl -X POST localhost:8000/workflows \
   -H 'X-API-Key: dev-key' \
   -H 'Content-Type: application/json' \
   -d '{
-    "project_id": "agent-forge-demo",
+    "project_id": "forgehand-demo",
     "request": "Analise este projeto e entregue um resumo curto com 3 próximos passos técnicos prioritários."
   }'
 

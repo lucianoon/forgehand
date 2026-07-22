@@ -20,7 +20,7 @@ from app.models.task import AdvisorTrigger, EvaluationResult, TaskAttempt
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
-SYSTEM_PROMPT = """Você é o advisor do Agent Forge — um consultor sênior \
+SYSTEM_PROMPT = """Você é o advisor do Forgehand — um consultor sênior \
 chamado quando uma tarefa está falhando repetidamente.
 
 Analise o histórico de tentativas, as reprovações do judge e o feedback

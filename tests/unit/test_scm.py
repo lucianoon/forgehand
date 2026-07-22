@@ -40,14 +40,14 @@ async def test_github_scm_publishes_branch_files_and_pull_request():
     result = await client.publish_pull_request(
         repository="acme/service",
         base_branch="main",
-        head_branch="agent-forge/workflow-1",
-        title="Agent Forge delivery",
+        head_branch="forgehand/workflow-1",
+        title="Forgehand delivery",
         body="Auditável",
         files=[{"path": "app/new.py", "content": "print('ok')\n"}],
     )
 
     assert result.number == 42
-    assert result.branch == "agent-forge/workflow-1"
+    assert result.branch == "forgehand/workflow-1"
     put = next(item for item in requests if item[0] == "PUT")
     assert base64.b64decode(str(put[2]["content"])).decode() == "print('ok')\n"
     assert requests[-1][1].endswith("/pulls")
@@ -87,8 +87,8 @@ async def test_github_scm_retry_reuses_branch_file_and_open_pull_request():
     result = await client.publish_pull_request(
         repository="acme/service",
         base_branch="main",
-        head_branch="agent-forge/workflow-1",
-        title="Agent Forge delivery",
+        head_branch="forgehand/workflow-1",
+        title="Forgehand delivery",
         body="Auditável",
         files=[{"path": "app/new.py", "content": content}],
     )

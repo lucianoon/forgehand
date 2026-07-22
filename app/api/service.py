@@ -23,7 +23,7 @@ from app.infrastructure.settings import Settings
 from app.infrastructure.workflow_queue import WorkflowAccessContext
 from app.models.task import TaskStatus
 
-logger = logging.getLogger("agent_forge")
+logger = logging.getLogger("forgehand")
 
 
 class WorkflowNotFound(LookupError):
@@ -156,9 +156,9 @@ class WorkflowService:
             self._tracer.span(
                 "workflow",
                 {
-                    "agent_forge.workflow_id": job.workflow_id,
-                    "agent_forge.project_id": getattr(job, "project_id", ""),
-                    "agent_forge.job_kind": job.kind,
+                    "forgehand.workflow_id": job.workflow_id,
+                    "forgehand.project_id": getattr(job, "project_id", ""),
+                    "forgehand.job_kind": job.kind,
                 },
             )
             if self._tracer is not None

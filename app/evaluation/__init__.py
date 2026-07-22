@@ -1,1 +1,1 @@
-"""Avaliações reproduzíveis do Agent Forge."""
+"""Avaliações reproduzíveis do Forgehand."""

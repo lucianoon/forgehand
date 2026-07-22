@@ -200,7 +200,7 @@ class FakeMemory:
                         "path": "README.md",
                         "line_start": 1,
                         "line_end": 3,
-                        "excerpt": "# Agent Forge",
+                        "excerpt": "# Forgehand",
                     },
                     {
                         "id": "E3",

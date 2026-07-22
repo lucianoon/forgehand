@@ -13,6 +13,6 @@ def test_prometheus_metrics_use_route_templates_and_runtime_gauges():
     )
 
     assert 'route="/workflows/{workflow_id}"' in rendered
-    assert "agent_forge_http_requests_total" in rendered
-    assert "agent_forge_queue_queued 3" in rendered
-    assert "agent_forge_workers_busy 1" in rendered
+    assert "forgehand_http_requests_total" in rendered
+    assert "forgehand_queue_queued 3" in rendered
+    assert "forgehand_workers_busy 1" in rendered

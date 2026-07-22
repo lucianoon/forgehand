@@ -1,4 +1,4 @@
-"""Nós do workflow Agent Forge.
+"""Nós do workflow Forgehand.
 
 Decisões estruturais:
 

@@ -80,7 +80,7 @@ def test_command_policy_blocks_unknown_executables():
 
 
 def test_docker_sandbox_is_hardened_and_networkless(tmp_path: Path):
-    runner = DockerSandboxCommandRunner(image="agent-forge-sandbox:test")
+    runner = DockerSandboxCommandRunner(image="forgehand-sandbox:test")
     argv = runner.build_argv("pytest -q", tmp_path)
 
     assert argv[:3] == ["docker", "run", "--rm"]

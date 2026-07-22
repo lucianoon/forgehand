@@ -28,7 +28,7 @@ from app.graph.nodes import PlanningOutcome, UsageReport
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
-SYSTEM_PROMPT = """Você é o planner do Agent Forge, um sistema multiagente \
+SYSTEM_PROMPT = """Você é o planner do Forgehand, um sistema multiagente \
 de desenvolvimento de software.
 
 Decomponha a requisição em tarefas atômicas e executáveis. Para cada tarefa:
@@ -95,7 +95,7 @@ def _task_stable_id(task: PlannedTask) -> UUID:
         ensure_ascii=True,
         sort_keys=True,
     )
-    return uuid5(NAMESPACE_URL, f"agent-forge-plan:{fingerprint}")
+    return uuid5(NAMESPACE_URL, f"forgehand-plan:{fingerprint}")
 
 
 def _to_agent_tasks(plan: PlanOutput) -> list[AgentTask]:

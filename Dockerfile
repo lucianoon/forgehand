@@ -28,7 +28,7 @@ RUN useradd --create-home --shell /usr/sbin/nologin forge
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-WORKDIR /srv/agent-forge
+WORKDIR /srv/forgehand
 COPY app ./app
 
 USER forge

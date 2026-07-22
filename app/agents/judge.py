@@ -31,7 +31,7 @@ from app.graph.nodes import JudgingOutcome, UsageReport
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
-SYSTEM_PROMPT = """Você é o judge do Agent Forge. Avalie o resultado de uma \
+SYSTEM_PROMPT = """Você é o judge do Forgehand. Avalie o resultado de uma \
 tarefa contra os critérios de aceitação.
 
 Regras:

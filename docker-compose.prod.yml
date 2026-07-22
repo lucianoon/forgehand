@@ -17,9 +17,9 @@ services:
     environment:
       ENVIRONMENT: prod
       AUDIT_LOG_BACKEND: jsonl
-      AUDIT_LOG_PATH: /srv/agent-forge/data/audit.jsonl
+      AUDIT_LOG_PATH: /srv/forgehand/data/audit.jsonl
     volumes:
-      - auditdata:/srv/agent-forge/data
+      - auditdata:/srv/forgehand/data
     depends_on:
       audit-init:
         condition: service_completed_successfully

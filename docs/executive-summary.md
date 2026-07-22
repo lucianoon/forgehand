@@ -1,4 +1,4 @@
-# Resumo executivo do Agent Forge
+# Resumo executivo do Forgehand
 
 ## Visão executiva da arquitetura atual
 

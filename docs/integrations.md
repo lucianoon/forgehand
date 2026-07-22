@@ -24,7 +24,7 @@ Para executar validadores em container:
 
 ```bash
 EXECUTOR_COMMAND_BACKEND=docker
-EXECUTOR_SANDBOX_IMAGE=agent-forge-sandbox:latest
+EXECUTOR_SANDBOX_IMAGE=forgehand-sandbox:latest
 EXECUTOR_SANDBOX_NETWORK_ENABLED=false
 ```
 
@@ -35,7 +35,7 @@ gravável montado.
 ## Webhooks assinados
 
 Configure `WEBHOOK_URLS_JSON` e `WEBHOOK_SIGNING_SECRET`. Eventos carregam
-`X-Agent-Forge-Event` e `X-Agent-Forge-Signature-256`. O receptor deve calcular
+`X-Forgehand-Event` e `X-Forgehand-Signature-256`. O receptor deve calcular
 HMAC-SHA256 sobre o corpo bruto e comparar em tempo constante.
 
 ## Benchmark
@@ -43,7 +43,7 @@ HMAC-SHA256 sobre o corpo bruto e comparar em tempo constante.
 Com a API em execução:
 
 ```bash
-export AGENT_FORGE_API_KEY=...
+export FORGEHAND_API_KEY=...
 python -m app.evaluation.benchmark \
   --cases benchmarks/cases.json \
   --concurrency 2 \

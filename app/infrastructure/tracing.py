@@ -91,7 +91,7 @@ class OtelWorkflowTracer(WorkflowTracer):
             span_processor = BatchSpanProcessor(OTLPSpanExporter())
         provider.add_span_processor(span_processor)
         self._provider = provider
-        self._tracer = provider.get_tracer("agent-forge")
+        self._tracer = provider.get_tracer("forgehand")
 
     @contextmanager
     def _span(
@@ -130,8 +130,8 @@ class OtelWorkflowTracer(WorkflowTracer):
                 "gen_ai.request.model": model,
                 "gen_ai.usage.input_tokens": input_tokens,
                 "gen_ai.usage.output_tokens": output_tokens,
-                "agent_forge.tier": tier,
-                "agent_forge.cost_usd": cost_usd,
+                "forgehand.tier": tier,
+                "forgehand.cost_usd": cost_usd,
             },
         )
         if error is not None:
