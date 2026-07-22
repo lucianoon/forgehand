@@ -143,7 +143,7 @@ $("workflow-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("form-error").textContent = "";
   $("submit-button").disabled = true;
-  sessionStorage.setItem("agent-forge-api-key", $("api-key").value);
+  sessionStorage.setItem("forgehand-api-key", $("api-key").value);
   const criteria = $("criteria").value.split("\n").map((item) => item.trim()).filter(Boolean);
   const body = {
     project_id: $("project-id").value.trim(),
@@ -214,7 +214,7 @@ $("publish-pr").addEventListener("click", async () => {
   } finally { $("publish-pr").disabled = false; }
 });
 
-$("api-key").value = sessionStorage.getItem("agent-forge-api-key") || "";
+$("api-key").value = sessionStorage.getItem("forgehand-api-key") || "";
 $('refresh-history').addEventListener('click', refreshHistory);
 $('api-key').addEventListener('change', refreshHistory);
 $('project-id').addEventListener('change', refreshHistory);

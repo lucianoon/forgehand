@@ -230,7 +230,7 @@ async def run_benchmark_in_process(
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
-            base_url="http://agent-forge",
+            base_url="http://forgehand",
             timeout=30,
         ) as client:
             return await _run_cases(client, cases, api_key, concurrency, policy)
@@ -247,7 +247,7 @@ def _load_cases(cases_path: Path, case_ids: set[str] | None) -> list[BenchmarkCa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark Agent Forge")
+    parser = argparse.ArgumentParser(description="Benchmark Forgehand")
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--in-process", action="store_true")
     parser.add_argument("--cases", type=Path, default=Path("benchmarks/cases.json"))
@@ -260,9 +260,9 @@ def main() -> None:
     parser.add_argument("--max-p95-seconds", type=float, default=300)
     parser.add_argument("--fail-on-gate", action="store_true")
     args = parser.parse_args()
-    api_key = os.getenv("AGENT_FORGE_API_KEY", "")
+    api_key = os.getenv("FORGEHAND_API_KEY", "")
     if not api_key:
-        raise SystemExit("Defina AGENT_FORGE_API_KEY.")
+        raise SystemExit("Defina FORGEHAND_API_KEY.")
     if args.concurrency < 1:
         raise SystemExit("--concurrency deve ser >= 1.")
     policy = BenchmarkPolicy(

@@ -7,7 +7,7 @@ def test_repository_grounding_collector_returns_real_file_evidence(tmp_path: Pat
     (tmp_path / "app").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "README.md").write_text(
-        "# Agent Forge\n\nFastAPI app\n", encoding="utf-8"
+        "# Forgehand\n\nFastAPI app\n", encoding="utf-8"
     )
     (tmp_path / "app" / "main.py").write_text(
         "from fastapi import FastAPI\n\napp = FastAPI()\n",

@@ -366,13 +366,13 @@ async def publish_pull_request(
             detail="GITHUB_TOKEN não configurado.",
         )
     client_scm = GitHubSCMClient(token)
-    head = body.head_branch or f"agent-forge/{workflow_id[:12]}"
+    head = body.head_branch or f"forgehand/{workflow_id[:12]}"
     try:
         pull = await client_scm.publish_pull_request(
             repository=body.repository,
             base_branch=body.base_branch,
             head_branch=head,
-            title=body.title or f"Agent Forge: {details['project_id']}",
+            title=body.title or f"Forgehand: {details['project_id']}",
             body=f"Entrega auditável do workflow `{workflow_id}`.",
             files=files,
         )

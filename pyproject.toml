@@ -1,5 +1,5 @@
 [project]
-name = "agent-forge"
+name = "forgehand"
 version = "0.1.0"
 description = "Sistema multiagente para desenvolvimento de software"
 requires-python = ">=3.12"

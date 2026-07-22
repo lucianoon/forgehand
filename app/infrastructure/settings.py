@@ -115,7 +115,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    app_name: str = "agent-forge"
+    app_name: str = "forgehand"
     environment: Literal["dev", "staging", "prod"] = "dev"
     llm_provider_backend: Literal["anthropic", "openrouter"] = "anthropic"
     api_keys_json: str = json.dumps(_DEFAULT_API_KEYS)
@@ -126,11 +126,11 @@ class Settings(BaseSettings):
     openrouter_require_parameters: bool = True
     openrouter_response_healing: bool = True
     openrouter_http_referer: str | None = None
-    openrouter_app_name: str = "agent-forge"
+    openrouter_app_name: str = "forgehand"
 
     # Checkpointer: memory para dev/testes, postgres para qualquer coisa séria
     checkpointer_backend: Literal["memory", "postgres"] = "memory"
-    database_url: str = "postgresql://forge:forge@localhost:5432/agent_forge"
+    database_url: str = "postgresql://forge:forge@localhost:5432/forgehand"
 
     # Memória de projeto (Fase 4): memory para dev/testes, neo4j para
     # histórico que sobrevive a restart. NEO4J_PASSWORD é lido direto do
@@ -146,7 +146,7 @@ class Settings(BaseSettings):
     # (OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS) — lidas pelo exporter, não por
     # Settings: settings são logáveis, segredos não.
     tracing_backend: Literal["none", "otlp"] = "none"
-    tracing_service_name: str = "agent-forge"
+    tracing_service_name: str = "forgehand"
 
     # ANTHROPIC_API_KEY é lida pelo SDK direto do ambiente — não passa por aqui
     # de propósito: settings são logáveis, segredos não.

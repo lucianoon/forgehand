@@ -37,8 +37,8 @@ class WebhookDispatcher:
                     content=body,
                     headers={
                         "Content-Type": "application/json",
-                        "X-Agent-Forge-Event": event,
-                        "X-Agent-Forge-Signature-256": f"sha256={signature}",
+                        "X-Forgehand-Event": event,
+                        "X-Forgehand-Signature-256": f"sha256={signature}",
                     },
                 )
                 for url in self._urls

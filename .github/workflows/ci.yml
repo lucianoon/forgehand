@@ -17,11 +17,11 @@ jobs:
         env:
           POSTGRES_USER: forge
           POSTGRES_PASSWORD: forge
-          POSTGRES_DB: agent_forge
+          POSTGRES_DB: forgehand
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U forge -d agent_forge"
+          --health-cmd "pg_isready -U forge -d forgehand"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -57,4 +57,4 @@ jobs:
           RUN_NEO4J_TESTS: "1"
           NEO4J_URI: bolt://localhost:7687
           NEO4J_PASSWORD: ci-password
-      - run: docker build --tag agent-forge:ci .
+      - run: docker build --tag forgehand:ci .

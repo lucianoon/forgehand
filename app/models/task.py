@@ -1,4 +1,4 @@
-"""Contrato de tarefas do Agent Forge.
+"""Contrato de tarefas do Forgehand.
 
 Resolve os pontos levantados na revisão arquitetural:
 - timeout obrigatório por tarefa (regra 4);

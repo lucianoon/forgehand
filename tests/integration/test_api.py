@@ -256,7 +256,7 @@ async def test_api_e2e():
         assert history.json()[0]["workflow_id"] == wid
         prometheus = await client.get("/metrics/prometheus")
         assert prometheus.status_code == 200
-        assert "agent_forge_queue_queued" in prometheus.text
+        assert "forgehand_queue_queued" in prometheus.text
         print("1. auth + happy path OK — 401 sem key, 202 com key válida")
 
         async with httpx.AsyncClient(

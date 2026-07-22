@@ -114,7 +114,7 @@ SETTINGS = Settings(
     executor_apply_files_enabled=False,
     database_url=os.getenv(
         "TEST_DATABASE_URL",
-        "postgresql://forge:forge@localhost:5432/agent_forge",
+        "postgresql://forge:forge@localhost:5432/forgehand",
     ),
     api_keys_json=json.dumps(
         {"key-demo": {"client_id": "client-demo", "projects": ["demo"]}}

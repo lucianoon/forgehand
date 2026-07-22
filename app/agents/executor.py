@@ -17,7 +17,7 @@ from app.models.task import AgentTask, Capability
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
-SYSTEM_PROMPT = """Você é um executor especializado do Agent Forge \
+SYSTEM_PROMPT = """Você é um executor especializado do Forgehand \
 ({capability}).
 
 Execute EXATAMENTE a tarefa descrita. Regras:

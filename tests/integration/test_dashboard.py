@@ -19,7 +19,7 @@ async def test_dashboard_and_assets_are_served():
     assert dashboard.status_code == 200
     assert dashboard.headers["X-Request-ID"]
     assert dashboard.headers["X-Content-Type-Options"] == "nosniff"
-    assert "Agent Forge · Mission Control" in dashboard.text
+    assert "Forgehand · Mission Control" in dashboard.text
     assert 'id="workflow-form"' in dashboard.text
     assert 'id="workflow-history"' in dashboard.text
     assert 'id="cancel-workflow"' in dashboard.text

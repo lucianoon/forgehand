@@ -76,7 +76,7 @@ class GitHubSCMClient:
             if existing is not None and existing[1] == content:
                 continue
             payload: dict[str, Any] = {
-                "message": f"agent-forge: update {path}",
+                "message": f"forgehand: update {path}",
                 "content": base64.b64encode(content.encode()).decode(),
                 "branch": head_branch,
             }

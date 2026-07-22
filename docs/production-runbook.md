@@ -28,7 +28,7 @@ quantidade esperada de workers está ativa.
 
 ## Alertas mínimos
 
-- `agent_forge_queue_failed > 0` por cinco minutos;
+- `forgehand_queue_failed > 0` por cinco minutos;
 - fila crescendo sem workers ocupados;
 - `/readyz` diferente de 200;
 - p95 HTTP acima do SLO acordado;
@@ -52,11 +52,11 @@ O target `test` da imagem contém os extras de desenvolvimento sem adicioná-los
 à imagem final:
 
 ```bash
-docker build --target test -t agent-forge:test .
+docker build --target test -t forgehand:test .
 docker run --rm \
   -e RUN_POSTGRES_TESTS=1 \
-  -e TEST_DATABASE_URL=postgresql://forge:forge@host.docker.internal:5432/agent_forge_test \
-  agent-forge:test pytest tests/integration/test_postgres_restart.py -q
+  -e TEST_DATABASE_URL=postgresql://forge:forge@host.docker.internal:5432/forgehand_test \
+  forgehand:test pytest tests/integration/test_postgres_restart.py -q
 ```
 
 Use um banco separado: workers de produção não devem consumir jobs da suíte.

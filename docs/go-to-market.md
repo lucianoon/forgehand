@@ -1,8 +1,8 @@
-# Agent Forge — pacote de entrada no mercado
+# Forgehand — pacote de entrada no mercado
 
 ## Posicionamento
 
-**Execução governada e auditável de mudanças de software.** O Agent Forge
+**Execução governada e auditável de mudanças de software.** O Forgehand
 transforma uma solicitação em plano, execução isolada, validação objetiva,
 decisão humana e pull request, preservando evidências, custo e histórico.
 
@@ -28,7 +28,7 @@ em repositórios corporativos.
 Antes do cliente, execute o piloto técnico interno reproduzível:
 
 ```bash
-AGENT_FORGE_API_KEY=dev-key python -m app.evaluation.pilot \
+FORGEHAND_API_KEY=dev-key python -m app.evaluation.pilot \
   --base-url http://localhost:8001 \
   --rounds 3 \
   --output reports/pilot-internal.json \

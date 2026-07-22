@@ -121,11 +121,11 @@ async def test_router_without_tracer_keeps_working():
 async def test_otel_tracer_nests_generation_under_workflow_span():
     exporter = InMemorySpanExporter()
     tracer = OtelWorkflowTracer(
-        "agent-forge-test", span_processor=SimpleSpanProcessor(exporter)
+        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
     )
 
     assert current_trace_id() is None
-    with tracer.span("workflow", {"agent_forge.workflow_id": "wf-1"}):
+    with tracer.span("workflow", {"forgehand.workflow_id": "wf-1"}):
         inner_trace_id = current_trace_id()
         assert inner_trace_id is not None
         tracer.record_generation(
@@ -147,14 +147,14 @@ async def test_otel_tracer_nests_generation_under_workflow_span():
     assert format(generation.context.trace_id, "032x") == inner_trace_id
     assert generation.parent.span_id == workflow.context.span_id
     assert generation.attributes["gen_ai.usage.input_tokens"] == 10
-    assert generation.attributes["agent_forge.cost_usd"] == pytest.approx(0.003)
+    assert generation.attributes["forgehand.cost_usd"] == pytest.approx(0.003)
 
 
 @pytest.mark.asyncio
 async def test_otel_tracer_marks_errors():
     exporter = InMemorySpanExporter()
     tracer = OtelWorkflowTracer(
-        "agent-forge-test", span_processor=SimpleSpanProcessor(exporter)
+        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
     )
     tracer.record_generation(
         provider="fake",
@@ -217,7 +217,7 @@ async def test_trace_id_reaches_task_attempts_through_parallel_fanout():
 
     exporter = InMemorySpanExporter()
     tracer = OtelWorkflowTracer(
-        "agent-forge-test", span_processor=SimpleSpanProcessor(exporter)
+        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
     )
     app = build_workflow(
         TwoTaskPlanner(),

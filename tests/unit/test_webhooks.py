@@ -18,7 +18,7 @@ async def test_webhook_dispatcher_signs_payload():
         return httpx.Response(202)
 
     dispatcher = WebhookDispatcher(
-        ["https://hooks.test/agent-forge"],
+        ["https://hooks.test/forgehand"],
         "secret",
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
@@ -26,5 +26,5 @@ async def test_webhook_dispatcher_signs_payload():
 
     request = captured[0]
     expected = hmac.new(b"secret", request.content, hashlib.sha256).hexdigest()
-    assert request.headers["X-Agent-Forge-Signature-256"] == f"sha256={expected}"
-    assert request.headers["X-Agent-Forge-Event"] == "workflow.processed"
+    assert request.headers["X-Forgehand-Signature-256"] == f"sha256={expected}"
+    assert request.headers["X-Forgehand-Event"] == "workflow.processed"

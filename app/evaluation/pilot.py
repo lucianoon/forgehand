@@ -60,7 +60,7 @@ async def run_pilot(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Piloto técnico Agent Forge")
+    parser = argparse.ArgumentParser(description="Piloto técnico Forgehand")
     parser.add_argument("--base-url", default="http://localhost:8001")
     parser.add_argument("--cases", type=Path, default=Path("benchmarks/cases.json"))
     parser.add_argument("--rounds", type=int, default=3)
@@ -76,9 +76,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.rounds < 1 or args.concurrency < 1:
         raise SystemExit("--rounds e --concurrency devem ser >= 1.")
-    api_key = os.getenv("AGENT_FORGE_API_KEY", "")
+    api_key = os.getenv("FORGEHAND_API_KEY", "")
     if not api_key:
-        raise SystemExit("Defina AGENT_FORGE_API_KEY.")
+        raise SystemExit("Defina FORGEHAND_API_KEY.")
     report = asyncio.run(
         run_pilot(
             args.base_url,
