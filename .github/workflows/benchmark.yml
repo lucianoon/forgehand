@@ -1,0 +1,87 @@
+name: Benchmark
+
+permissions:
+  contents: read
+
+# Somente manual: o benchmark chama LLMs reais via OpenRouter e custa dinheiro.
+# Nunca adicione gatilhos de push/pull_request aqui.
+on:
+  workflow_dispatch:
+    inputs:
+      case_ids:
+        description: >-
+          IDs de casos separados por vírgula (ex.: architecture-review,security-review).
+          Vazio executa todos os casos de benchmarks/cases.json.
+        required: false
+        default: ""
+        type: string
+      concurrency:
+        description: "Workflows de benchmark executados em paralelo"
+        required: false
+        default: "2"
+        type: string
+      fail_on_gate:
+        description: "Falhar o job se o quality gate reprovar"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Verify OPENROUTER_API_KEY secret
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::Secret OPENROUTER_API_KEY ausente. Cadastre-o em Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - run: uv sync --extra dev --extra postgres --extra neo4j --extra otel --locked
+
+      - name: Run benchmark (in-process)
+        env:
+          LLM_PROVIDER_BACKEND: openrouter
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          API_KEYS_JSON: '{"ci-benchmark":{"client_id":"ci","projects":["*"],"role":"admin"}}'
+          FORGEHAND_API_KEY: ci-benchmark
+          CASE_IDS: ${{ inputs.case_ids }}
+          BENCH_CONCURRENCY: ${{ inputs.concurrency }}
+          FAIL_ON_GATE: ${{ inputs.fail_on_gate }}
+        run: |
+          args=()
+          if [ -n "$CASE_IDS" ]; then
+            IFS=',' read -ra ids <<< "$CASE_IDS"
+            for id in "${ids[@]}"; do
+              trimmed="$(echo "$id" | xargs)"
+              [ -n "$trimmed" ] && args+=(--case-id "$trimmed")
+            done
+          fi
+          if [ "$FAIL_ON_GATE" = "true" ]; then
+            args+=(--fail-on-gate)
+          fi
+          uv run python -m app.evaluation.benchmark \
+            --in-process \
+            --cases benchmarks/cases.json \
+            --concurrency "$BENCH_CONCURRENCY" \
+            --output reports/benchmark.json \
+            "${args[@]}"
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports
+          path: reports/
+          retention-days: 90
+          if-no-files-found: warn
