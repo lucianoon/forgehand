@@ -60,7 +60,8 @@ O produto está liberado para um piloto controlado com design partner. A próxim
 evidência necessária é comercial: ROI observado, satisfação do revisor humano,
 taxa de aceitação das entregas e ausência de incidente em um repositório real.
 
-Artefatos brutos:
+Artefatos brutos (gerados localmente em `reports/`, fora do versionamento —
+reproduzíveis com os comandos de benchmark em `docs/integrations.md`):
 
 - `reports/pilot-internal.json`
 - `reports/pilot-architecture-confirmation.json`
