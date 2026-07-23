@@ -61,7 +61,9 @@ evidência necessária é comercial: ROI observado, satisfação do revisor huma
 taxa de aceitação das entregas e ausência de incidente em um repositório real.
 
 Artefatos brutos (gerados localmente em `reports/`, fora do versionamento —
-reproduzíveis com os comandos de benchmark em `docs/integrations.md`):
+reproduzíveis com os comandos de benchmark em `docs/integrations.md` ou via o
+workflow manual `benchmark.yml` do GitHub Actions, que publica os JSONs como
+artifact `benchmark-reports`):
 
 - `reports/pilot-internal.json`
 - `reports/pilot-architecture-confirmation.json`

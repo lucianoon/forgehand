@@ -58,6 +58,24 @@ evitando consumo órfão depois do benchmark.
 Sem expor uma porta HTTP, use `--in-process`; o fluxo ainda atravessa a API,
 fila, worker, grafo e provider configurado no ambiente.
 
+### Benchmark via GitHub Actions
+
+O workflow manual `.github/workflows/benchmark.yml` roda o mesmo comando em
+modo `--in-process` e publica os JSONs de `reports/` como artifact
+(`benchmark-reports`, retenção de 90 dias). Ele nunca dispara em push — o
+benchmark chama LLMs reais e custa dinheiro. Antes do primeiro uso, cadastre o
+secret `OPENROUTER_API_KEY` no repositório (Settings > Secrets and variables >
+Actions). Para disparar:
+
+```bash
+gh workflow run benchmark.yml
+# opcional: subconjunto de casos e paralelismo
+gh workflow run benchmark.yml -f case_ids=architecture-review,security-review -f concurrency=1
+```
+
+Baixe o resultado com `gh run download --name benchmark-reports` após o fim da
+execução.
+
 ## Observabilidade
 
 `GET /metrics/prometheus` expõe requests por rota/status, tempo HTTP acumulado,
