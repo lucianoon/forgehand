@@ -351,6 +351,7 @@ parsed.
 - `docs/security-model.md` — boundaries, controls and residual risks;
 - `docs/go-to-market.md` — design partner, pilot, demo and ROI metrics;
 - `docs/production-runbook.md` — deploy, alerts, incident and rollback.
+- [`CHANGELOG.md`](CHANGELOG.md) — version history and upcoming changes.
 
 ## Roadmap
 

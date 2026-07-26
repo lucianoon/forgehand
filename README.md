@@ -234,6 +234,7 @@ Integrações e produto:
 - `docs/security-model.md` — fronteiras, controles e riscos residuais;
 - `docs/go-to-market.md` — design partner, piloto, demo e métricas de ROI.
 - `docs/production-runbook.md` — deploy, alertas, incidente e rollback.
+- [`CHANGELOG.md`](CHANGELOG.md) — histórico versionado e próximas mudanças.
 
 ## Usar
 
