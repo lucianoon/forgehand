@@ -30,6 +30,23 @@ memória persistente, execução paralela e gate humano em decisões críticas.
 | Execução durável | Checkpoints em PostgreSQL e retomada após interrupção |
 | Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
 
+## Resultado medido
+
+Piloto técnico de 20/07/2026: 9 workflows reais, em 3 cenários e 3 rodadas,
+executados com LLM via OpenRouter após as correções de regressão.
+
+| KPI | Resultado | Gate |
+|---|---:|---:|
+| Conclusão | 88,9% (8/9) | >= 80% |
+| First pass | 88,9% | >= 60% |
+| Falha técnica | 0% | 0% |
+| Custo médio | US$ 0,00291 | <= US$ 0,05 |
+| Latência p95 | 41,59 s | <= 120 s |
+
+**Gate final: aprovado.** Consulte a [metodologia, diagnóstico das falhas e
+matriz completa](docs/pilot-report-2026-07-20.md). Os números são um piloto
+interno reproduzível, não um benchmark público independente.
+
 ## Início rápido
 
 ```bash

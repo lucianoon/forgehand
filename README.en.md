@@ -22,6 +22,23 @@ project memory, parallel execution and a human gate on critical decisions.
 | Durable execution | PostgreSQL checkpoints and restart recovery |
 | Observability | OTel/Langfuse spans per job and LLM call |
 
+## Measured result
+
+Technical pilot from July 20, 2026: 9 real workflows across 3 scenarios and
+3 rounds, executed with an LLM through OpenRouter after regression fixes.
+
+| KPI | Result | Gate |
+|---|---:|---:|
+| Completion | 88.9% (8/9) | >= 80% |
+| First pass | 88.9% | >= 60% |
+| Technical failure | 0% | 0% |
+| Average cost | US$0.00291 | <= US$0.05 |
+| p95 latency | 41.59 s | <= 120 s |
+
+**Final gate: passed.** See the [methodology, failure analysis, and complete
+matrix](docs/pilot-report-2026-07-20.md). These figures come from a
+reproducible internal pilot, not an independent public benchmark.
+
 ## What it does
 
 You POST a request in natural language. A planner decomposes it into tasks
