@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -20,7 +20,7 @@ COPY tests ./tests
 CMD ["pytest", "-q"]
 
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Regra 7 em espírito: o serviço não roda como root
 RUN useradd --create-home --shell /usr/sbin/nologin forge
