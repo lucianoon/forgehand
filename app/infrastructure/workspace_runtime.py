@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import os
 import shlex
 from pathlib import Path
 from typing import Any, Protocol
@@ -29,12 +30,25 @@ class CommandPolicy:
             "uv",
         }
 
+    @staticmethod
+    def _normalize(executable: str) -> str:
+        """Nome comparável ao allowlist.
+
+        No Windows o mesmo binário aparece como ``python.exe`` e os nomes são
+        case-insensitive; sem normalizar, todo comando é rejeitado lá. No POSIX
+        o nome é comparado como está — ``python.exe`` seria outro arquivo.
+        """
+        if os.name != "nt":
+            return executable
+        name = executable.lower()
+        return name[:-4] if name.endswith(".exe") else name
+
     def parse(self, command: str) -> list[str]:
         argv = shlex.split(command)
         if not argv:
             raise ValueError("Comando vazio.")
         executable = Path(argv[0]).name
-        if executable not in self._allowed:
+        if self._normalize(executable) not in self._allowed:
             raise ValueError(f"Executável não permitido: {executable}")
         return argv
 

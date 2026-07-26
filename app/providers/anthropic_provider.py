@@ -28,8 +28,8 @@ from app.providers.base import (
 
 # IDs de referência (jul/2026) — a escolha real vem do registry/settings
 MODEL_FAST = "claude-haiku-4-5"
-MODEL_STANDARD = "claude-sonnet-4-6"
-MODEL_STRONG = "claude-opus-4-8"
+MODEL_STANDARD = "claude-sonnet-5"
+MODEL_STRONG = "claude-opus-5"
 
 _STRUCTURED_TOOL_NAME = "emit_structured_output"
 

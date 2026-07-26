@@ -688,7 +688,11 @@ async def test_in_memory_queue_requeues_expired_job_before_failing():
 
 @pytest.mark.asyncio
 async def test_in_memory_queue_heartbeat_keeps_lease_and_enforces_owner():
-    queue = InMemoryWorkflowQueue(lease_seconds=0.03, max_delivery_attempts=2)
+    # Este é o único teste da fila que exige dormir MENOS que o lease: o
+    # heartbeat precisa renovar antes do vencimento. O timer do Windows tem
+    # granularidade de ~15,6 ms, então durações na casa das dezenas de ms
+    # estouram o lease e o teste falha lá. As margens abaixo são 10x maiores.
+    queue = InMemoryWorkflowQueue(lease_seconds=0.3, max_delivery_attempts=2)
     await queue.enqueue(
         workflow_id="wf-heartbeat",
         project_id="p",
@@ -699,9 +703,9 @@ async def test_in_memory_queue_heartbeat_keeps_lease_and_enforces_owner():
     delivery = await queue.dequeue("worker-a", 0.01)
     assert delivery is not None
 
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
     assert await queue.heartbeat(delivery) is True
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
     assert await queue.dequeue("worker-b", 0.005) is None
 
     stale = delivery.__class__(**{**delivery.__dict__, "locked_by": "worker-b"})

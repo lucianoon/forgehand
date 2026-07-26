@@ -24,8 +24,8 @@ _TEST_ENV = {
     "TIER_BINDINGS_JSON": json.dumps(
         {
             "1": {"provider_name": "anthropic", "model": "claude-haiku-4-5"},
-            "2": {"provider_name": "anthropic", "model": "claude-sonnet-4-6"},
-            "3": {"provider_name": "anthropic", "model": "claude-opus-4-8"},
+            "2": {"provider_name": "anthropic", "model": "claude-sonnet-5"},
+            "3": {"provider_name": "anthropic", "model": "claude-opus-5"},
         }
     ),
 }

@@ -32,7 +32,7 @@ from app.agents.validation import ValidationSignal
 from app.agents.registry import CapabilityExecutorRegistry
 
 PRICING = {
-    "claude-sonnet-4-6": ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0),
+    "claude-sonnet-5": ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0),
     "claude-haiku-4-5": ModelPricing(input_per_mtok=1.0, output_per_mtok=5.0),
 }
 
@@ -232,10 +232,10 @@ async def test_agents_e2e():
                 provider_name="anthropic", model="claude-haiku-4-5"
             ),
             ModelTier.STANDARD: TierBinding(
-                provider_name="anthropic", model="claude-sonnet-4-6"
+                provider_name="anthropic", model="claude-sonnet-5"
             ),
             ModelTier.STRONG: TierBinding(
-                provider_name="anthropic", model="claude-opus-4-8"
+                provider_name="anthropic", model="claude-opus-5"
             ),
         },
     )
@@ -286,8 +286,8 @@ async def test_agents_e2e():
     assert "claude-haiku-4-5" in state["models_used"], (
         "docs (tier FAST) deveria usar haiku"
     )
-    assert "claude-sonnet-4-6" in state["models_used"]
-    assert "claude-opus-4-8" not in state["models_used"], (
+    assert "claude-sonnet-5" in state["models_used"]
+    assert "claude-opus-5" not in state["models_used"], (
         "STRONG so por escalonamento (regra 9)"
     )
     print(

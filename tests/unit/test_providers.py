@@ -22,7 +22,7 @@ from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
 from app.providers.registry import ModelTier, ProviderRouter, TierBinding
 
-PRICING = {"claude-sonnet-4-6": ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0)}
+PRICING = {"claude-sonnet-5": ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0)}
 
 
 class PlanOut(BaseModel):
@@ -39,7 +39,7 @@ def anthropic_mock(handler):
     )
 
 
-def msg_response(content, model="claude-sonnet-4-6", in_tok=1000, out_tok=500):
+def msg_response(content, model="claude-sonnet-5", in_tok=1000, out_tok=500):
     return httpx.Response(
         200,
         json={
@@ -57,7 +57,7 @@ def msg_response(content, model="claude-sonnet-4-6", in_tok=1000, out_tok=500):
 @pytest.mark.asyncio
 async def test_providers():
     req = CompletionRequest(
-        model="claude-sonnet-4-6", messages=[Message(role="user", content="oi")]
+        model="claude-sonnet-5", messages=[Message(role="user", content="oi")]
     )
 
     # ---- 1. Texto + custo calculado pela tabela injetada ----
@@ -297,10 +297,10 @@ async def test_providers():
         providers={"anthropic": ap},
         bindings={
             ModelTier.STANDARD: TierBinding(
-                provider_name="anthropic", model="claude-sonnet-4-6"
+                provider_name="anthropic", model="claude-sonnet-5"
             ),
             ModelTier.STRONG: TierBinding(
-                provider_name="anthropic", model="claude-opus-4-8"
+                provider_name="anthropic", model="claude-opus-5"
             ),
         },
     )
@@ -310,7 +310,7 @@ async def test_providers():
             model="IGNORADO", messages=[Message(role="user", content="oi")]
         ),
     )
-    assert "claude-sonnet-4-6" in r7.text, (
+    assert "claude-sonnet-5" in r7.text, (
         "default = STANDARD, model do request ignorado"
     )
     tier = router.escalate(ModelTier.STANDARD)
@@ -319,10 +319,10 @@ async def test_providers():
         tier,
         CompletionRequest(model="x", messages=[Message(role="user", content="oi")]),
     )
-    assert "claude-opus-4-8" in r7b.text
+    assert "claude-opus-5" in r7b.text
     # FAST sem binding cai para STANDARD, nunca sobe sozinho
     _, m = router.resolve(ModelTier.FAST)
-    assert m == "claude-sonnet-4-6"
+    assert m == "claude-sonnet-5"
     print(
         "7. registry OK — tier default STANDARD, escalate explícito, FAST degrada p/ baixo"
     )

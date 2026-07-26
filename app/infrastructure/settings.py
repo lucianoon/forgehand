@@ -22,15 +22,15 @@ from app.providers.registry import ModelTier, TierBinding
 # oficial antes de produção — valores desatualizados corrompem o budget.
 _DEFAULT_PRICING = {
     "claude-haiku-4-5": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
-    "claude-sonnet-4-6": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
-    "claude-opus-4-8": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
+    "claude-sonnet-5": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-opus-5": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     "openai/gpt-4o-mini": {"input_per_mtok": 0.15, "output_per_mtok": 0.60},
 }
 
 _DEFAULT_BINDINGS = {
     "1": {"provider_name": "anthropic", "model": "claude-haiku-4-5"},
-    "2": {"provider_name": "anthropic", "model": "claude-sonnet-4-6"},
-    "3": {"provider_name": "anthropic", "model": "claude-opus-4-8"},
+    "2": {"provider_name": "anthropic", "model": "claude-sonnet-5"},
+    "3": {"provider_name": "anthropic", "model": "claude-opus-5"},
 }
 
 _DEFAULT_OPENROUTER_BINDINGS = {
