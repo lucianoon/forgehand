@@ -39,6 +39,23 @@ Technical pilot from July 20, 2026: 9 real workflows across 3 scenarios and
 matrix](docs/pilot-report-2026-07-20.md). These figures come from a
 reproducible internal pilot, not an independent public benchmark.
 
+## Mission control
+
+![ForgeHand's actual dashboard with runtime health, budget, and workflow stages](docs/assets/forgehand-dashboard.jpg)
+
+The interface above is served by the application itself and queries `/readyz`
+and `/metrics` to display actual runtime health. Reproduce this local state
+without external databases:
+
+```bash
+uv sync --extra dev --locked
+uv run uvicorn app.main:app
+```
+
+Open `http://localhost:8000/dashboard` and use the local `dev-key`. Running a
+workflow also requires an LLM provider; opening and validating mission control
+does not consume tokens.
+
 ## What it does
 
 You POST a request in natural language. A planner decomposes it into tasks

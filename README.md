@@ -47,6 +47,23 @@ executados com LLM via OpenRouter após as correções de regressão.
 matriz completa](docs/pilot-report-2026-07-20.md). Os números são um piloto
 interno reproduzível, não um benchmark público independente.
 
+## Mission control
+
+![Dashboard real do ForgeHand com runtime, orçamento e etapas do workflow](docs/assets/forgehand-dashboard.jpg)
+
+A interface acima é servida pela própria aplicação e consulta `/readyz` e
+`/metrics` para exibir a saúde real do runtime. Para reproduzir o estado local
+sem bancos externos:
+
+```bash
+uv sync --extra dev --locked
+uv run uvicorn app.main:app
+```
+
+Abra `http://localhost:8000/dashboard` e use a chave local `dev-key`. Executar
+um workflow exige também configurar um provider de LLM; apenas abrir e validar
+o mission control não consome tokens.
+
 ## Início rápido
 
 ```bash
