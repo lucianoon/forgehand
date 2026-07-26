@@ -11,6 +11,14 @@ Sistema multiagente para desenvolvimento de software: orquestrador,
 executores especializados por capacidade, judge com veto objetivo,
 memória persistente, execução paralela e gate humano em decisões críticas.
 
+## Em 30 segundos
+
+- **95 funções de teste** entre cenários unitários e de integração.
+- CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
+- `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
+- Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
+- O sistema roda localmente com provider simulado; integrações reais são opt-in.
+
 ## Evidências rápidas
 
 | Capacidade | Implementação verificável |
