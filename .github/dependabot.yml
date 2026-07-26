@@ -5,6 +5,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Ruff 0.x minor releases may introduce new default rules. Upgrade it
+      # deliberately together with the required code migration.
+      - dependency-name: "ruff"
+        versions: [">=0.16.0"]
     groups:
       python-dependencies:
         patterns: ["*"]
@@ -21,6 +26,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
     groups:
       containers:
         patterns: ["*"]
