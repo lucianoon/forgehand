@@ -2,9 +2,25 @@
 
 *[Versão em português](README.md)*
 
+[![CI](https://github.com/lucianoon/forgehand/actions/workflows/ci.yml/badge.svg)](https://github.com/lucianoon/forgehand/actions/workflows/ci.yml)
+[![Benchmark](https://github.com/lucianoon/forgehand/actions/workflows/benchmark.yml/badge.svg)](https://github.com/lucianoon/forgehand/actions/workflows/benchmark.yml)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 A multi-agent system for software delivery: an orchestrator, executors
 specialized by capability, a judge with objective veto power, persistent
 project memory, parallel execution and a human gate on critical decisions.
+
+## Evidence at a glance
+
+| Capability | Verifiable implementation |
+|---|---|
+| Parallelism | Independent task fan-out and deterministic merge by ID |
+| Quality gate | Incremental judge combined with `pytest`, `ruff` and `mypy` |
+| Human control | Approval, retry, partial acceptance and abort at critical decisions |
+| Operational limits | Token, cost, time and attempt circuit breakers |
+| Durable execution | PostgreSQL checkpoints and restart recovery |
+| Observability | OTel/Langfuse spans per job and LLM call |
 
 ## What it does
 

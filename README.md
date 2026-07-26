@@ -2,11 +2,27 @@
 
 *[English version](README.en.md)*
 
+[![CI](https://github.com/lucianoon/forgehand/actions/workflows/ci.yml/badge.svg)](https://github.com/lucianoon/forgehand/actions/workflows/ci.yml)
+[![Benchmark](https://github.com/lucianoon/forgehand/actions/workflows/benchmark.yml/badge.svg)](https://github.com/lucianoon/forgehand/actions/workflows/benchmark.yml)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-green.svg)](LICENSE)
+
 Sistema multiagente para desenvolvimento de software: orquestrador,
 executores especializados por capacidade, judge com veto objetivo,
 memória persistente, execução paralela e gate humano em decisões críticas.
 
-## Subir
+## Evidências rápidas
+
+| Capacidade | Implementação verificável |
+|---|---|
+| Paralelismo | Fan-out de tarefas independentes e merge determinístico por ID |
+| Quality gate | Judge incremental combinado com `pytest`, `ruff` e `mypy` |
+| Controle humano | Aprovação, retry, aceite parcial e abort em decisões críticas |
+| Limites operacionais | Circuit breakers de tokens, custo, tempo e tentativas |
+| Execução durável | Checkpoints em PostgreSQL e retomada após interrupção |
+| Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
+
+## Início rápido
 
 ```bash
 cp .env.example .env
