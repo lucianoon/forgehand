@@ -56,13 +56,17 @@ A interface acima é servida pela própria aplicação e consulta `/readyz` e
 sem bancos externos:
 
 ```bash
+make demo
+# ou, sem make (ex.: Windows):
 uv sync --extra dev --locked
-uv run uvicorn app.main:app
+uv run uvicorn app.main:app --env-file .env.demo
 ```
 
-Abra `http://localhost:8000/dashboard` e use a chave local `dev-key`. Executar
-um workflow exige também configurar um provider de LLM; apenas abrir e validar
-o mission control não consome tokens.
+O perfil [`.env.demo`](.env.demo) força todos os backends para memória e
+funciona mesmo com um `.env` de produção presente. Abra
+`http://localhost:8000/dashboard` e use a chave local `dev-key`. Executar
+um workflow exige também configurar um provider de LLM (comentado no fim do
+`.env.demo`); apenas abrir e validar o mission control não consome tokens.
 
 ## Início rápido
 

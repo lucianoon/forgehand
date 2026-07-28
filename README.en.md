@@ -48,12 +48,16 @@ and `/metrics` to display actual runtime health. Reproduce this local state
 without external databases:
 
 ```bash
+make demo
+# or, without make (e.g. Windows):
 uv sync --extra dev --locked
-uv run uvicorn app.main:app
+uv run uvicorn app.main:app --env-file .env.demo
 ```
 
-Open `http://localhost:8000/dashboard` and use the local `dev-key`. Running a
-workflow also requires an LLM provider; opening and validating mission control
+The [`.env.demo`](.env.demo) profile forces every backend to memory and works
+even with a production `.env` in place. Open `http://localhost:8000/dashboard`
+and use the local `dev-key`. Running a workflow also requires an LLM provider
+(commented at the end of `.env.demo`); opening and validating mission control
 does not consume tokens.
 
 ## What it does
