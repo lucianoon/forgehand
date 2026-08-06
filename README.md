@@ -311,6 +311,7 @@ Camadas:
 | Paralelismo | `AgentProfile.max_parallel_tasks` limita o fan-out por agente |
 | Idempotência | `idempotency_key()` determinística por (projeto, tarefa, tentativa) |
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando |
+| Fato verificado vence opinião | checks com id estável no schema do judge; o LLM marca o fato invocado e o sistema decide o item |
 | Modelo caro só por escalonamento | tiers no registry; `escalate()` sobe um degrau, fallback degrada para baixo |
 | Rastreabilidade | `TaskAttempt` por tentativa + checkpoints consultáveis via SQL |
 

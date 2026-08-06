@@ -120,6 +120,7 @@ Each rule is backed by a mechanism, not by convention:
 | Bounded parallelism | `AgentProfile.max_parallel_tasks` caps fan-out per agent |
 | Idempotency | deterministic `idempotency_key()` per (project, task, attempt) |
 | The judge is not just an LLM | the `EvaluationResult` validator rejects approval while any objective signal fails |
+| A verified fact beats an opinion | stable-id checks in the judge schema; the LLM tags the fact it invokes and the system decides that item |
 | Expensive models only by escalation | tiers in the registry; `escalate()` steps up one level, fallback degrades downward |
 | Traceability | one `TaskAttempt` per attempt + checkpoints queryable over SQL |
 
