@@ -14,7 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.2"]
+postgres = [
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+]
 neo4j = ["neo4j>=5.23"]
 otel = [
     "opentelemetry-sdk>=1.27",

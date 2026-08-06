@@ -15,6 +15,30 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   metas e limitações explícitas.
 - Captura real do mission control e roteiro para reproduzir o dashboard sem
   consumo de tokens.
+- Fatos verificados com id estável (`app/agents/deterministic_checks.py`), que o
+  judge injeta no prompt e reconcilia por id.
+
+### Alterado
+
+- O judge deixou de reconhecer contradições do LLM por substring em português e
+  inglês. Cada fato verificado (`citations_valid`, `only_new_files`) tem id
+  estável e o schema de saída exige que o LLM marque qual fato um critério ou
+  observação invoca. Ganho de comportamento: o fato passa a valer nos **dois**
+  sentidos — antes só era capaz de forçar aprovação, agora também reprova
+  critério que o LLM aprovou contra a evidência registrada.
+- A fila PostgreSQL passou de conexão única serializada por lock para
+  `psycopg_pool.AsyncConnectionPool`, com validação na retirada. Workers
+  concorrentes deixam de disputar o mesmo socket e uma conexão derrubada
+  (failover, reboot do banco) não inutiliza mais a fila até o restart.
+
+### Corrigido
+
+- Aprovação do judge passou a respeitar `criteria_ok` também na descida: um
+  critério reprovado por fato verificado não é mais sobreposto pela aprovação
+  do LLM.
+- Corrida em `test_operational_endpoints_expose_health_readiness_and_metrics`:
+  o workflow chega a `completed` no checkpoint antes de o worker dar
+  acknowledge no job, e a métrica era lida uma única vez.
 
 ## [0.1.0] — 2026-07-26
 

@@ -230,3 +230,85 @@ async def test_postgres_queue_heartbeat_and_lease_ownership():
         assert await queue.dequeue("worker-b", 0.01) is None
         assert await queue.acknowledge(replace(delivery, locked_by="worker-b")) is False
         assert await queue.acknowledge(delivery) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("RUN_POSTGRES_TESTS") != "1",
+    reason="defina RUN_POSTGRES_TESTS=1 com PostgreSQL local disponível",
+)
+async def test_postgres_queue_delivers_each_job_once_under_concurrency():
+    """Workers concorrentes usam conexões distintas do pool.
+
+    Com uma conexão única serializada por lock, o SKIP LOCKED nunca era
+    exercitado de verdade. Aqui os dequeues correm em paralelo e cada job
+    tem que sair para exatamente um worker."""
+    workers = 6
+    workflow_ids = [f"fanout-{uuid4()}" for _ in range(workers)]
+
+    async with workflow_queue_context(SETTINGS) as queue:
+        for workflow_id in workflow_ids:
+            await queue.enqueue(
+                workflow_id=workflow_id,
+                project_id="demo",
+                owner_client_id="client-demo",
+                kind="start",
+                payload={"workflow_id": workflow_id},
+            )
+
+        deliveries = await asyncio.gather(
+            *(queue.dequeue(f"worker-{i}", 0.01) for i in range(workers))
+        )
+        delivered = [job for job in deliveries if job is not None]
+
+        assert len(delivered) == workers, "todo job enfileirado deveria ser entregue"
+        assert len({job.workflow_id for job in delivered}) == workers, (
+            "o mesmo job foi entregue a mais de um worker"
+        )
+        assert {job.workflow_id for job in delivered} == set(workflow_ids)
+
+        for job in delivered:
+            assert await queue.acknowledge(job) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("RUN_POSTGRES_TESTS") != "1",
+    reason="defina RUN_POSTGRES_TESTS=1 com PostgreSQL local disponível",
+)
+async def test_postgres_queue_recovers_from_dropped_connections():
+    """Conexão derrubada não deixa a fila inutilizável até o restart.
+
+    Com uma conexão única, qualquer queda (failover, idle timeout, reboot do
+    banco) quebrava todas as operações seguintes. O pool descarta a conexão
+    morta e abre outra."""
+    import psycopg
+
+    workflow_id = f"reconnect-{uuid4()}"
+
+    async with workflow_queue_context(SETTINGS) as queue:
+        assert await queue.ping() is True
+
+        # Derruba do lado do servidor toda conexão que o pool abriu.
+        with psycopg.connect(SETTINGS.database_url) as killer:
+            killer.execute(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                """
+            )
+
+        await queue.enqueue(
+            workflow_id=workflow_id,
+            project_id="demo",
+            owner_client_id="client-demo",
+            kind="start",
+            payload={"workflow_id": workflow_id},
+        )
+        delivery = await queue.dequeue("worker-reconnect", 0.01)
+        assert delivery is not None
+        assert delivery.workflow_id == workflow_id
+        assert await queue.acknowledge(delivery) is True
+        assert await queue.ping() is True
