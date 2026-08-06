@@ -31,6 +31,20 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   concorrentes deixam de disputar o mesmo socket e uma conexão derrubada
   (failover, reboot do banco) não inutiliza mais a fila até o restart.
 
+### Segurança
+
+- O sandbox Docker deixou de executar via `sh -lc`. A allowlist validava só
+  `argv[0]` e entregava a string crua ao shell, então `pytest && rm -rf ...`
+  passava. Agora o argv validado vai direto ao container, em forma exec, e a
+  `CommandPolicy` rejeita operadores e substituições de shell.
+  **Quebra de configuração:** comandos de validação que encadeavam etapas numa
+  string só (`"ruff check . && mypy app"`) passam a ser rejeitados. Declare uma
+  etapa por validador e componha a ordem em
+  `OBJECTIVE_VALIDATION_PIPELINES_JSON`.
+- O snapshot de `git status`/`git diff` deixou de usar `create_subprocess_shell`
+  no host. Ele passa pelo mesmo `CommandRunner` da validação objetiva, então
+  com `EXECUTOR_COMMAND_BACKEND=docker` não escapa mais para fora do sandbox.
+
 ### Corrigido
 
 - Aprovação do judge passou a respeitar `criteria_ok` também na descida: um

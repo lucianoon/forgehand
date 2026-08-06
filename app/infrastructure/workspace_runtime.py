@@ -18,7 +18,23 @@ class CommandRunner(Protocol):
     ) -> dict[str, Any]: ...
 
 
+# Operadores de shell. Só têm significado se alguém entregar o comando a um
+# shell — coisa que nenhum runner faz mais (todos usam forma exec). Rejeitar
+# aqui mantém a política honesta: `pytest && rm -rf /` passava no allowlist
+# porque argv[0] era `pytest`.
+_SHELL_OPERATORS = frozenset(
+    {"&&", "||", "|", "|&", ";", ";;", "&", ">", ">>", ">|", "<", "<<", "<<<"}
+)
+_SHELL_SUBSTITUTION = ("$(", "`", "${")
+
+
 class CommandPolicy:
+    """Allowlist de executáveis para comandos de validação objetiva.
+
+    A política pressupõe execução em forma exec (argv), nunca via shell: é o
+    que garante que o executável validado aqui seja o executável que roda.
+    """
+
     def __init__(self, allowed_executables: set[str] | None = None) -> None:
         self._allowed = allowed_executables or {
             "git",
@@ -50,6 +66,13 @@ class CommandPolicy:
         executable = Path(argv[0]).name
         if self._normalize(executable) not in self._allowed:
             raise ValueError(f"Executável não permitido: {executable}")
+        for token in argv[1:]:
+            if token in _SHELL_OPERATORS:
+                raise ValueError(f"Operador de shell não permitido no comando: {token}")
+            if any(marker in token for marker in _SHELL_SUBSTITUTION):
+                raise ValueError(
+                    f"Substituição de shell não permitida no comando: {token}"
+                )
         return argv
 
 
@@ -90,7 +113,10 @@ class DockerSandboxCommandRunner:
         self._policy = policy or CommandPolicy()
 
     def build_argv(self, command: str, workspace_root: Path) -> list[str]:
-        self._policy.parse(command)
+        # Forma exec: o argv validado pela política é entregue direto ao
+        # container. Com `sh -lc <command>` o allowlist era decorativo — só
+        # olhava argv[0] e o shell reinterpretava o resto da string.
+        argv = self._policy.parse(command)
         return [
             "docker",
             "run",
@@ -112,9 +138,7 @@ class DockerSandboxCommandRunner:
             "-w",
             "/workspace",
             self._image,
-            "sh",
-            "-lc",
-            command,
+            *argv,
         ]
 
     async def run(
@@ -157,12 +181,17 @@ class LocalWorkspaceRuntime:
         apply_files_enabled: bool = False,
         command_feedback_runners: list["CommandObjectiveValidator"] | None = None,
         validation_pipeline: ObjectiveValidationPipeline | None = None,
+        command_runner: CommandRunner | None = None,
     ) -> None:
         self._root = Path(workspace_root).expanduser().resolve()
         self._apply_files_enabled = apply_files_enabled
         self._validation_pipeline = validation_pipeline or ObjectiveValidationPipeline(
             command_feedback_runners or []
         )
+        # Mesmo runner da validação objetiva: o snapshot do git respeita a
+        # mesma fronteira de execução. Antes ele usava um shell no host mesmo
+        # com o backend docker configurado.
+        self._command_runner = command_runner or LocalCommandRunner()
 
     async def apply(
         self,
@@ -303,14 +332,20 @@ class LocalWorkspaceRuntime:
         git_dir = self._root / ".git"
         if not git_dir.exists():
             return None
-        status = await self._run_command(
-            "git status --short",
-            output_limit=4000,
-        )
-        diff = await self._run_command(
-            "git diff --no-ext-diff --relative",
-            output_limit=8000,
-        )
+        # Snapshot é diagnóstico, não faz parte do veredito. Se o runner não
+        # conseguir executá-lo (git ausente da imagem do sandbox, docker
+        # indisponível), a tarefa segue sem ele em vez de falhar.
+        try:
+            status = await self._run_command(
+                "git status --short",
+                output_limit=4000,
+            )
+            diff = await self._run_command(
+                "git diff --no-ext-diff --relative",
+                output_limit=8000,
+            )
+        except (OSError, ValueError):
+            return None
         return {
             "status": status["stdout"],
             "status_exit_code": status["exit_code"],
@@ -324,19 +359,7 @@ class LocalWorkspaceRuntime:
         *,
         output_limit: int,
     ) -> dict[str, Any]:
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=str(self._root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        return {
-            "command": command,
-            "exit_code": process.returncode,
-            "stdout": stdout.decode("utf-8", errors="ignore")[:output_limit],
-            "stderr": stderr.decode("utf-8", errors="ignore")[:output_limit],
-        }
+        return await self._command_runner.run(command, self._root, output_limit)
 
     def _resolve_artifact_path(self, raw_path: Any) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():

@@ -11,8 +11,10 @@ from app.agents.validation import (
     format_validation_feedback,
 )
 from app.api.container import (
+    build_command_runner,
     build_execution_strategies,
     build_objective_validation_pipeline,
+    build_workspace_runtime,
 )
 from app.infrastructure.workspace_runtime import (
     CommandPolicy,
@@ -88,6 +90,42 @@ def test_docker_sandbox_is_hardened_and_networkless(tmp_path: Path):
     assert "no-new-privileges" in argv
     assert "ALL" in argv
     assert f"{tmp_path}:/workspace:rw" in argv
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest && rm -rf /workspace",
+        "pytest; rm -rf /workspace",
+        "pytest | tee /tmp/out",
+        "pytest > /tmp/out",
+        "pytest $(whoami)",
+        "pytest `whoami`",
+    ],
+)
+def test_command_policy_blocks_shell_metacharacters(command: str):
+    """O allowlist olhava só argv[0]: `pytest && rm -rf /` passava."""
+    policy = CommandPolicy()
+    with pytest.raises(ValueError, match="não permitid"):
+        policy.parse(command)
+
+
+def test_docker_sandbox_runs_exec_form_without_a_shell(tmp_path: Path):
+    """Com `sh -lc <command>` o allowlist era decorativo — o shell
+    reinterpretava a string inteira depois da validação."""
+    runner = DockerSandboxCommandRunner(image="forgehand-sandbox:test")
+    argv = runner.build_argv("uv run pytest -q", tmp_path)
+
+    assert argv[-4:] == ["uv", "run", "pytest", "-q"]
+    assert "sh" not in argv
+    assert "-lc" not in argv
+    assert "-c" not in argv
+
+
+def test_docker_sandbox_rejects_chained_command(tmp_path: Path):
+    runner = DockerSandboxCommandRunner(image="forgehand-sandbox:test")
+    with pytest.raises(ValueError, match="não permitid"):
+        runner.build_argv("pytest && rm -rf /workspace", tmp_path)
 
 
 @pytest.mark.asyncio
@@ -274,6 +312,77 @@ async def test_local_workspace_runtime_collects_git_snapshot(tmp_path: Path):
     assert "-print('before')" in git_snapshot["diff"]
     assert "+print('after')" in git_snapshot["diff"]
     assert metadata["workspace"]["operation_history"][-1]["step"] == "git_snapshot"
+
+
+@pytest.mark.asyncio
+async def test_git_snapshot_goes_through_the_configured_command_runner(tmp_path: Path):
+    """O snapshot usava `create_subprocess_shell` no host, ignorando a
+    CommandPolicy e o runner do sandbox mesmo com o backend docker ativo."""
+
+    class RecordingRunner:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        async def run(self, command, workspace_root, output_limit):
+            self.commands.append(command)
+            return {
+                "command": command,
+                "exit_code": 0,
+                "stdout": "sandboxed",
+                "stderr": "",
+            }
+
+    (tmp_path / ".git").mkdir()
+    runner = RecordingRunner()
+    runtime = LocalWorkspaceRuntime(
+        str(tmp_path), apply_files_enabled=True, command_runner=runner
+    )
+    task = AgentTask(
+        title="backend",
+        description="criar arquivo",
+        capability=Capability.BACKEND,
+        acceptance_criteria=["arquivo existe"],
+    )
+
+    metadata = await runtime.apply(
+        task, {"files": [{"path": "novo.py", "content": "print('ok')\n"}]}
+    )
+
+    assert runner.commands == [
+        "git status --short",
+        "git diff --no-ext-diff --relative",
+    ]
+    assert metadata["workspace"]["git_snapshot"]["status"] == "sandboxed"
+
+
+@pytest.mark.asyncio
+async def test_git_snapshot_is_dropped_when_the_runner_cannot_execute_it(
+    tmp_path: Path,
+):
+    """Snapshot é diagnóstico: git ausente da imagem do sandbox degrada a
+    observabilidade, não derruba a tarefa."""
+
+    class RejectingRunner:
+        async def run(self, command, workspace_root, output_limit):
+            raise ValueError("Executável não permitido: git")
+
+    (tmp_path / ".git").mkdir()
+    runtime = LocalWorkspaceRuntime(
+        str(tmp_path), apply_files_enabled=True, command_runner=RejectingRunner()
+    )
+    task = AgentTask(
+        title="backend",
+        description="criar arquivo",
+        capability=Capability.BACKEND,
+        acceptance_criteria=["arquivo existe"],
+    )
+
+    metadata = await runtime.apply(
+        task, {"files": [{"path": "novo.py", "content": "print('ok')\n"}]}
+    )
+
+    assert metadata["workspace"]["git_snapshot"] is None
+    assert (tmp_path / "novo.py").exists()
 
 
 @pytest.mark.asyncio
@@ -810,6 +919,23 @@ async def test_runtime_execution_strategy_can_apply_without_objective_validation
     assert (tmp_path / "docs" / "output.md").exists()
     assert metadata["workspace"]["command_feedback"] == []
     assert metadata["workspace"]["git_snapshot"] is None
+
+
+def test_workspace_runtime_inherits_the_sandbox_backend():
+    """Com backend docker, o snapshot do git tem que sair pelo sandbox — não
+    por um shell no host, como acontecia antes."""
+    settings = Settings(
+        executor_apply_files_enabled=True,
+        executor_command_backend="docker",
+        executor_sandbox_image="forgehand-sandbox:test",
+    )
+
+    runner = build_command_runner(settings)
+    runtime = build_workspace_runtime(settings, ObjectiveValidationPipeline([]), runner)
+
+    assert isinstance(runner, DockerSandboxCommandRunner)
+    assert runtime is not None
+    assert runtime._command_runner is runner
 
 
 def test_build_execution_strategies_respects_settings():
