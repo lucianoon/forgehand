@@ -8,17 +8,27 @@ protocolo ObjectiveValidator.
 O veto é estrutural: approved = llm_approved AND todos os sinais objetivos.
 O validator do EvaluationResult (models/task.py) rejeita qualquer instância
 que viole isso — não é convenção, é contrato.
+
+Além dos validadores externos, o runtime já verificou fatos sobre a própria
+tentativa (citations válidas, diff aplicado). Esses fatos entram no prompt com
+id estável e o LLM marca quais critérios e observações os invocam — ver
+app/agents/deterministic_checks.py. A reconciliação é feita por id, nunca
+interpretando o texto do LLM.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.agents.deterministic_checks import (
+    DeterministicCheck,
+    active_checks,
+    format_checks_block,
+)
 from app.agents.grounding import (
     format_repository_grounding,
-    grounding_required,
     normalize_citations,
     validate_citations,
 )
@@ -45,19 +55,52 @@ serão anexadas à próxima tentativa;
 - avalie também: correção aparente, segurança, manutenibilidade e \
 consistência interna entre os arquivos;
 - quando houver grounding do repositório, trate ausência de citations válidas \
-como falha estrutural."""
+como falha estrutural;
+- quando o prompt trouxer fatos verificados, marque `deterministic_check` com \
+o id do fato em todo critério, falha ou correção que se refira a ele."""
+
+
+class JudgeFinding(BaseModel):
+    """Observação do judge, opcionalmente ancorada num fato verificado."""
+
+    message: str
+    deterministic_check: str | None = Field(
+        default=None,
+        description=(
+            "id do fato verificado que esta observação invoca, exatamente como "
+            "listado no bloco de fatos verificados. Nulo quando não se aplica."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_plain_string(cls, value: Any) -> Any:
+        """Degrada com segurança quando o endpoint não honra o JSON Schema.
+
+        Provider sem structured output estrito (modelos locais) devolve string
+        pura. Sem âncora, a observação é preservada — o lado seguro."""
+        if isinstance(value, str):
+            return {"message": value}
+        return value
 
 
 class CriterionVerdict(BaseModel):
     criterion: str
     score: float = Field(ge=0, le=1)
     reasoning: str
+    deterministic_check: str | None = Field(
+        default=None,
+        description=(
+            "id do fato verificado que este critério reformula, exatamente como "
+            "listado no bloco de fatos verificados. Nulo quando não se aplica."
+        ),
+    )
 
 
 class JudgeOutput(BaseModel):
     criteria: list[CriterionVerdict] = Field(min_length=1)
-    failures: list[str] = Field(default_factory=list)
-    required_changes: list[str] = Field(default_factory=list)
+    failures: list[JudgeFinding] = Field(default_factory=list)
+    required_changes: list[JudgeFinding] = Field(default_factory=list)
     overall_score: float = Field(ge=0, le=1)
     approved: bool
 
@@ -100,60 +143,22 @@ class LLMJudge:
         )
 
     @staticmethod
-    def _is_citation_feedback(message: str) -> bool:
-        lowered = message.lower()
-        return "citation" in lowered or "citaç" in lowered or "evidence_id" in lowered
+    def _reconcile(
+        findings: list[JudgeFinding],
+        checks_by_id: dict[str, DeterministicCheck],
+    ) -> list[str]:
+        """Descarta observações ancoradas num fato que se confirma.
 
-    @staticmethod
-    def _criterion_is_citation_validity(criterion: str) -> bool:
-        lowered = criterion.lower()
-        citation_marker = (
-            "citation" in lowered or "citaç" in lowered or "evidence_id" in lowered
-        )
-        validity_marker = any(
-            marker in lowered for marker in ("válid", "valid", "exist", "grounding")
-        )
-        return citation_marker and validity_marker
-
-    @staticmethod
-    def _minimal_change_satisfied(task: AgentTask) -> bool:
-        if not isinstance(task.result, dict):
-            return False
-        workspace = task.result.get("workspace")
-        if not isinstance(workspace, dict):
-            return False
-        file_diffs = workspace.get("file_diffs")
-        if not isinstance(file_diffs, list) or not file_diffs:
-            return False
-        changed_diffs = [
-            item
-            for item in file_diffs
-            if isinstance(item, dict) and item.get("changed") is True
-        ]
-        if not changed_diffs:
-            return False
-        return all(item.get("change_type") == "created" for item in changed_diffs)
-
-    @staticmethod
-    def _criterion_is_minimal_change(criterion: str) -> bool:
-        lowered = criterion.lower()
-        return (
-            "alteração mínima" in lowered
-            or "restrita ao arquivo novo" in lowered
-            or "não altere arquivos existentes" in lowered
-        )
-
-    @staticmethod
-    def _is_minimal_change_feedback(message: str) -> bool:
-        lowered = message.lower()
-        return (
-            "alteração mínima" in lowered
-            or "arquivo novo" in lowered
-            or "modificado após" in lowered
-            or "sem modificações após sua criação" in lowered
-            or "não atende ao critério de alteração mínima" in lowered
-            or "não foi restrita" in lowered
-        )
+        Uma observação sem âncora — ou ancorada num fato que NÃO se confirma —
+        é preservada: o sistema só sobrepõe o LLM onde já verificou o contrário.
+        """
+        kept: list[str] = []
+        for finding in findings:
+            check = checks_by_id.get(finding.deterministic_check or "")
+            if check is not None and check.holds:
+                continue
+            kept.append(finding.message)
+        return kept
 
     async def evaluate(
         self, task: AgentTask, context: dict[str, Any]
@@ -170,6 +175,10 @@ class LLMJudge:
         if citation_errors:
             return self._grounding_failure(task, citation_errors)
 
+        # Citations já validadas acima; qualquer outro fato aplicável entra junto.
+        checks = active_checks(task, context, citations_are_valid=True)
+        checks_by_id = {check.id: check for check in checks}
+
         grounding_block = format_repository_grounding(
             context,
             evidence_ids=task.evidence_ids,
@@ -183,6 +192,9 @@ class LLMJudge:
         )
         if grounding_block:
             prompt_content += f"\n\n{grounding_block}"
+        checks_block = format_checks_block(checks)
+        if checks_block:
+            prompt_content += f"\n\n{checks_block}"
         result = await self._router.complete(
             self._tier,
             CompletionRequest(
@@ -205,48 +217,34 @@ class LLMJudge:
         by_name = {s.name: s for s in signals}
         objective_ok = all(s.passed is not False for s in signals)
 
-        criteria_scores = {c.criterion: c.score for c in verdict.criteria}
-        minimal_change_ok = self._minimal_change_satisfied(task)
-        for criterion in list(criteria_scores):
-            if minimal_change_ok and self._criterion_is_minimal_change(criterion):
-                criteria_scores[criterion] = 1.0
+        # Fato verificado decide o critério que o invoca, nos dois sentidos.
+        criteria_scores: dict[str, float] = {}
+        for verdict_item in verdict.criteria:
+            check = checks_by_id.get(verdict_item.deterministic_check or "")
+            criteria_scores[verdict_item.criterion] = (
+                (1.0 if check.holds else 0.0)
+                if check is not None
+                else verdict_item.score
+            )
 
-        failures = list(verdict.failures)
+        failures = self._reconcile(verdict.failures, checks_by_id)
+        required_changes = self._reconcile(verdict.required_changes, checks_by_id)
         for s in signals:
             if s.passed is False:
                 failures.append(f"[{s.name}] {s.details}")
 
-        required_changes = list(verdict.required_changes)
-        if minimal_change_ok:
-            failures = [
-                item for item in failures if not self._is_minimal_change_feedback(item)
-            ]
-            required_changes = [
-                item
-                for item in required_changes
-                if not self._is_minimal_change_feedback(item)
-            ]
-        if grounding_required(context):
-            # A existência e o escopo dos IDs já foram validados acima de forma
-            # determinística. O LLM continua avaliando se a evidência sustenta a
-            # análise, mas não pode contradizer a validade estrutural dos IDs.
-            for criterion in list(criteria_scores):
-                if self._criterion_is_citation_validity(criterion):
-                    criteria_scores[criterion] = 1.0
-            failures = [
-                item for item in failures if not self._is_citation_feedback(item)
-            ]
-            required_changes = [
-                item
-                for item in required_changes
-                if not self._is_citation_feedback(item)
-            ]
         criteria_ok = bool(criteria_scores) and all(
             score >= 0.7 for score in criteria_scores.values()
         )
-        normalized_approved = verdict.approved
-        if criteria_ok and objective_ok and not failures and not required_changes:
-            normalized_approved = True
+        # Contrato do prompt: aprovar exige TODOS os critérios >= 0.7. A regra
+        # vale nos dois sentidos, inclusive quando o score veio de um fato
+        # verificado — sem isso um fato que não se confirma zeraria o critério
+        # e ainda assim deixaria passar a aprovação do LLM. O segundo ramo
+        # normaliza a saída inconsistente (approved=false sem apontar um único
+        # problema, com todos os critérios passando).
+        normalized_approved = criteria_ok and (
+            verdict.approved or (objective_ok and not failures and not required_changes)
+        )
 
         return JudgingOutcome(
             evaluation=EvaluationResult(
@@ -267,6 +265,7 @@ class LLMJudge:
                 ),
                 validated_by=[
                     "llm",
+                    *[check.id for check in checks],
                     *[s.name for s in signals if s.passed is not None],
                 ],
             ),

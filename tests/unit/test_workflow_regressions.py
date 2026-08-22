@@ -934,7 +934,7 @@ async def test_grounded_judge_rejects_missing_citations_even_if_llm_approves():
 
 
 @pytest.mark.asyncio
-async def test_grounded_judge_ignores_spurious_citation_feedback_when_citations_are_valid():
+async def test_grounded_judge_drops_findings_anchored_to_confirmed_citations_fact():
     class StaticRouter:
         async def complete(self, tier, request):
             return CompletionResult(
@@ -948,10 +948,16 @@ async def test_grounded_judge_ignores_spurious_citation_feedback_when_citations_
                         }
                     ],
                     "failures": [
-                        "Ausência de citations válidas com evidence_ids reais do contexto do repositório."
+                        {
+                            "message": "Ausência de citations válidas com evidence_ids reais.",
+                            "deterministic_check": "citations_valid",
+                        }
                     ],
                     "required_changes": [
-                        "Incluir 'citations' com evidence_ids reais do contexto do repositório."
+                        {
+                            "message": "Incluir 'citations' com evidence_ids reais.",
+                            "deterministic_check": "citations_valid",
+                        }
                     ],
                     "overall_score": 1.0,
                     "approved": False,
@@ -997,7 +1003,7 @@ async def test_grounded_judge_ignores_spurious_citation_feedback_when_citations_
 
 
 @pytest.mark.asyncio
-async def test_grounded_judge_ignores_portuguese_citation_validity_rejection():
+async def test_confirmed_fact_overrides_criterion_score_the_llm_failed():
     class StaticRouter:
         async def complete(self, tier, request):
             return CompletionResult(
@@ -1008,13 +1014,20 @@ async def test_grounded_judge_ignores_portuguese_citation_validity_rejection():
                             "criterion": "Citações válidas e grounding do repositório",
                             "score": 0.0,
                             "reasoning": "IDs supostamente inválidos",
+                            "deterministic_check": "citations_valid",
                         }
                     ],
                     "failures": [
-                        "As citações E1 não têm evidências válidas no repositório."
+                        {
+                            "message": "As citações E1 não têm evidências válidas.",
+                            "deterministic_check": "citations_valid",
+                        }
                     ],
                     "required_changes": [
-                        "Incluir evidências que comprovem a validade das citações."
+                        {
+                            "message": "Incluir evidências que comprovem as citações.",
+                            "deterministic_check": "citations_valid",
+                        }
                     ],
                     "overall_score": 0.4,
                     "approved": False,
@@ -1063,7 +1076,7 @@ async def test_grounded_judge_ignores_portuguese_citation_validity_rejection():
 
 
 @pytest.mark.asyncio
-async def test_judge_overrides_spurious_minimal_change_rejection_with_workspace_diff():
+async def test_confirmed_only_new_files_fact_overrides_llm_rejection():
     class StaticRouter:
         async def complete(self, tier, request):
             return CompletionResult(
@@ -1079,13 +1092,20 @@ async def test_judge_overrides_spurious_minimal_change_rejection_with_workspace_
                             "criterion": "a alteração é mínima e restrita ao arquivo novo",
                             "score": 0.0,
                             "reasoning": "arquivo foi modificado após criação",
+                            "deterministic_check": "only_new_files",
                         },
                     ],
                     "failures": [
-                        "O arquivo foi modificado após a criação, o que não atende ao critério de alteração mínima."
+                        {
+                            "message": "O arquivo foi modificado após a criação.",
+                            "deterministic_check": "only_new_files",
+                        }
                     ],
                     "required_changes": [
-                        "Recrie o arquivo sem modificações após sua criação."
+                        {
+                            "message": "Recrie o arquivo sem modificações posteriores.",
+                            "deterministic_check": "only_new_files",
+                        }
                     ],
                     "overall_score": 0.5,
                     "approved": False,
@@ -1132,6 +1152,140 @@ async def test_judge_overrides_spurious_minimal_change_rejection_with_workspace_
     )
     assert outcome.evaluation.failures == []
     assert outcome.evaluation.required_changes == []
+
+
+def _judge_router(parsed):
+    class StaticRouter:
+        async def complete(self, tier, request):
+            return CompletionResult(
+                text="ok",
+                parsed=parsed,
+                model="fake",
+                provider="fake",
+                usage=Usage(),
+                cost_usd=0.0,
+                latency_ms=0.0,
+            )
+
+    return StaticRouter()
+
+
+def _task_with_diff(change_type, criteria, *, tagged_criterion=None):
+    return AgentTask(
+        title="smoke",
+        description="mexer no workspace",
+        capability=Capability.BACKEND,
+        acceptance_criteria=criteria,
+        result={
+            "summary": "ok",
+            "workspace": {
+                "file_diffs": [
+                    {
+                        "path": "generated/marker.py",
+                        "change_type": change_type,
+                        "changed": True,
+                        "diff": "diff",
+                    }
+                ]
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_finding_without_anchor_is_preserved_and_still_rejects():
+    """O sistema só sobrepõe o LLM onde já verificou o contrário.
+
+    Observação sem `deterministic_check` não é interpretada por texto: ela
+    sobrevive e reprova. Rejeitar a mais custa uma iteração de replan;
+    aprovar a mais entrega trabalho errado."""
+    judge = LLMJudge(
+        _judge_router(
+            {
+                "criteria": [
+                    {"criterion": "arquivo existe", "score": 1.0, "reasoning": "ok"}
+                ],
+                "failures": [
+                    {
+                        "message": "As citations parecem inválidas.",
+                        "deterministic_check": None,
+                    }
+                ],
+                "required_changes": [],
+                "overall_score": 1.0,
+                "approved": False,
+            }
+        )
+    )
+    task = _task_with_diff("created", ["arquivo existe"])
+
+    outcome = await judge.evaluate(task, {})
+
+    assert outcome.evaluation.approved is False
+    assert outcome.evaluation.failures == ["As citations parecem inválidas."]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_fact_overrides_llm_approval_downward():
+    """O fato é autoritativo nos dois sentidos, não só para aprovar."""
+    judge = LLMJudge(
+        _judge_router(
+            {
+                "criteria": [
+                    {
+                        "criterion": "a alteração é restrita a arquivos novos",
+                        "score": 1.0,
+                        "reasoning": "achei que só criou",
+                        "deterministic_check": "only_new_files",
+                    }
+                ],
+                "failures": [],
+                "required_changes": [],
+                "overall_score": 1.0,
+                "approved": True,
+            }
+        )
+    )
+    task = _task_with_diff("modified", ["a alteração é restrita a arquivos novos"])
+
+    outcome = await judge.evaluate(task, {})
+
+    assert (
+        outcome.evaluation.criteria_scores["a alteração é restrita a arquivos novos"]
+        == 0.0
+    )
+    assert outcome.evaluation.approved is False
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_fact_does_not_reject_criteria_that_never_invoked_it():
+    """Um fato falso não vira exigência: ele só decide o que o LLM ancorou nele.
+
+    Tarefa que legitimamente modifica arquivo pré-existente tem
+    `only_new_files` falso e mesmo assim é aprovada."""
+    judge = LLMJudge(
+        _judge_router(
+            {
+                "criteria": [
+                    {
+                        "criterion": "função renomeada",
+                        "score": 1.0,
+                        "reasoning": "ok",
+                    }
+                ],
+                "failures": [],
+                "required_changes": [],
+                "overall_score": 1.0,
+                "approved": True,
+            }
+        )
+    )
+    task = _task_with_diff("modified", ["função renomeada"])
+
+    outcome = await judge.evaluate(task, {})
+
+    assert outcome.evaluation.approved is True
+    assert outcome.evaluation.criteria_scores == {"função renomeada": 1.0}
 
 
 @pytest.mark.asyncio
