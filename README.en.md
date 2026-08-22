@@ -7,9 +7,10 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A multi-agent system for software delivery: an orchestrator, executors
-specialized by capability, a judge with objective veto power, persistent
-project memory, parallel execution and a human gate on critical decisions.
+Multi-agent software delivery platform: LangGraph orchestration, parallel
+execution, a judge with objective veto (pytest/ruff/mypy), a human gate on
+critical decisions, cost and time circuit breakers, durable execution and
+OTel observability.
 
 ## Evidence at a glance
 
