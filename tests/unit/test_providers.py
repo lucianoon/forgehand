@@ -378,3 +378,81 @@ def test_build_provider_router_supports_openrouter_defaults():
     provider, model = router.resolve(ModelTier.STANDARD)
     assert provider.name == "openrouter"
     assert model == "openai/gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_judge_output_survives_strict_json_schema_round_trip():
+    """O schema do judge tem modelo aninhado e campo nulável — os testes do
+    judge injetam dicts já parseados e nunca passam por aqui.
+
+    Sem esta cobertura, uma normalização estrita que estrague `JudgeFinding`
+    ou `deterministic_check` quebra contra o OpenRouter com toda a suíte
+    verde."""
+    from app.agents.judge import JudgeOutput
+
+    captured: dict = {}
+
+    def handler(request):
+        body = json.loads(request.content)
+        captured.update(body["response_format"]["json_schema"])
+        verdict = {
+            "criteria": [
+                {
+                    "criterion": "cita evidencias",
+                    "score": 1.0,
+                    "reasoning": "ok",
+                    "deterministic_check": "citations_valid",
+                }
+            ],
+            "failures": [{"message": "nada", "deterministic_check": "citations_valid"}],
+            "required_changes": [{"message": "nada", "deterministic_check": None}],
+            "overall_score": 1.0,
+            "approved": True,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "m",
+                "model": "openai/gpt-4o-mini",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(verdict),
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        {},
+        base_url="http://local",
+        client=httpx.AsyncClient(
+            base_url="http://local", transport=httpx.MockTransport(handler)
+        ),
+    )
+    result = await provider.complete(
+        CompletionRequest(
+            model="openai/gpt-4o-mini",
+            messages=[Message(role="user", content="julgue")],
+            response_schema=JudgeOutput,
+        )
+    )
+
+    # O contrato strict da OpenAI: todo objeto fechado e todo campo obrigatório,
+    # inclusive dentro dos $defs dos modelos aninhados.
+    schema = captured["schema"]
+    assert captured["strict"] is True
+    for definition in schema["$defs"].values():
+        assert definition["additionalProperties"] is False
+        assert set(definition["required"]) == set(definition["properties"])
+    finding = schema["$defs"]["JudgeFinding"]["properties"]["deterministic_check"]
+    assert {"type": "null"} in finding["anyOf"]
+
+    verdict = result.parse_as(JudgeOutput)
+    assert verdict.failures[0].deterministic_check == "citations_valid"
+    assert verdict.required_changes[0].deterministic_check is None
+    assert verdict.criteria[0].deterministic_check == "citations_valid"
