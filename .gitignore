@@ -10,3 +10,5 @@ __pycache__/
 .ruff_cache/
 .venv/
 reports/
+# gerado por `uv export` na auditoria de dependências (CI e local)
+requirements.txt

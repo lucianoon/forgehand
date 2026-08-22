@@ -46,6 +46,17 @@ jobs:
       - run: uv sync --extra dev --extra postgres --extra neo4j --extra otel --locked
       - run: uv run ruff check .
       - run: uv run mypy app
+      # Audita o conjunto TRAVADO, com todos os extras — inclusive os que este
+      # job não instala. Reprova o build em vulnerabilidade conhecida: as
+      # atualizações automáticas do Dependabot estão desligadas, então sem um
+      # gate aqui o alerta fica só no painel.
+      # Para tolerar um achado sem correção disponível:
+      #   uvx pip-audit -r requirements.txt --ignore-vuln <ID>
+      - name: Auditar dependências
+        run: |
+          uv export --frozen --all-extras --no-emit-project --no-hashes \
+            -o requirements.txt
+          uvx pip-audit -r requirements.txt --progress-spinner off
       - run: node --check app/web/app.js
       - run: docker compose config --quiet
         env:

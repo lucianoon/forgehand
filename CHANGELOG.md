@@ -21,6 +21,8 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   dos agentes, `UsageReport`, `ExecutionStrategy`).
 - `tests/unit/test_layering.py`: as regras de dependência entre camadas passam
   a ser verificadas por AST, em vez de afirmadas em docstring.
+- Passo de `pip-audit` no CI, sobre o conjunto travado com todos os extras.
+  Reprova o build em vulnerabilidade conhecida.
 
 ### Alterado
 
