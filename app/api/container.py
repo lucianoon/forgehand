@@ -16,11 +16,11 @@ from typing import Any
 import anthropic
 
 from app.agents.advisor import LLMAdvisor
-from app.agents.executor import ExecutionStrategy
+from app.models.contracts import ExecutionStrategy
 from app.agents.judge import LLMJudge
 from app.agents.planner import LLMPlanner
 from app.agents.registry import CapabilityExecutorRegistry
-from app.agents.validation import ObjectiveValidationPipeline
+from app.models.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog

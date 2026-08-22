@@ -298,7 +298,12 @@ Camadas:
 - `app/api/` — FastAPI sobre o checkpointer; workflows e interrupts
   sobrevivem a restart com `CHECKPOINTER_BACKEND=postgres`. Em produção a API
   só enfileira jobs; o processamento roda em `app.worker` ou no serviço
-  `worker` do Compose.
+  `worker` do Compose;
+- `app/models/` — contratos compartilhados e sem dependência de camada:
+  `task.py` (tarefa, budget, avaliação), `contracts.py` (outcomes dos agentes,
+  `ExecutionStrategy`) e `validation.py` (sinais objetivos). É a folha do
+  grafo de dependências, o que mantém agentes e infraestrutura apontando
+  para baixo.
 
 ## Regras arquiteturais com enforcement
 
@@ -312,6 +317,7 @@ Camadas:
 | Idempotência | `idempotency_key()` determinística por (projeto, tarefa, tentativa) |
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando |
 | Fato verificado vence opinião | checks com id estável no schema do judge; o LLM marca o fato invocado e o sistema decide o item |
+| Dependência aponta para baixo | `tests/unit/test_layering.py` lê os imports por AST e reprova camada que importa para cima |
 | Modelo caro só por escalonamento | tiers no registry; `escalate()` sobe um degrau, fallback degrada para baixo |
 | Rastreabilidade | `TaskAttempt` por tentativa + checkpoints consultáveis via SQL |
 

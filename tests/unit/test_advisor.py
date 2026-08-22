@@ -5,7 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.advisor import LLMAdvisor
 from app.agents.registry import CapabilityExecutorRegistry
-from app.graph.nodes import AdvisingOutcome, UsageReport
+from app.models.contracts import AdvisingOutcome, UsageReport
 from app.graph.workflow import build_serde, build_workflow
 from app.graph.state import WorkflowBudget
 from app.models.task import (

@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.graph.nodes import AdvisingOutcome, UsageReport
+from app.models.contracts import AdvisingOutcome, UsageReport
 from app.models.task import AdvisorTrigger, EvaluationResult, TaskAttempt
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter

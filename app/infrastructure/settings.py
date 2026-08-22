@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.agents.executor import ExecutionStrategy
+from app.models.contracts import ExecutionStrategy
 from app.providers.base import ModelPricing
 from app.providers.registry import ModelTier, TierBinding
 

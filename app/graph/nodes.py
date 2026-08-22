@@ -27,11 +27,16 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from langgraph.types import Send, interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.agents.validation import format_validation_feedback
 from app.graph.state import WorkflowPhase, WorkflowState
 from app.infrastructure.tracing import current_trace_id
+from app.models.contracts import (
+    AdvisingOutcome,
+    JudgingOutcome,
+    PlanningOutcome,
+    UsageReport,
+)
 from app.models.task import (
     AdvisorTrigger,
     AgentTask,
@@ -39,6 +44,7 @@ from app.models.task import (
     TaskAttempt,
     TaskStatus,
 )
+from app.models.validation import format_validation_feedback
 
 
 # --------------------------------------------------------------------------
@@ -76,33 +82,14 @@ class MemoryStore(Protocol):
 
 
 class ExecutionPayload(BaseModel):
-    """Input schema do worker — o que cada Send() carrega."""
+    """Input schema do worker — o que cada Send() carrega.
+
+    Diferente dos outcomes, este é um detalhe do fan-out do grafo: nenhum
+    agente o vê, então fica aqui e não em app/models/contracts.py."""
 
     task: AgentTask
     project_id: str
     context: dict[str, Any]
-
-
-class UsageReport(BaseModel):
-    tokens: int = 0
-    cost_usd: float = 0.0
-
-
-class PlanningOutcome(BaseModel):
-    plan: list[AgentTask]
-    usage: UsageReport = Field(default_factory=UsageReport)
-
-
-class JudgingOutcome(BaseModel):
-    evaluation: EvaluationResult
-    usage: UsageReport = Field(default_factory=UsageReport)
-
-
-class AdvisingOutcome(BaseModel):
-    diagnosis: str
-    guidance: list[str] = Field(default_factory=list)
-    escalate_tier: bool = False
-    usage: UsageReport = Field(default_factory=UsageReport)
 
 
 class Advisor(Protocol):
@@ -375,7 +362,12 @@ def build_nodes(
                 update["evaluations"] = [evaluation]
             return update
 
-        except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+        # Amplo de propósito (regra 3 do módulo): falha de executor vira
+        # FAILED/ESCALATED, nunca exceção não tratada no grafo. A tupla
+        # anterior era redundante — asyncio.TimeoutError já é subclasse de
+        # Exception. CancelledError herda de BaseException e continua
+        # propagando, que é o correto para shutdown do worker.
+        except Exception as exc:  # noqa: BLE001
             reason = (
                 f"timeout após {task.timeout_seconds}s"
                 if isinstance(exc, asyncio.TimeoutError)

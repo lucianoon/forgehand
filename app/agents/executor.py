@@ -11,8 +11,9 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 from app.agents.grounding import format_repository_grounding, grounding_required
-from app.agents.validation import format_validation_feedback
+from app.models.validation import format_validation_feedback
 
+from app.models.contracts import ExecutionStrategy
 from app.models.task import AgentTask, Capability
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
@@ -48,12 +49,6 @@ class ExecutionOutput(BaseModel):
     files: list[FileArtifact] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
-
-
-class ExecutionStrategy(BaseModel):
-    apply_files: bool = True
-    run_objective_validation: bool = True
-    allow_autocorrect: bool = True
 
 
 class WorkspaceRuntime(Protocol):

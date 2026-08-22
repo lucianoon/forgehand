@@ -7,8 +7,8 @@ import shlex
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.agents.executor import ExecutionStrategy
-from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
+from app.models.contracts import ExecutionStrategy
+from app.models.validation import ObjectiveValidationPipeline, ValidationSignal
 from app.models.task import AgentTask, Capability
 
 

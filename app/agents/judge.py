@@ -32,12 +32,12 @@ from app.agents.grounding import (
     normalize_citations,
     validate_citations,
 )
-from app.agents.validation import (
+from app.models.validation import (
     ObjectiveValidationPipeline,
     ObjectiveValidator,
 )
 from app.models.task import AgentTask, EvaluationResult
-from app.graph.nodes import JudgingOutcome, UsageReport
+from app.models.contracts import JudgingOutcome, UsageReport
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 

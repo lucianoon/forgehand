@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.agents.executor import ExecutionStrategy, LLMExecutor, WorkspaceRuntime
+from app.agents.executor import LLMExecutor, WorkspaceRuntime
+from app.models.contracts import ExecutionStrategy
 from app.models.task import AgentTask, Capability
 from app.providers.registry import ModelTier, ProviderRouter
 

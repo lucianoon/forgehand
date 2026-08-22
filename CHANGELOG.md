@@ -17,6 +17,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   consumo de tokens.
 - Fatos verificados com id estável (`app/agents/deterministic_checks.py`), que o
   judge injeta no prompt e reconcilia por id.
+- `app/models/contracts.py` com os contratos que atravessam camadas (outcomes
+  dos agentes, `UsageReport`, `ExecutionStrategy`).
+- `tests/unit/test_layering.py`: as regras de dependência entre camadas passam
+  a ser verificadas por AST, em vez de afirmadas em docstring.
 
 ### Alterado
 
@@ -26,6 +30,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   observação invoca. Ganho de comportamento: o fato passa a valer nos **dois**
   sentidos — antes só era capaz de forçar aprovação, agora também reprova
   critério que o LLM aprovou contra a evidência registrada.
+- Inversões de camada eliminadas: `app/agents/{judge,planner,advisor}.py`
+  deixaram de importar DTOs de `app.graph.nodes`, e
+  `app/infrastructure/{settings,workspace_runtime}.py` deixaram de importar de
+  `app.agents.executor`. `app/agents/validation.py` virou
+  `app/models/validation.py` — era contrato compartilhado morando no pacote
+  de agentes.
 - A fila PostgreSQL passou de conexão única serializada por lock para
   `psycopg_pool.AsyncConnectionPool`, com validação na retirada. Workers
   concorrentes deixam de disputar o mesmo socket e uma conexão derrubada

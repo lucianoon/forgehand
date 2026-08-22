@@ -28,7 +28,7 @@ from app.agents.planner import (
     _to_agent_tasks,
 )
 from app.agents.judge import LLMJudge
-from app.agents.validation import ValidationSignal
+from app.models.validation import ValidationSignal
 from app.agents.registry import CapabilityExecutorRegistry
 
 PRICING = {

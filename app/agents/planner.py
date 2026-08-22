@@ -24,7 +24,7 @@ from app.agents.grounding import (
 )
 from app.models.task import TaskBudget
 from app.models.task import AgentTask, Capability
-from app.graph.nodes import PlanningOutcome, UsageReport
+from app.models.contracts import PlanningOutcome, UsageReport
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 

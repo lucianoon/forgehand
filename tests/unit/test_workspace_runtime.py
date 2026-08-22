@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.executor import ExecutionStrategy, LLMExecutor
-from app.agents.validation import (
+from app.agents.executor import LLMExecutor
+from app.models.contracts import ExecutionStrategy
+from app.models.validation import (
     ObjectiveValidationPipeline,
     format_validation_feedback,
 )
