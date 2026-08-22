@@ -28,6 +28,7 @@ from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
+    CommandRunner,
     DockerSandboxCommandRunner,
     LocalCommandRunner,
     LocalWorkspaceRuntime,
@@ -88,13 +89,18 @@ def build_container(
         openrouter_client=openrouter_client,
         tracer=tracer,
     )
-    objective_validators = build_objective_validators(settings)
+    # Um runner só para validação objetiva e snapshot do git: a fronteira de
+    # execução é a mesma para tudo que a tarefa roda no workspace.
+    command_runner = build_command_runner(settings)
+    objective_validators = build_objective_validators(settings, command_runner)
     validation_pipeline = build_objective_validation_pipeline(
         settings,
         objective_validators,
     )
     execution_strategies = build_execution_strategies(settings)
-    workspace_runtime = build_workspace_runtime(settings, validation_pipeline)
+    workspace_runtime = build_workspace_runtime(
+        settings, validation_pipeline, command_runner
+    )
     graph_app = build_workflow(
         planner=LLMPlanner(
             router,
@@ -137,9 +143,21 @@ def build_container(
     )
 
 
+def build_command_runner(settings: Settings) -> CommandRunner:
+    if settings.executor_command_backend == "docker":
+        return DockerSandboxCommandRunner(
+            image=settings.executor_sandbox_image,
+            memory=settings.executor_sandbox_memory,
+            cpus=settings.executor_sandbox_cpus,
+            network_enabled=settings.executor_sandbox_network_enabled,
+        )
+    return LocalCommandRunner()
+
+
 def build_workspace_runtime(
     settings: Settings,
     validation_pipeline: ObjectiveValidationPipeline,
+    command_runner: CommandRunner | None = None,
 ) -> LocalWorkspaceRuntime | None:
     if not settings.executor_apply_files_enabled:
         return None
@@ -147,21 +165,16 @@ def build_workspace_runtime(
         settings.executor_workspace_root,
         apply_files_enabled=settings.executor_apply_files_enabled,
         validation_pipeline=validation_pipeline,
+        command_runner=command_runner or build_command_runner(settings),
     )
 
 
-def build_objective_validators(settings: Settings) -> list[CommandObjectiveValidator]:
+def build_objective_validators(
+    settings: Settings,
+    command_runner: CommandRunner | None = None,
+) -> list[CommandObjectiveValidator]:
     validators: list[CommandObjectiveValidator] = []
-    command_runner = (
-        DockerSandboxCommandRunner(
-            image=settings.executor_sandbox_image,
-            memory=settings.executor_sandbox_memory,
-            cpus=settings.executor_sandbox_cpus,
-            network_enabled=settings.executor_sandbox_network_enabled,
-        )
-        if settings.executor_command_backend == "docker"
-        else LocalCommandRunner()
-    )
+    command_runner = command_runner or build_command_runner(settings)
     if settings.pytest_validation_command:
         validators.append(
             CommandObjectiveValidator(
