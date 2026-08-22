@@ -43,6 +43,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Segurança
 
+- `langgraph-checkpoint-postgres` sobe para 3.1.2, com piso declarado em
+  3.1.1: as versões anteriores têm CVE-2026-71433 / GHSA-47pj-3jcm-6whg,
+  vazamento entre namespaces em leituras escopadas (`search`,
+  `list_namespaces`) do `PostgresStore`. O Forgehand usa apenas o
+  `AsyncPostgresSaver`, não a Store API, então não estava exposto — o piso
+  existe para impedir que uma resolução nova traga a versão vulnerável.
 - O sandbox Docker deixou de executar via `sh -lc`. A allowlist validava só
   `argv[0]` e entregava a string crua ao shell, então `pytest && rm -rf ...`
   passava. Agora o argv validado vai direto ao container, em forma exec, e a

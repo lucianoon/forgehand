@@ -15,7 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = [
-    "langgraph-checkpoint-postgres>=2.0",
+    # Piso em 3.1.1: 3.1.0 e anteriores têm CVE-2026-71433 (vazamento entre
+    # namespaces em leituras escopadas do PostgresStore). O Forgehand usa só
+    # o AsyncPostgresSaver, não a Store API, mas o piso impede que uma
+    # resolução nova volte a trazer a versão vulnerável.
+    "langgraph-checkpoint-postgres>=3.1.1",
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
 ]
