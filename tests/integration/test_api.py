@@ -378,8 +378,15 @@ async def test_operational_endpoints_expose_health_readiness_and_metrics():
         ) as authed:
             await poll(authed, workflow_id, {"completed"})
 
+        # O workflow chega a "completed" no checkpoint um instante antes de o
+        # worker dar acknowledge no job — ler a métrica uma vez só é corrida.
         metrics_after = await client.get("/metrics")
         assert metrics_after.status_code == 200
+        for _ in range(20):
+            if metrics_after.json()["queue"]["done"] >= 1:
+                break
+            await asyncio.sleep(0.02)
+            metrics_after = await client.get("/metrics")
         assert metrics_after.json()["queue"]["done"] >= 1
         assert metrics_after.json()["workers"]["embedded_workers_enabled"] is True
 

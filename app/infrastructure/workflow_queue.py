@@ -13,6 +13,9 @@ from app.infrastructure.settings import Settings
 JobKind = Literal["start", "resume"]
 JobStatus = Literal["queued", "processing", "done", "failed"]
 
+_PING_TIMEOUT_SECONDS = 2.0
+_POOL_OPEN_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class WorkflowJob:
@@ -317,21 +320,52 @@ class InMemoryWorkflowQueue:
 
 
 class PostgresWorkflowQueue:
+    """Fila durável sobre PostgreSQL.
+
+    Usa um POOL, não uma conexão única. Com uma conexão só, todo worker do
+    processo serializa no mesmo socket — o `FOR UPDATE SKIP LOCKED` do dequeue
+    perde o sentido — e uma conexão derrubada deixa a fila inutilizável até o
+    restart. O pool dá concorrência real e substitui conexões quebradas.
+    """
+
     def __init__(
-        self, dsn: str, lease_seconds: float = 30.0, max_delivery_attempts: int = 3
+        self,
+        dsn: str,
+        lease_seconds: float = 30.0,
+        max_delivery_attempts: int = 3,
+        max_size: int = 10,
     ) -> None:
         self._dsn = dsn
         self._lease_seconds = lease_seconds
         self._max_delivery_attempts = max_delivery_attempts
-        self._conn: Any | None = None
-        self._lock = asyncio.Lock()
+        self._max_size = max(2, max_size)
+        self._pool: Any | None = None
+
+    def _connection(self, timeout: float | None = None) -> Any:
+        """Conexão do pool. O bloco é a unidade de transação: commit na saída
+        limpa, rollback na exceção."""
+        assert self._pool is not None, "PostgresWorkflowQueue.setup() não foi chamado"
+        if timeout is None:
+            return self._pool.connection()
+        return self._pool.connection(timeout=timeout)
 
     async def setup(self) -> None:
-        from psycopg import AsyncConnection
+        from psycopg_pool import AsyncConnectionPool
 
-        self._conn = await AsyncConnection.connect(self._dsn)
-        async with self._lock:
-            await self._conn.execute(
+        self._pool = AsyncConnectionPool(
+            self._dsn,
+            min_size=1,
+            max_size=self._max_size,
+            # Sem `check`, o pool só descarta a conexão morta DEPOIS de
+            # entregá-la — quem a recebeu já levou AdminShutdown. Custa um
+            # roundtrip por retirada e converte failover do banco em
+            # recuperação transparente, que é o ponto do pool aqui.
+            check=AsyncConnectionPool.check_connection,
+            open=False,
+        )
+        await self._pool.open(wait=True, timeout=_POOL_OPEN_TIMEOUT_SECONDS)
+        async with self._connection() as conn:
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_jobs (
                     id BIGSERIAL PRIMARY KEY,
@@ -352,31 +386,31 @@ class PostgresWorkflowQueue:
                 )
                 """
             )
-            await self._conn.execute(
+            await conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_workflow_jobs_ready
                     ON workflow_jobs (status, id)
                 """
             )
-            await self._conn.execute(
+            await conn.execute(
                 "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS project_id TEXT"
             )
-            await self._conn.execute(
+            await conn.execute(
                 "ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS owner_client_id TEXT"
             )
-            await self._conn.execute(
+            await conn.execute(
                 """
                 ALTER TABLE workflow_jobs
                 ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3
                 """
             )
-            await self._conn.execute(
+            await conn.execute(
                 """
                 ALTER TABLE workflow_jobs
                 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 """
             )
-            await self._conn.execute(
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_workers (
                     worker_id TEXT PRIMARY KEY,
@@ -384,12 +418,10 @@ class PostgresWorkflowQueue:
                 )
                 """
             )
-            await self._conn.commit()
 
     async def touch_worker(self, worker_id: str) -> None:
-        assert self._conn is not None
-        async with self._lock:
-            await self._conn.execute(
+        async with self._connection() as conn:
+            await conn.execute(
                 """
                 INSERT INTO workflow_workers (worker_id, heartbeat_at)
                 VALUES (%s, NOW())
@@ -398,7 +430,6 @@ class PostgresWorkflowQueue:
                 """,
                 (worker_id,),
             )
-            await self._conn.commit()
 
     async def enqueue(
         self,
@@ -408,9 +439,8 @@ class PostgresWorkflowQueue:
         kind: JobKind,
         payload: dict[str, Any] | str,
     ) -> WorkflowJob:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 INSERT INTO workflow_jobs (
                     workflow_id,
@@ -435,7 +465,6 @@ class PostgresWorkflowQueue:
                 ),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         return WorkflowJob(
             id=str(row[0]),
             workflow_id=workflow_id,
@@ -447,9 +476,15 @@ class PostgresWorkflowQueue:
             max_attempts=self._max_delivery_attempts,
         )
 
-    async def _requeue_expired_locked(self) -> None:
-        assert self._conn is not None
-        await self._conn.execute(
+    @staticmethod
+    async def _requeue_expired(
+        conn: Any, lease_seconds: float, max_delivery_attempts: int
+    ) -> None:
+        """Devolve à fila (ou reprova) jobs cujo lease expirou.
+
+        Roda na mesma transação do dequeue — o worker que reclama a vaga é o
+        mesmo que a liberou."""
+        await conn.execute(
             """
             UPDATE workflow_jobs
             SET status = CASE
@@ -470,55 +505,56 @@ class PostgresWorkflowQueue:
               AND locked_at <= NOW() - (%s * INTERVAL '1 second')
             """,
             (
-                self._max_delivery_attempts,
-                self._max_delivery_attempts,
+                max_delivery_attempts,
+                max_delivery_attempts,
                 _lease_expired_error(),
                 _lease_expired_error(),
-                self._lease_seconds,
+                lease_seconds,
             ),
         )
 
     async def dequeue(
         self, worker_id: str, poll_interval_seconds: float
     ) -> WorkflowJob | None:
-        assert self._conn is not None
-        async with self._lock:
-            async with self._conn.transaction():
-                await self._requeue_expired_locked()
-                cur = await self._conn.execute(
-                    """
-                    WITH next_job AS (
-                        SELECT id
-                        FROM workflow_jobs
-                        WHERE status = 'queued'
-                          AND retry_after <= NOW()
-                        ORDER BY id
-                        FOR UPDATE SKIP LOCKED
-                        LIMIT 1
-                    )
-                    UPDATE workflow_jobs AS jobs
-                    SET status = 'processing',
-                        attempts = attempts + 1,
-                        locked_by = %s,
-                        locked_at = NOW(),
-                        updated_at = NOW()
-                    FROM next_job
-                    WHERE jobs.id = next_job.id
-                    RETURNING
-                        jobs.id,
-                        jobs.workflow_id,
-                        jobs.project_id,
-                        jobs.owner_client_id,
-                        jobs.kind,
-                        jobs.payload,
-                        jobs.attempts,
-                        jobs.max_attempts,
-                        jobs.locked_by
-                    """,
-                    (worker_id,),
+        # O bloco do pool já é a transação; o SKIP LOCKED garante que dois
+        # workers concorrentes nunca reclamem o mesmo job.
+        async with self._connection() as conn:
+            await self._requeue_expired(
+                conn, self._lease_seconds, self._max_delivery_attempts
+            )
+            cur = await conn.execute(
+                """
+                WITH next_job AS (
+                    SELECT id
+                    FROM workflow_jobs
+                    WHERE status = 'queued'
+                      AND retry_after <= NOW()
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
                 )
-                row = await cur.fetchone()
-            await self._conn.commit()
+                UPDATE workflow_jobs AS jobs
+                SET status = 'processing',
+                    attempts = attempts + 1,
+                    locked_by = %s,
+                    locked_at = NOW(),
+                    updated_at = NOW()
+                FROM next_job
+                WHERE jobs.id = next_job.id
+                RETURNING
+                    jobs.id,
+                    jobs.workflow_id,
+                    jobs.project_id,
+                    jobs.owner_client_id,
+                    jobs.kind,
+                    jobs.payload,
+                    jobs.attempts,
+                    jobs.max_attempts,
+                    jobs.locked_by
+                """,
+                (worker_id,),
+            )
+            row = await cur.fetchone()
         if row is None:
             await asyncio.sleep(poll_interval_seconds)
             return None
@@ -536,11 +572,10 @@ class PostgresWorkflowQueue:
         )
 
     async def heartbeat(self, job: WorkflowJob) -> bool:
-        assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 UPDATE workflow_jobs
                 SET locked_at = NOW(), updated_at = NOW()
@@ -552,15 +587,13 @@ class PostgresWorkflowQueue:
                 (int(job.id), job.locked_by),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         return row is not None
 
     async def acknowledge(self, job: WorkflowJob) -> bool:
-        assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 UPDATE workflow_jobs
                 SET status = 'done',
@@ -575,15 +608,13 @@ class PostgresWorkflowQueue:
                 (int(job.id), job.locked_by),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         return row is not None
 
     async def fail(self, job: WorkflowJob, error: str) -> bool:
-        assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 UPDATE workflow_jobs
                 SET status = 'failed',
@@ -599,13 +630,11 @@ class PostgresWorkflowQueue:
                 (error, int(job.id), job.locked_by),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         return row is not None
 
     async def cancel(self, workflow_id: str) -> bool:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 UPDATE workflow_jobs
                 SET status = 'failed',
@@ -619,13 +648,11 @@ class PostgresWorkflowQueue:
                 (workflow_id,),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         return row is not None
 
     async def get_state(self, workflow_id: str) -> WorkflowJobState | None:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 SELECT status, error
                 FROM workflow_jobs
@@ -636,7 +663,6 @@ class PostgresWorkflowQueue:
                 (workflow_id,),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         if row is None:
             return None
         return WorkflowJobState(
@@ -646,9 +672,8 @@ class PostgresWorkflowQueue:
         )
 
     async def get_access(self, workflow_id: str) -> WorkflowAccessContext | None:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 SELECT project_id, owner_client_id
                 FROM workflow_jobs
@@ -659,7 +684,6 @@ class PostgresWorkflowQueue:
                 (workflow_id,),
             )
             row = await cur.fetchone()
-            await self._conn.commit()
         if row is None:
             return None
         return WorkflowAccessContext(
@@ -669,17 +693,16 @@ class PostgresWorkflowQueue:
         )
 
     async def ping(self) -> bool:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute("SELECT 1")
+        # Probe de readiness: falha rápido em vez de esperar o timeout padrão
+        # do pool quando o banco está fora.
+        async with self._connection(timeout=_PING_TIMEOUT_SECONDS) as conn:
+            cur = await conn.execute("SELECT 1")
             row = await cur.fetchone()
-            await self._conn.commit()
         return row is not None and row[0] == 1
 
     async def get_stats(self) -> WorkflowQueueStats:
-        assert self._conn is not None
-        async with self._lock:
-            cur = await self._conn.execute(
+        async with self._connection() as conn:
+            cur = await conn.execute(
                 """
                 SELECT
                     COUNT(*) FILTER (WHERE status = 'queued') AS queued,
@@ -699,7 +722,7 @@ class PostgresWorkflowQueue:
                 (self._lease_seconds,),
             )
             row = await cur.fetchone()
-            workers_cur = await self._conn.execute(
+            workers_cur = await conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM workflow_workers
@@ -708,7 +731,6 @@ class PostgresWorkflowQueue:
                 (max(self._lease_seconds * 2, 1.0),),
             )
             workers_row = await workers_cur.fetchone()
-            await self._conn.commit()
         return WorkflowQueueStats(
             backend="postgres",
             queued=int(row[0]),
@@ -723,9 +745,9 @@ class PostgresWorkflowQueue:
         )
 
     async def close(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
 
 @asynccontextmanager
@@ -735,6 +757,9 @@ async def workflow_queue_context(settings: Settings) -> AsyncGenerator[Any, None
             settings.database_url,
             lease_seconds=settings.workflow_queue_lease_seconds,
             max_delivery_attempts=settings.workflow_queue_max_delivery_attempts,
+            # Uma conexão por worker embutido, mais folga para as leituras que
+            # a API faz fora do loop (get_state, get_access, readyz, metrics).
+            max_size=settings.workflow_worker_concurrency + 4,
         )
         await queue.setup()
         try:
