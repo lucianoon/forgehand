@@ -7,9 +7,10 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-green.svg)](LICENSE)
 
-Sistema multiagente para desenvolvimento de software: orquestrador,
-executores especializados por capacidade, judge com veto objetivo,
-memória persistente, execução paralela e gate humano em decisões críticas.
+Plataforma multiagente de entrega de software: orquestração LangGraph,
+execução paralela, judge com veto objetivo (pytest/ruff/mypy), gate humano
+em decisões críticas, circuit breakers de custo e tempo, execução durável
+e observabilidade OTel.
 
 ## Em 30 segundos
 

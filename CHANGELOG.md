@@ -5,6 +5,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Alterado
+
+- Parágrafo de abertura do README alinhado à descrição pública da plataforma
+  (LangGraph, veto objetivo, gate humano, circuit breakers e OTel).
+
 ### Adicionado
 
 - Política de reporte de vulnerabilidades em `SECURITY.md` e reporte privado
