@@ -341,6 +341,17 @@ class LLMProvider(ABC):
         try:
             return schema.model_validate(raw).model_dump(mode="json")
         except ValidationError as exc:
+            # Modelos às vezes embrulham a saída em uma chave única
+            # ({"parameters": {...}}, {"input": {...}}). Visto em produção com
+            # Claude Sonnet 5 no judge. Desembrulhar é mais barato que repetir
+            # a chamada — e a validação continua estrita no conteúdo.
+            if len(raw) == 1:
+                (inner,) = raw.values()
+                if isinstance(inner, dict):
+                    try:
+                        return schema.model_validate(inner).model_dump(mode="json")
+                    except ValidationError:
+                        pass
             raise StructuredOutputError(
                 f"Saída não valida contra {schema.__name__}: {exc}",
                 provider=provider,

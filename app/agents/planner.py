@@ -46,8 +46,11 @@ independente que NÃO viu a requisição original;
 `text` (o contrato legível) e `kind`. Prefira kinds OBJETIVOS, decididos por \
 código sem margem de interpretação: tests_pass / lint_pass / types_pass \
 (sinais pytest/ruff/mypy), file_created (path), file_modified (path), \
-no_existing_file_modified, changes_limited_to (paths, aceita globs), \
-content_contains (path + pattern regex), citations_valid (análises grounded). \
+file_unchanged (path: "X não pode ser alterado"), no_existing_file_modified \
+(SÓ para tarefas que criam arquivos novos sem tocar em nenhum existente — \
+não use quando a tarefa edita um arquivo), changes_limited_to (paths, aceita \
+globs), content_contains (path + pattern regex), citations_valid (análises \
+grounded). \
 Use `subjective` só para o que realmente exige julgamento (qualidade, \
 clareza, aderência a um desenho). Um plano bom mistura os dois: o objetivo \
 prova que a mudança aconteceu, o subjetivo julga se ficou boa;

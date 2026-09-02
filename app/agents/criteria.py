@@ -121,6 +121,8 @@ def _evaluate(
         return _file_created(criterion, workspace)
     if kind is CriterionKind.FILE_MODIFIED:
         return _file_modified(criterion, workspace)
+    if kind is CriterionKind.FILE_UNCHANGED:
+        return _file_unchanged(criterion, workspace)
     if kind is CriterionKind.NO_EXISTING_FILE_MODIFIED:
         return _only_creations(criterion, task, workspace)
     if kind is CriterionKind.CHANGES_LIMITED_TO:
@@ -215,6 +217,23 @@ def _file_modified(
         False,
         f"`{path}` não foi alterado pela tarefa.",
         required_change=f"Altere `{path}` (op=replace no trecho pertinente).",
+    )
+
+
+def _file_unchanged(
+    criterion: AcceptanceCriterion, workspace: dict[str, Any]
+) -> ObjectiveVerdict:
+    """`path` não pode aparecer entre os diffs com mudança (alterado, criado
+    por cima ou removido). Sem diff para o path = intocado."""
+    path = criterion.path or ""
+    entry = next((d for d in _changed_diffs(workspace) if d.get("path") == path), None)
+    if entry is None:
+        return ObjectiveVerdict(criterion, True, f"`{path}` não foi alterado.")
+    return ObjectiveVerdict(
+        criterion,
+        False,
+        f"`{path}` foi alterado ({entry.get('operation', entry.get('change_type'))}).",
+        required_change=f"Não altere `{path}`; desfaça as mudanças nesse arquivo.",
     )
 
 

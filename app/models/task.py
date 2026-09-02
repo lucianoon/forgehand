@@ -69,6 +69,7 @@ class CriterionKind(str, Enum):
     TYPES_PASS = "types_pass"  # sinal mypy passou
     FILE_CREATED = "file_created"  # `path` criado pela tarefa
     FILE_MODIFIED = "file_modified"  # `path` (existente) alterado pela tarefa
+    FILE_UNCHANGED = "file_unchanged"  # `path` NÃO foi alterado/removido
     NO_EXISTING_FILE_MODIFIED = "no_existing_file_modified"  # só criações
     CHANGES_LIMITED_TO = "changes_limited_to"  # mudanças só em `paths` (globs)
     CONTENT_CONTAINS = "content_contains"  # `pattern` (regex) em `path` final
@@ -82,6 +83,7 @@ class CriterionKind(str, Enum):
 _KINDS_NEEDING_PATH = {
     CriterionKind.FILE_CREATED,
     CriterionKind.FILE_MODIFIED,
+    CriterionKind.FILE_UNCHANGED,
     CriterionKind.CONTENT_CONTAINS,
 }
 

@@ -5,8 +5,18 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Critério `file_unchanged` (path): o arquivo não pode ser alterado nem
+  removido pela tarefa. Cobre "não altere os testes", que antes acabava
+  mapeado para `no_existing_file_modified` (só criações) e reprovava qualquer
+  edição legítima. Prompt do planner esclarece a diferença.
+
 ### Corrigido
 
+- Saída estruturada embrulhada em uma chave única (`{"parameters": {...}}`,
+  visto com Claude Sonnet 5 no judge) passa a ser desembrulhada antes de
+  falhar a validação, em vez de escalar a tarefa por erro do judge.
 - `temperature` deixou de ser enviado por padrão aos fornecedores: os modelos
   Claude 5 rejeitam o parâmetro (400 "deprecated for this model"), o que
   derrubava toda chamada com a configuração padrão. `CompletionRequest.

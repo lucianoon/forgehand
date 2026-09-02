@@ -101,3 +101,26 @@ async def test_openai_compatible_omits_temperature_unless_requested():
     seen.clear()
     await _openai(seen).complete(_request(model="openai/gpt-4o-mini", temperature=0.0))
     assert seen["temperature"] == 0.0
+
+
+def test_structured_output_unwraps_single_key_wrapper():
+    from pydantic import BaseModel
+
+    from app.providers.base import LLMProvider, StructuredOutputError
+
+    class Out(BaseModel):
+        approved: bool
+        score: float
+
+    ok = LLMProvider._validate_structured(
+        {"parameters": {"approved": True, "score": 0.9}}, Out, "fake"
+    )
+    assert ok == {"approved": True, "score": 0.9}
+    # conteúdo inválido continua falhando mesmo embrulhado
+    with pytest.raises(StructuredOutputError):
+        LLMProvider._validate_structured({"input": {"approved": "talvez"}}, Out, "fake")
+    # duas chaves no topo não são um embrulho
+    with pytest.raises(StructuredOutputError):
+        LLMProvider._validate_structured(
+            {"parameters": {"approved": True, "score": 1}, "extra": 1}, Out, "fake"
+        )

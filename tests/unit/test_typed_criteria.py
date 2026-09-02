@@ -495,3 +495,21 @@ def test_planner_stable_id_is_stable_across_string_and_typed_forms():
         }
     )
     assert _task_stable_id(other) != _task_stable_id(typed)
+
+
+def test_file_unchanged_passes_only_when_path_is_untouched():
+    result = {"summary": "s", "workspace": WORKSPACE}
+    verdicts = _verdicts(
+        [
+            {"text": "testes intactos", "kind": "file_unchanged", "path": "tests/x.py"},
+            {"text": "same intacto", "kind": "file_unchanged", "path": "app/same.py"},
+            {"text": "old intacto", "kind": "file_unchanged", "path": "app/old.py"},
+        ],
+        result=result,
+    )
+    assert verdicts["testes intactos"].passed is True
+    assert verdicts["same intacto"].passed is True  # diff registrado sem mudança
+    assert verdicts["old intacto"].passed is False
+    assert "foi alterado (replace)" in verdicts["old intacto"].detail
+    with pytest.raises(ValidationError, match="exige `path`"):
+        AcceptanceCriterion(text="x", kind=CriterionKind.FILE_UNCHANGED)
