@@ -590,7 +590,11 @@ class CommandObjectiveValidator:
     ) -> ValidationSignal | None:
         if not self._should_run(capability=capability, applied_files=applied_files):
             return None
+        return await self.execute()
 
+    async def execute(self) -> ValidationSignal:
+        """Roda o comando incondicionalmente (usado pela ferramenta run_check
+        dos agentes). `run` aplica o filtro de capability/sufixo antes."""
         execution = await self._command_runner.run(
             self._command, self._workspace_root, self._output_limit
         )

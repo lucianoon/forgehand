@@ -88,6 +88,48 @@ export LLM_PROVIDER_BACKEND=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+## Tool-use dos agentes
+
+Planner, executor e judge podem explorar o workspace antes de responder, em
+vez de dependerem só do recorte do grounding. As ferramentas são poucas e
+auditáveis:
+
+| ferramenta | quem tem | o que faz |
+|---|---|---|
+| `read_file` | todos | lê um arquivo com numeração de linhas (intervalo opcional) |
+| `list_directory` | todos | lista um diretório |
+| `search_repository` | todos | regex sobre arquivos de texto, devolve `path:linha: texto` |
+| `run_check` | executor | roda uma verificação já configurada (`pytest`, `ruff`, `mypy`) pelo nome |
+
+Toda leitura fica dentro do root (executor e judge usam
+`EXECUTOR_WORKSPACE_ROOT`; o planner usa `REPOSITORY_ROOT`), diretórios
+ignorados (`.git`, `.venv`, `node_modules`...) e arquivos sensíveis (`.env`,
+chaves, credenciais) são bloqueados, e `run_check` só executa comandos que já
+passaram pelo allowlist do `CommandPolicy` — o modelo escolhe o nome, nunca o
+comando.
+
+O loop tem dois tetos: número de chamadas por papel e o budget de tokens
+restante da tarefa. Ao atingir qualquer um, a rodada seguinte força a resposta
+final estruturada. O que foi explorado fica em `result.exploration` da tarefa
+(nome, argumentos, sucesso e um preview de cada chamada), visível ao judge, ao
+advisor e no checkpoint.
+
+```bash
+AGENT_TOOLS_ENABLED=true                # false desliga para todos os papéis
+AGENT_TOOLS_MAX_CALLS_EXECUTOR=8        # 0 desliga só para este papel
+AGENT_TOOLS_MAX_CALLS_PLANNER=4
+AGENT_TOOLS_MAX_CALLS_JUDGE=4
+AGENT_TOOLS_MAX_OUTPUT_CHARS=12000      # corte por resultado de ferramenta
+AGENT_TOOLS_ALLOW_CHECKS=true           # oferece run_check ao executor
+```
+
+Nos providers, a resposta final continua sendo a ferramenta de saída
+estruturada (`emit_structured_output`, sempre a primeira da lista). Na
+Anthropic o `tool_choice` é `any` enquanto o modelo pode explorar e aponta
+para a saída na rodada final; no OpenAI-compatible as ferramentas viram
+functions com `tool_choice=required` e a saída estruturada deixa de usar
+`response_format` nessas chamadas.
+
 ## Prompt caching
 
 O grounding do repositório é o maior bloco repetido entre as chamadas de um

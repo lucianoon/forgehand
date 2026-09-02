@@ -28,6 +28,7 @@ from app.agents.planner import (
     _to_agent_tasks,
 )
 from app.agents.judge import LLMJudge
+from app.agents.tools import build_workspace_tools
 from app.agents.validation import ValidationSignal
 from app.agents.registry import CapabilityExecutorRegistry
 
@@ -42,10 +43,19 @@ state = {
     "executor_saw_deps": False,
     "planner_saw_grounding": False,
     "executor_saw_grounding": False,
+    "planner_explored": False,
+    "planner_saw_tool_result": False,
 }
 
 
-def tool_result(payload, model, in_tok=800, out_tok=400):
+def tool_result(
+    payload,
+    model,
+    in_tok=800,
+    out_tok=400,
+    tool_name="emit_structured_output",
+    tool_id="t",
+):
     return httpx.Response(
         200,
         json={
@@ -56,8 +66,8 @@ def tool_result(payload, model, in_tok=800, out_tok=400):
             "content": [
                 {
                     "type": "tool_use",
-                    "id": "t",
-                    "name": "emit_structured_output",
+                    "id": tool_id,
+                    "name": tool_name,
                     "input": payload,
                 }
             ],
@@ -69,6 +79,14 @@ def tool_result(payload, model, in_tok=800, out_tok=400):
 
 def handler(request):
     body = json.loads(request.content)
+    # saída estruturada é sempre a primeira ferramenta; as demais são exploração
+    assert body["tools"][0]["name"] == "emit_structured_output"
+    exploration_tools = {t["name"] for t in body["tools"][1:]}
+    if exploration_tools:
+        assert exploration_tools >= {"read_file", "search_repository"}
+        assert body["tool_choice"]["type"] in {"any", "tool"}
+    else:
+        assert body["tool_choice"] == {"type": "tool", "name": "emit_structured_output"}
     schema_props = body["tools"][0]["input_schema"].get("properties", {})
     model = body["model"]
     state["models_used"].add(model)
@@ -91,6 +109,20 @@ def handler(request):
         assert "Grounding obrigatório do repositório" in system_text
         assert "[E1] app/main.py:1-3" in system_text
         state["planner_saw_grounding"] = True
+        if not state["planner_explored"]:
+            # rodada 1: o planner explora antes de planejar (tool-use real)
+            state["planner_explored"] = True
+            return tool_result(
+                {"path": "README.md"}, model, tool_name="read_file", tool_id="tu_read"
+            )
+        # rodada 2: o histórico traz o tool_result com o conteúdo lido
+        last = body["messages"][-1]["content"]
+        assert isinstance(last, list), "esperava blocos de tool_result"
+        result_block = next(b for b in last if b["type"] == "tool_result")
+        assert result_block["tool_use_id"] == "tu_read"
+        assert "# workspace e2e" in result_block["content"]
+        assert body["messages"][-2]["content"][-1]["type"] == "tool_use"
+        state["planner_saw_tool_result"] = True
         return tool_result(
             {
                 "rationale": "vertical mvp",
@@ -235,7 +267,9 @@ class FakeMemory:
 
 
 @pytest.mark.asyncio
-async def test_agents_e2e():
+async def test_agents_e2e(tmp_path):
+    (tmp_path / "README.md").write_text("# workspace e2e\n", encoding="utf-8")
+    tools = build_workspace_tools(str(tmp_path))
     client = anthropic.AsyncAnthropic(
         api_key="test",
         max_retries=0,
@@ -258,9 +292,9 @@ async def test_agents_e2e():
     )
     mem = FakeMemory()
     app = build_workflow(
-        planner=LLMPlanner(router),
-        registry=CapabilityExecutorRegistry(router),
-        judge=LLMJudge(router),
+        planner=LLMPlanner(router, tools=tools, max_tool_calls=4),
+        registry=CapabilityExecutorRegistry(router, tools=tools, max_tool_calls=4),
+        judge=LLMJudge(router, tools=tools, max_tool_calls=4),
         memory=mem,
         checkpointer=MemorySaver(serde=build_serde()),
     )
@@ -280,6 +314,7 @@ async def test_agents_e2e():
     assert all(t.status == TaskStatus.COMPLETED for t in plan)
     assert state["planner_saw_grounding"] is True
     assert state["executor_saw_grounding"] is True
+    assert state["planner_saw_tool_result"] is True, "planner explorou via read_file"
     print("1. e2e OK — fluxo completo com agentes reais, phase=completed")
 
     backend = next(t for t in plan if t.title == "backend")
@@ -311,7 +346,9 @@ async def test_agents_e2e():
         "4. tiers OK — FAST p/ docs, STANDARD p/ resto, STRONG nunca sem escalonamento"
     )
 
-    assert out["usage"]["tokens"] == 10_800
+    # 9 chamadas de agentes + 1 rodada de exploração do planner (read_file),
+    # cada uma com 800 + 400 tokens no mock
+    assert out["usage"]["tokens"] == 12_000
     assert out["usage"]["cost_usd"] > 0
     per_task = sum(t.budget.consumed_cost_usd for t in plan)
     assert abs(per_task - sum(a.cost_usd for t in plan for a in t.attempts)) < 1e-9

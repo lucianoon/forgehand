@@ -27,9 +27,11 @@ from app.providers.base import (
     CompletionRequest,
     CompletionResult,
     LLMProvider,
+    Message,
     NonRetryableProviderError,
     RetryableProviderError,
     StructuredOutputError,
+    ToolCall,
     Usage,
 )
 
@@ -40,6 +42,78 @@ MODEL_STRONG = "claude-opus-5"
 
 _STRUCTURED_TOOL_NAME = "emit_structured_output"
 _CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def build_tools_and_choice(
+    request: CompletionRequest,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Ferramenta de saída estruturada PRIMEIRO (é a resposta final), depois
+    as de exploração. tool_choice: forçada quando só há saída estruturada ou
+    force_final; `any` quando o modelo pode explorar antes de responder."""
+    tools: list[dict[str, Any]] = []
+    if request.response_schema is not None:
+        tools.append(
+            {
+                "name": _STRUCTURED_TOOL_NAME,
+                "description": "Emita o resultado final exatamente neste schema.",
+                "input_schema": request.response_schema.model_json_schema(),
+            }
+        )
+    for spec in request.tools:
+        tools.append(
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "input_schema": spec.input_schema,
+            }
+        )
+    if not tools:
+        return [], None
+    if request.response_schema is not None and (
+        not request.tools or request.force_final
+    ):
+        return tools, {"type": "tool", "name": _STRUCTURED_TOOL_NAME}
+    if request.response_schema is not None:
+        return tools, {"type": "any"}
+    return tools, {"type": "auto"}
+
+
+def build_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Mensagens simples viram string (formato original); mensagens com
+    tool_calls/tool_results viram blocos."""
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if message.role == "assistant" and message.tool_calls:
+            blocks: list[dict[str, Any]] = []
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            for call in message.tool_calls:
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.arguments,
+                    }
+                )
+            out.append({"role": "assistant", "content": blocks})
+        elif message.tool_results:
+            blocks = []
+            for result in message.tool_results:
+                block: dict[str, Any] = {
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_call_id,
+                    "content": result.content,
+                }
+                if result.is_error:
+                    block["is_error"] = True
+                blocks.append(block)
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            out.append({"role": "user", "content": blocks})
+        else:
+            out.append({"role": message.role, "content": message.content})
+    return out
 
 
 def build_system_blocks(request: CompletionRequest) -> str | list[dict[str, Any]]:
@@ -73,21 +147,16 @@ class AnthropicProvider(LLMProvider):
             "model": request.model,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
-            "messages": [m.model_dump() for m in request.messages],
+            "messages": build_messages(request.messages),
         }
         system = build_system_blocks(request)
         if system:
             kwargs["system"] = system
 
-        if request.response_schema is not None:
-            kwargs["tools"] = [
-                {
-                    "name": _STRUCTURED_TOOL_NAME,
-                    "description": ("Emita o resultado final exatamente neste schema."),
-                    "input_schema": request.response_schema.model_json_schema(),
-                }
-            ]
-            kwargs["tool_choice"] = {"type": "tool", "name": _STRUCTURED_TOOL_NAME}
+        tools, tool_choice = build_tools_and_choice(request)
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -113,19 +182,28 @@ class AnthropicProvider(LLMProvider):
 
         text_parts: list[str] = []
         parsed: dict[str, Any] | None = None
+        tool_calls: list[ToolCall] = []
         for block in response.content:
             if block.type == "text":
                 text_parts.append(block.text)
-            elif block.type == "tool_use" and block.name == _STRUCTURED_TOOL_NAME:
-                if request.response_schema is None:
-                    continue
-                parsed = self._validate_structured(
-                    dict(block.input),
-                    request.response_schema,
-                    self.name,
-                )
+            elif block.type == "tool_use":
+                if (
+                    block.name == _STRUCTURED_TOOL_NAME
+                    and request.response_schema is not None
+                ):
+                    parsed = self._validate_structured(
+                        dict(block.input),
+                        request.response_schema,
+                        self.name,
+                    )
+                else:
+                    tool_calls.append(
+                        ToolCall(
+                            id=block.id, name=block.name, arguments=dict(block.input)
+                        )
+                    )
 
-        if request.response_schema is not None and parsed is None:
+        if request.response_schema is not None and parsed is None and not tool_calls:
             raise StructuredOutputError(
                 "Schema exigido mas o modelo não emitiu tool_use.",
                 provider=self.name,
@@ -134,6 +212,7 @@ class AnthropicProvider(LLMProvider):
         return CompletionResult(
             text="\n".join(text_parts),
             parsed=parsed,
+            tool_calls=tool_calls,
             model=response.model,
             provider=self.name,
             usage=usage,

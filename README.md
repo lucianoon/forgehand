@@ -175,6 +175,7 @@ Camadas:
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando |
 | Modelo caro só por escalonamento | tiers no registry; `escalate()` sobe um degrau, fallback degrada para baixo |
 | Rastreabilidade | `TaskAttempt` por tentativa + checkpoints consultáveis via SQL |
+| Exploração limitada | agentes leem o workspace só por ferramentas confinadas ao root; teto de chamadas e de tokens no `ToolLoop`, `run_check` só por nome do allowlist |
 
 ## Testes
 

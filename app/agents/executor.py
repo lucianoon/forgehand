@@ -16,6 +16,7 @@ from app.agents.grounding import (
     format_evidence_focus,
     grounding_required,
 )
+from app.agents.tools import AgentTool, ToolLoop
 from app.agents.validation import format_validation_feedback
 
 from app.models.task import AgentTask, Capability
@@ -51,6 +52,14 @@ correção como obrigatória;
   à tarefa anterior;
 - se houver grounding do repositório, use SOMENTE as evidências fornecidas e \
   devolva `citations` com os evidence_ids usados para sustentar o resultado."""
+
+TOOLS_GUIDANCE = """
+
+Ferramentas disponíveis: read_file, list_directory, search_repository e, \
+quando oferecida, run_check. Use-as para ver o conteúdo EXATO de um arquivo \
+antes de um op=replace, localizar usos de um símbolo e saber o que já falha. \
+Explore o mínimo necessário (poucas chamadas, objetivas) e então emita a \
+resposta final estruturada."""
 
 
 class FileArtifact(BaseModel):
@@ -137,10 +146,13 @@ class LLMExecutor:
         workspace_runtime: WorkspaceRuntime | None = None,
         max_autocorrect_rounds: int = 0,
         execution_strategies: dict[Capability, ExecutionStrategy] | None = None,
+        tools: list[AgentTool] | None = None,
+        max_tool_calls: int = 8,
     ):
         self._router = router
         self.agent_name = agent_name
         self.tier = tier
+        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
         self._workspace_runtime = workspace_runtime
         self._max_autocorrect_rounds = max(0, max_autocorrect_rounds)
         self._execution_strategies = execution_strategies or {}
@@ -159,12 +171,16 @@ class LLMExecutor:
 
         cache_prefix = build_grounding_prefix(context)
         for iteration_index in range(max_rounds + 1):
-            result = await self._router.complete(
+            remaining_tokens = max(
+                1,
+                task.budget.max_tokens - task.budget.consumed_tokens - total_tokens,
+            )
+            loop_outcome = await self._tool_loop.run(
                 self.tier,
                 CompletionRequest(
                     model="",
                     cache_prefix=cache_prefix,
-                    system=SYSTEM_PROMPT.format(capability=task.capability.value),
+                    system=self._system_prompt(task),
                     messages=[
                         Message(
                             role="user",
@@ -177,20 +193,18 @@ class LLMExecutor:
                         )
                     ],
                     response_schema=ExecutionOutput,
-                    max_tokens=max(
-                        1,
-                        min(
-                            16384,
-                            task.budget.max_tokens - task.budget.consumed_tokens,
-                        ),
-                    ),
+                    max_tokens=min(16384, remaining_tokens),
                 ),
+                token_ceiling=remaining_tokens,
             )
-            total_tokens += result.usage.total_tokens
-            total_cost += result.cost_usd
+            result = loop_outcome.result
+            total_tokens += loop_outcome.tokens
+            total_cost += loop_outcome.cost_usd
             last_model = result.model
             output = result.parse_as(ExecutionOutput)
             payload = output.model_dump(mode="json")
+            if self._tool_loop.has_tools:
+                payload["exploration"] = loop_outcome.exploration_summary()
             if not payload.get("files"):
                 payload.pop("files", None)
             self._ensure_grounded_citations(task, context, payload)
@@ -240,6 +254,12 @@ class LLMExecutor:
             "tokens": total_tokens,
             "cost_usd": total_cost,
         }
+
+    def _system_prompt(self, task: AgentTask) -> str:
+        prompt = SYSTEM_PROMPT.format(capability=task.capability.value)
+        if self._tool_loop.has_tools:
+            prompt += TOOLS_GUIDANCE
+        return prompt
 
     def _build_user_content(
         self,

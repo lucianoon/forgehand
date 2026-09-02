@@ -27,9 +27,11 @@ from app.providers.base import (
     CompletionRequest,
     CompletionResult,
     LLMProvider,
+    Message,
     NonRetryableProviderError,
     RetryableProviderError,
     StructuredOutputError,
+    ToolCall,
     Usage,
 )
 
@@ -51,6 +53,86 @@ def build_system_message(
     if system:
         blocks.append({"type": "text", "text": system, "cache_control": _CACHE_CONTROL})
     return {"role": "system", "content": blocks}
+
+
+_STRUCTURED_TOOL_NAME = "emit_structured_output"
+
+
+def build_tool_payload(request: CompletionRequest, *, strict: bool) -> dict[str, Any]:
+    """Com ferramentas de exploração, a saída estruturada também vira uma
+    function (a primeira da lista), em vez de response_format: o modelo escolhe
+    entre explorar e responder, e `tool_choice=required` impede texto solto.
+    force_final aponta direto para a função de saída."""
+    tools: list[dict[str, Any]] = []
+    if request.response_schema is not None:
+        schema = request.response_schema.model_json_schema()
+        function: dict[str, Any] = {
+            "name": _STRUCTURED_TOOL_NAME,
+            "description": "Emita o resultado final exatamente neste schema.",
+            "parameters": _strict_json_schema(schema) if strict else schema,
+        }
+        if strict:
+            function["strict"] = True
+        tools.append({"type": "function", "function": function})
+    for spec in request.tools:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.input_schema,
+                },
+            }
+        )
+    payload: dict[str, Any] = {"tools": tools}
+    if request.response_schema is not None and request.force_final:
+        payload["tool_choice"] = {
+            "type": "function",
+            "function": {"name": _STRUCTURED_TOOL_NAME},
+        }
+    elif request.response_schema is not None:
+        payload["tool_choice"] = "required"
+    else:
+        payload["tool_choice"] = "auto"
+    return payload
+
+
+def build_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if message.role == "assistant" and message.tool_calls:
+            out.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments),
+                            },
+                        }
+                        for call in message.tool_calls
+                    ],
+                }
+            )
+        elif message.tool_results:
+            for result in message.tool_results:
+                out.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": result.tool_call_id,
+                        "content": result.content,
+                    }
+                )
+            if message.content:
+                out.append({"role": "user", "content": message.content})
+        else:
+            out.append({"role": message.role, "content": message.content})
+    return out
 
 
 def parse_usage(raw_usage: dict[str, Any]) -> Usage:
@@ -129,8 +211,13 @@ class OpenAICompatibleProvider(LLMProvider):
     async def _do_complete(self, request: CompletionRequest) -> CompletionResult:
         messages: list[dict[str, Any]] = []
         system = request.system or ""
+        use_tools = bool(request.tools)
 
-        if request.response_schema is not None and not self._supports_json_schema:
+        if (
+            request.response_schema is not None
+            and not self._supports_json_schema
+            and not use_tools
+        ):
             system = (
                 f"{system}\n\nResponda SOMENTE com JSON válido no schema:\n"
                 f"{json.dumps(request.response_schema.model_json_schema())}"
@@ -143,7 +230,7 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         if system_message is not None:
             messages.append(system_message)
-        messages.extend(m.model_dump() for m in request.messages)
+        messages.extend(build_messages(request.messages))
 
         payload: dict[str, Any] = {
             "model": request.model,
@@ -151,7 +238,11 @@ class OpenAICompatibleProvider(LLMProvider):
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
-        if request.response_schema is not None:
+        if use_tools:
+            payload.update(
+                build_tool_payload(request, strict=self._supports_json_schema)
+            )
+        elif request.response_schema is not None:
             if self._supports_json_schema:
                 payload["response_format"] = {
                     "type": "json_schema",
@@ -186,11 +277,14 @@ class OpenAICompatibleProvider(LLMProvider):
 
         data = response.json()
         choice = data["choices"][0]
-        text = choice["message"].get("content") or ""
+        message = choice["message"]
+        text = message.get("content") or ""
         usage = parse_usage(data.get("usage") or {})
 
-        parsed: dict[str, Any] | None = None
-        if request.response_schema is not None:
+        parsed, tool_calls = self._parse_tool_calls(message.get("tool_calls"), request)
+        if request.response_schema is not None and parsed is None and not tool_calls:
+            # Sem function call: o JSON vem no content (response_format ou
+            # modelo que ignorou tool_choice=required).
             try:
                 parsed = self._validate_structured(
                     json.loads(text), request.response_schema, self.name
@@ -203,6 +297,7 @@ class OpenAICompatibleProvider(LLMProvider):
         return CompletionResult(
             text=text,
             parsed=parsed,
+            tool_calls=tool_calls,
             model=data.get("model", request.model),
             provider=self.name,
             usage=usage,
@@ -210,3 +305,47 @@ class OpenAICompatibleProvider(LLMProvider):
             latency_ms=0.0,
             stop_reason=choice.get("finish_reason"),
         )
+
+    def _parse_tool_calls(
+        self, raw_calls: Any, request: CompletionRequest
+    ) -> tuple[dict[str, Any] | None, list[ToolCall]]:
+        parsed: dict[str, Any] | None = None
+        tool_calls: list[ToolCall] = []
+        if not isinstance(raw_calls, list):
+            return parsed, tool_calls
+        for index, raw in enumerate(raw_calls):
+            if not isinstance(raw, dict):
+                continue
+            function = raw.get("function") or {}
+            name = str(function.get("name", ""))
+            raw_arguments = function.get("arguments") or "{}"
+            try:
+                arguments = (
+                    json.loads(raw_arguments)
+                    if isinstance(raw_arguments, str)
+                    else dict(raw_arguments)
+                )
+            except json.JSONDecodeError as exc:
+                raise StructuredOutputError(
+                    f"Argumentos da function {name} não são JSON: "
+                    f"{str(raw_arguments)[:200]}",
+                    provider=self.name,
+                ) from exc
+            if not isinstance(arguments, dict):
+                raise StructuredOutputError(
+                    f"Argumentos da function {name} não são um objeto.",
+                    provider=self.name,
+                )
+            if name == _STRUCTURED_TOOL_NAME and request.response_schema is not None:
+                parsed = self._validate_structured(
+                    arguments, request.response_schema, self.name
+                )
+            else:
+                tool_calls.append(
+                    ToolCall(
+                        id=str(raw.get("id") or f"call_{index}"),
+                        name=name,
+                        arguments=arguments,
+                    )
+                )
+        return parsed, tool_calls
