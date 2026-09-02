@@ -14,7 +14,7 @@ e observabilidade OTel.
 
 ## Em 30 segundos
 
-- **125 funções de teste** entre cenários unitários e de integração.
+- **160 funções de teste** entre cenários unitários e de integração.
 - CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
 - `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
 - Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
