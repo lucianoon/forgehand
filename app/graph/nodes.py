@@ -750,7 +750,7 @@ def build_nodes(
                     task_id=task.id,
                     approved=False,
                     score=0.0,
-                    criteria_scores={c: 0.0 for c in task.acceptance_criteria},
+                    criteria_scores={c.text: 0.0 for c in task.acceptance_criteria},
                     failures=[f"[ci] {line}" for line in feedback],
                     required_changes=[
                         "O CI do pull request reprovou o código publicado. "

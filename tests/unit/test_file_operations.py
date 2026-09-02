@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.executor import ExecutionOutput, LLMExecutor
+from app.agents.criteria import no_existing_file_modified
 from app.agents.judge import LLMJudge
 from app.infrastructure.scm import collect_publishable_changes
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
@@ -393,8 +394,9 @@ def test_minimal_change_requires_create_operations_only():
             }
         }
     )
-    assert LLMJudge._minimal_change_satisfied(created) is True
-    assert LLMJudge._minimal_change_satisfied(replaced) is False
+    assert no_existing_file_modified(created) is True
+    assert no_existing_file_modified(replaced) is False
+    assert no_existing_file_modified(_task(result={"summary": "sem workspace"})) is None
 
 
 # --------------------------------------------------------------------------

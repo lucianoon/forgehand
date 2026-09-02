@@ -64,7 +64,7 @@ class ApprovingJudge:
             task_id=task.id,
             approved=True,
             score=0.9,
-            criteria_scores={c: 0.9 for c in task.acceptance_criteria},
+            criteria_scores={c.text: 0.9 for c in task.acceptance_criteria},
             tests_passed=True,
         )
 

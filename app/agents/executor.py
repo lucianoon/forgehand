@@ -19,7 +19,7 @@ from app.agents.grounding import (
 from app.agents.tools import AgentTool, ToolLoop
 from app.agents.validation import format_validation_feedback
 
-from app.models.task import AgentTask, Capability
+from app.models.task import AgentTask, Capability, format_criteria
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
@@ -40,7 +40,9 @@ informe `occurrence`;
 - não edite trechos que você não viu nas evidências: se o arquivo alvo não \
 está no grounding, registre isso em notes em vez de adivinhar o conteúdo;
 - os acceptance_criteria são o contrato: o judge vai reprovar qualquer \
-critério não atendido;
+critério não atendido. Critérios marcados com [tipo] são verificados por \
+código (testes, lint, arquivos criados/alterados, conteúdo, citations), sem \
+margem de interpretação;
 - se a descrição contém "Correções exigidas pelo judge", trate cada \
 correção como obrigatória;
 - em notes, registre decisões técnicas relevantes e pressupostos assumidos;
@@ -269,7 +271,7 @@ class LLMExecutor:
         previous_feedback: str,
         current_iteration_feedback: str,
     ) -> str:
-        criteria = "\n".join(f"- {c}" for c in task.acceptance_criteria)
+        criteria = format_criteria(task.acceptance_criteria)
         user_content = (
             f"Tarefa: {task.title}\n\n"
             f"Descrição:\n{task.description}\n\n"

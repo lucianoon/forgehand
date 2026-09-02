@@ -5,6 +5,24 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Critérios de aceitação tipados: `AcceptanceCriterion` com `kind`
+  (`subjective`, `tests_pass`, `lint_pass`, `types_pass`, `file_created`,
+  `file_modified`, `no_existing_file_modified`, `changes_limited_to`,
+  `content_contains`, `citations_valid`). Os objetivos são decididos por
+  código a partir do workspace, dos validadores e do grounding
+  (`app/agents/criteria.py`); o judge LLM recebe só os subjetivos, numerados,
+  e é pulado quando não há nenhum. Objetivo sem dado para decidir cai para o
+  LLM com a nota "não verificável". Planner emite critérios tipados; strings
+  continuam aceitas (planos e checkpoints antigos).
+
+### Removido
+
+- Heurísticas de texto do judge para "alteração mínima" e "citações válidas":
+  viraram os kinds `no_existing_file_modified` e `citations_valid`
+  (inferidos automaticamente para critérios legados em string).
+
 ## [0.3.0] — 2026-09-02
 
 Agentes exploram o workspace com ferramentas antes de responder, e a entrega

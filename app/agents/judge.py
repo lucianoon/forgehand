@@ -1,13 +1,17 @@
-"""Judge — avaliação combinada: LLM + sinais objetivos (regra 6).
+"""Judge — critérios objetivos por código, subjetivos pelo LLM (regra 6).
 
-Fase 1: a lista de validadores objetivos pode estar vazia; o judge declara
-honestamente em validated_by o que conseguiu verificar. Fase 5 pluga pytest,
-ruff e mypy via sandbox SEM tocar neste arquivo — só implementando o
-protocolo ObjectiveValidator.
+Ordem de decisão:
+1. grounding estrutural: citations inexistentes/fora de escopo reprovam antes
+   de qualquer chamada de LLM;
+2. sinais objetivos (pytest/ruff/mypy) e falhas de aplicação de operações;
+3. critérios tipados objetivos (app.agents.criteria): 1.0 ou 0.0, sem LLM;
+4. o LLM vê SÓ os critérios subjetivos (mais os objetivos que não puderam
+   ser verificados, com essa nota) e devolve score por critério.
 
-O veto é estrutural: approved = llm_approved AND todos os sinais objetivos.
-O validator do EvaluationResult (models/task.py) rejeita qualquer instância
-que viole isso — não é convenção, é contrato.
+O veto é estrutural: approved = todos os critérios >= 0.7 E nenhum sinal
+objetivo falhando. O validator do EvaluationResult (models/task.py) rejeita
+qualquer instância que viole isso — não é convenção, é contrato. Falhas
+textuais do LLM só entram quando ele reprovou um critério que era dele.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.agents.criteria import evaluate_objective_criteria
 from app.agents.grounding import (
     build_grounding_prefix,
     format_evidence_focus,
@@ -28,26 +33,31 @@ from app.agents.validation import (
     ObjectiveValidationPipeline,
     ObjectiveValidator,
 )
-from app.models.task import AgentTask, EvaluationResult
 from app.graph.nodes import JudgingOutcome, UsageReport
+from app.models.task import AcceptanceCriterion, AgentTask, EvaluationResult
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
 
+PASS_THRESHOLD = 0.7
+
 SYSTEM_PROMPT = """Você é o judge do Forgehand. Avalie o resultado de uma \
-tarefa contra os critérios de aceitação.
+tarefa contra os critérios de aceitação listados — SOMENTE esses.
 
 Regras:
-- avalie critério por critério, com score 0.0-1.0 e justificativa curta;
+- os critérios vêm numerados; devolva um veredito por critério com o mesmo \
+`index`, score 0.0-1.0 e justificativa curta;
 - um critério só pontua acima de 0.7 se está DEMONSTRADAMENTE atendido no \
 resultado — ausência de evidência é reprovação, não benefício da dúvida;
-- em failures, liste objetivamente o que está errado ou faltando;
-- em required_changes, instruções ACIONÁVEIS para o executor corrigir — \
-serão anexadas à próxima tentativa;
-- approved=true somente se TODOS os critérios pontuam >= 0.7;
+- em failures, liste objetivamente o que está errado ou faltando NOS \
+CRITÉRIOS AVALIADOS; em required_changes, instruções ACIONÁVEIS para o \
+executor corrigir — serão anexadas à próxima tentativa;
+- approved=true somente se TODOS os critérios avaliados pontuam >= 0.7;
 - avalie também: correção aparente, segurança, manutenibilidade e \
 consistência interna entre os arquivos;
-- quando houver grounding do repositório, trate ausência de citations válidas \
-como falha estrutural."""
+- critérios objetivos (testes, lint, tipos, arquivos criados/alterados, \
+conteúdo, validade de citations) já foram verificados por código e NÃO estão \
+na sua lista; não os julgue nem os mencione em failures. Quando um critério \
+vier marcado como "não verificável automaticamente", avalie-o pelo resultado."""
 
 TOOLS_GUIDANCE = """
 
@@ -58,6 +68,9 @@ emita o veredito estruturado."""
 
 
 class CriterionVerdict(BaseModel):
+    index: int | None = Field(
+        default=None, description="Número do critério na lista enviada (1 = primeiro)."
+    )
     criterion: str
     score: float = Field(ge=0, le=1)
     reasoning: str
@@ -90,6 +103,7 @@ class LLMJudge:
         )
         self._tier = tier
 
+    # ------------------------------------------------------------------
     @staticmethod
     def _grounding_failure(task: AgentTask, errors: list[str]) -> JudgingOutcome:
         required_changes = [
@@ -101,56 +115,12 @@ class LLMJudge:
                 task_id=task.id,
                 approved=False,
                 score=0.0,
-                criteria_scores={
-                    criterion: 0.0 for criterion in task.acceptance_criteria
-                },
+                criteria_scores={c.text: 0.0 for c in task.acceptance_criteria},
                 failures=errors,
                 required_changes=required_changes,
                 validated_by=["grounding"],
             ),
             usage=UsageReport(),
-        )
-
-    @staticmethod
-    def _is_citation_feedback(message: str) -> bool:
-        lowered = message.lower()
-        return "citation" in lowered or "citaç" in lowered or "evidence_id" in lowered
-
-    @staticmethod
-    def _criterion_is_citation_validity(criterion: str) -> bool:
-        lowered = criterion.lower()
-        citation_marker = (
-            "citation" in lowered or "citaç" in lowered or "evidence_id" in lowered
-        )
-        validity_marker = any(
-            marker in lowered for marker in ("válid", "valid", "exist", "grounding")
-        )
-        return citation_marker and validity_marker
-
-    @staticmethod
-    def _minimal_change_satisfied(task: AgentTask) -> bool:
-        if not isinstance(task.result, dict):
-            return False
-        workspace = task.result.get("workspace")
-        if not isinstance(workspace, dict):
-            return False
-        file_diffs = workspace.get("file_diffs")
-        if not isinstance(file_diffs, list) or not file_diffs:
-            return False
-        changed_diffs = [
-            item
-            for item in file_diffs
-            if isinstance(item, dict) and item.get("changed") is True
-        ]
-        if not changed_diffs:
-            return False
-        # Determinístico: só criações. `operation` vem do workspace runtime;
-        # um replace/delete em arquivo existente nunca é "alteração mínima
-        # restrita ao arquivo novo", independente do que o LLM achar.
-        return all(
-            item.get("change_type") == "created"
-            and item.get("operation", "create") == "create"
-            for item in changed_diffs
         )
 
     @staticmethod
@@ -171,31 +141,10 @@ class LLMJudge:
             if isinstance(item, dict)
         ]
 
-    @staticmethod
-    def _criterion_is_minimal_change(criterion: str) -> bool:
-        lowered = criterion.lower()
-        return (
-            "alteração mínima" in lowered
-            or "restrita ao arquivo novo" in lowered
-            or "não altere arquivos existentes" in lowered
-        )
-
-    @staticmethod
-    def _is_minimal_change_feedback(message: str) -> bool:
-        lowered = message.lower()
-        return (
-            "alteração mínima" in lowered
-            or "arquivo novo" in lowered
-            or "modificado após" in lowered
-            or "sem modificações após sua criação" in lowered
-            or "não atende ao critério de alteração mínima" in lowered
-            or "não foi restrita" in lowered
-        )
-
+    # ------------------------------------------------------------------
     async def evaluate(
         self, task: AgentTask, context: dict[str, Any]
     ) -> JudgingOutcome:
-        criteria = "\n".join(f"- {c}" for c in task.acceptance_criteria)
         citations = normalize_citations(
             task.result.get("citations") if isinstance(task.result, dict) else None
         )
@@ -207,38 +156,6 @@ class LLMJudge:
         if citation_errors:
             return self._grounding_failure(task, citation_errors)
 
-        cache_prefix = build_grounding_prefix(context)
-        prompt_content = (
-            f"Tarefa: {task.title}\n\n"
-            f"Descrição:\n{task.description}\n\n"
-            f"Critérios de aceitação:\n{criteria}\n\n"
-            f"Resultado do executor:\n{task.result}"
-        )
-        if cache_prefix:
-            focus = format_evidence_focus(task.evidence_ids)
-            if focus:
-                prompt_content += f"\n\n{focus}"
-        system_prompt = SYSTEM_PROMPT + (
-            TOOLS_GUIDANCE if self._tool_loop.has_tools else ""
-        )
-        loop_outcome = await self._tool_loop.run(
-            self._tier,
-            CompletionRequest(
-                model="",
-                cache_prefix=cache_prefix,
-                system=system_prompt,
-                messages=[
-                    Message(
-                        role="user",
-                        content=prompt_content,
-                    )
-                ],
-                response_schema=JudgeOutput,
-                max_tokens=8192,
-            ),
-        )
-        verdict = loop_outcome.result.parse_as(JudgeOutput)
-
         # Sinais objetivos — veto estrutural sobre a opinião do LLM
         signals = await self._validation_pipeline.validate(task)
         by_name = {s.name: s for s in signals}
@@ -247,57 +164,75 @@ class LLMJudge:
             all(s.passed is not False for s in signals) and not apply_failures
         )
 
-        criteria_scores = {c.criterion: c.score for c in verdict.criteria}
-        minimal_change_ok = self._minimal_change_satisfied(task)
-        for criterion in list(criteria_scores):
-            if minimal_change_ok and self._criterion_is_minimal_change(criterion):
-                criteria_scores[criterion] = 1.0
+        # Critérios objetivos: decididos por código
+        criteria_scores: dict[str, float] = {}
+        failures: list[str] = []
+        required_changes: list[str] = []
+        for_llm: list[tuple[AcceptanceCriterion, str | None]] = []
+        objective_verdicts = evaluate_objective_criteria(task, context, by_name)
+        for verdict in objective_verdicts:
+            if verdict.passed is None:
+                for_llm.append((verdict.criterion, verdict.detail))
+                continue
+            criteria_scores[verdict.criterion.text] = verdict.score
+            if not verdict.passed:
+                failures.append(f"[{verdict.criterion.kind.value}] {verdict.detail}")
+                if verdict.required_change:
+                    required_changes.append(verdict.required_change)
+        for criterion in task.acceptance_criteria:
+            if not criterion.kind.is_objective:
+                for_llm.append((criterion, None))
 
-        failures = list(verdict.failures)
+        # Critérios subjetivos (e objetivos não verificáveis): LLM
+        usage = UsageReport()
+        llm_overall: float | None = None
+        if for_llm:
+            loop_outcome = await self._tool_loop.run(
+                self._tier,
+                self._build_request(task, context, for_llm),
+            )
+            verdict_out = loop_outcome.result.parse_as(JudgeOutput)
+            usage = UsageReport(
+                tokens=loop_outcome.tokens, cost_usd=loop_outcome.cost_usd
+            )
+            llm_overall = verdict_out.overall_score
+            llm_scores = self._match_scores(for_llm, verdict_out)
+            criteria_scores.update(llm_scores)
+            llm_rejected = any(score < PASS_THRESHOLD for score in llm_scores.values())
+            if llm_rejected:
+                failures.extend(verdict_out.failures)
+                required_changes.extend(verdict_out.required_changes)
+
         for s in signals:
             if s.passed is False:
                 failures.append(f"[{s.name}] {s.details}")
         failures.extend(f"[apply] {item}" for item in apply_failures)
 
-        required_changes = list(verdict.required_changes)
-        if minimal_change_ok:
-            failures = [
-                item for item in failures if not self._is_minimal_change_feedback(item)
-            ]
-            required_changes = [
-                item
-                for item in required_changes
-                if not self._is_minimal_change_feedback(item)
-            ]
-        if grounding_required(context):
-            # A existência e o escopo dos IDs já foram validados acima de forma
-            # determinística. O LLM continua avaliando se a evidência sustenta a
-            # análise, mas não pode contradizer a validade estrutural dos IDs.
-            for criterion in list(criteria_scores):
-                if self._criterion_is_citation_validity(criterion):
-                    criteria_scores[criterion] = 1.0
-            failures = [
-                item for item in failures if not self._is_citation_feedback(item)
-            ]
-            required_changes = [
-                item
-                for item in required_changes
-                if not self._is_citation_feedback(item)
-            ]
         criteria_ok = bool(criteria_scores) and all(
-            score >= 0.7 for score in criteria_scores.values()
+            score >= PASS_THRESHOLD for score in criteria_scores.values()
         )
-        normalized_approved = verdict.approved
-        if criteria_ok and objective_ok and not failures and not required_changes:
-            normalized_approved = True
+        approved = criteria_ok and objective_ok
+        if criteria_scores:
+            score = sum(criteria_scores.values()) / len(criteria_scores)
+        else:
+            score = llm_overall if llm_overall is not None else 0.0
+        if not objective_ok:
+            score = min(score, 0.4)
+
+        validated_by: list[str] = []
+        if for_llm:
+            validated_by.append("llm")
+        if any(v.passed is not None for v in objective_verdicts):
+            validated_by.append("criteria")
+        validated_by.extend(s.name for s in signals if s.passed is not None)
+        if apply_failures:
+            validated_by.append("apply")
 
         return JudgingOutcome(
             evaluation=EvaluationResult(
                 task_id=task.id,
-                approved=normalized_approved and objective_ok,
-                score=verdict.overall_score
-                if objective_ok
-                else min(verdict.overall_score, 0.4),
+                approved=approved,
+                score=score,
                 criteria_scores=criteria_scores,
                 failures=failures,
                 required_changes=required_changes,
@@ -308,14 +243,75 @@ class LLMJudge:
                 type_check_passed=(
                     by_name["mypy"].passed if "mypy" in by_name else None
                 ),
-                validated_by=[
-                    "llm",
-                    *[s.name for s in signals if s.passed is not None],
-                    *(["apply"] if apply_failures else []),
-                ],
+                validated_by=validated_by,
             ),
-            usage=UsageReport(
-                tokens=loop_outcome.tokens,
-                cost_usd=loop_outcome.cost_usd,
-            ),
+            usage=usage,
         )
+
+    # ------------------------------------------------------------------
+    def _build_request(
+        self,
+        task: AgentTask,
+        context: dict[str, Any],
+        for_llm: list[tuple[AcceptanceCriterion, str | None]],
+    ) -> CompletionRequest:
+        lines = []
+        for index, (criterion, note) in enumerate(for_llm, start=1):
+            line = f"{index}. {criterion.text}"
+            if note:
+                line += f" (não verificável automaticamente: {note})"
+            lines.append(line)
+        prompt_content = (
+            f"Tarefa: {task.title}\n\n"
+            f"Descrição:\n{task.description}\n\n"
+            f"Critérios de aceitação a avaliar:\n" + "\n".join(lines) + "\n\n"
+            f"Resultado do executor:\n{task.result}"
+        )
+        cache_prefix = build_grounding_prefix(context)
+        if cache_prefix:
+            focus = format_evidence_focus(task.evidence_ids)
+            if focus:
+                prompt_content += f"\n\n{focus}"
+            if grounding_required(context):
+                prompt_content += (
+                    "\n\nA existência e o escopo das citations já foram validados "
+                    "estruturalmente; não reavalie isso."
+                )
+        system_prompt = SYSTEM_PROMPT + (
+            TOOLS_GUIDANCE if self._tool_loop.has_tools else ""
+        )
+        return CompletionRequest(
+            model="",
+            cache_prefix=cache_prefix,
+            system=system_prompt,
+            messages=[Message(role="user", content=prompt_content)],
+            response_schema=JudgeOutput,
+            max_tokens=8192,
+        )
+
+    @staticmethod
+    def _match_scores(
+        for_llm: list[tuple[AcceptanceCriterion, str | None]],
+        verdict: JudgeOutput,
+    ) -> dict[str, float]:
+        """Casa vereditos com os critérios enviados: por índice, depois por
+        texto (exato, depois normalizado). Critério sem veredito recebe o
+        overall_score do LLM se ele aprovou, 0.0 se reprovou — nunca fica
+        sem nota, porque nota ausente viraria aprovação por omissão."""
+        by_index = {v.index: v for v in verdict.criteria if v.index is not None}
+        by_text = {v.criterion: v for v in verdict.criteria}
+        by_norm = {v.criterion.strip().lower(): v for v in verdict.criteria}
+        scores: dict[str, float] = {}
+        for index, (criterion, _) in enumerate(for_llm, start=1):
+            match = (
+                by_index.get(index)
+                or by_text.get(criterion.text)
+                or by_norm.get(criterion.text.strip().lower())
+            )
+            if match is not None:
+                scores[criterion.text] = match.score
+            else:
+                scores[criterion.text] = (
+                    verdict.overall_score if verdict.approved else 0.0
+                )
+        return scores

@@ -88,6 +88,35 @@ export LLM_PROVIDER_BACKEND=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+## Critérios de aceitação tipados
+
+Cada tarefa do plano carrega `acceptance_criteria` como objetos
+`{text, kind, ...}`. O `kind` decide quem verifica:
+
+| kind | parâmetros | como é decidido |
+|---|---|---|
+| `subjective` | — | judge LLM (score 0–1, aprova com ≥ 0.7) |
+| `tests_pass` / `lint_pass` / `types_pass` | — | sinal `pytest` / `ruff` / `mypy` do workspace |
+| `file_created` | `path` | diff da tarefa tem `path` com `change_type=created` |
+| `file_modified` | `path` | diff da tarefa tem `path` com `change_type=modified` |
+| `no_existing_file_modified` | — | todas as mudanças são criações (`op=create`) |
+| `changes_limited_to` | `paths` (globs) | todos os arquivos alterados casam com algum glob |
+| `content_contains` | `path`, `pattern` (regex) | conteúdo final publicado de `path` casa com `pattern` |
+| `citations_valid` | — | `citations` existem no grounding e estão no escopo da tarefa |
+
+Os objetivos entram em `criteria_scores` como 1.0 ou 0.0 sem passar pelo
+LLM, e uma falha vira `required_changes` acionável (ex.: "Crie o arquivo X
+(op=create)"). Quando não há dado para decidir — sem workspace runtime, sem o
+validador configurado, sem grounding — o critério é entregue ao LLM marcado
+como "não verificável automaticamente". Se todos os critérios forem
+objetivos e verificáveis, o judge não chama o LLM.
+
+O planner recebe essa tabela no prompt e é orientado a preferir kinds
+objetivos. Critérios em string (planos ou checkpoints antigos) continuam
+aceitos: viram `subjective`, exceto as formulações "alteração mínima /
+restrita ao arquivo novo" e "citações válidas", inferidas como
+`no_existing_file_modified` e `citations_valid`.
+
 ## Tool-use dos agentes
 
 Planner, executor e judge podem explorar o workspace antes de responder, em
