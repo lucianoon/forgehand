@@ -149,8 +149,14 @@ async def test_publish_creates_single_commit_with_all_files_and_deletions():
     assert commits == [
         {"message": "forgehand: entrega", "tree": "tree-1", "parents": ["base-sha"]}
     ]
-    patch = next(b for m, p, b in mock.requests if m == "PATCH")
-    assert patch == {"sha": "commit-1", "force": False}
+    # branch nova nasce já na ponta do commit: um único push, nenhum PATCH
+    ref = next(
+        b for m, p, b in mock.requests if m == "POST" and p.endswith("/git/refs")
+    )
+    assert ref == {"ref": "refs/heads/forgehand/wf", "sha": "commit-1"}
+    assert not any(m == "PATCH" for m, _, _ in mock.requests)
+    order = [p.rsplit("/", 1)[-1] for m, p, _ in mock.requests if m == "POST"]
+    assert order.index("commits") < order.index("refs"), "commit antes da ref"
     assert not any(m in {"PUT", "DELETE"} for m, _, _ in mock.requests)
 
 
