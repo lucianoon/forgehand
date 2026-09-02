@@ -293,6 +293,10 @@ class EvaluationResult(BaseModel):
         default_factory=lambda: ["llm"],
         description="Fontes que participaram: llm, pytest, ruff, mypy, sandbox",
     )
+    # Independência do judge: modelos que julgaram e se nenhum deles é o que
+    # executou a tarefa (None quando não houve LLM ou a checagem está off).
+    judge_models: list[str] = Field(default_factory=list)
+    independent_judge: bool | None = None
 
     @model_validator(mode="after")
     def _objective_signals_veto(self) -> "EvaluationResult":

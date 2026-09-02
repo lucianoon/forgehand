@@ -95,9 +95,17 @@ class LLMJudge:
         tier: ModelTier = ModelTier.STANDARD,
         tools: list[AgentTool] | None = None,
         max_tool_calls: int = 4,
+        independence: str = "bindings",
+        critical_quorum: int = 1,
     ):
         self._router = router
         self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
+        # "off": não registra; "bindings": usa os bindings do papel "judge" e
+        # registra se o modelo coincidiu com o do executor; "escalate": pede ao
+        # router outro modelo (tier acima, depois abaixo) para garantir a
+        # independência. Tarefas críticas recebem `critical_quorum` vereditos.
+        self._independence = independence
+        self._critical_quorum = max(1, critical_quorum)
         self._validation_pipeline = validation_pipeline or ObjectiveValidationPipeline(
             validators or []
         )
@@ -186,22 +194,61 @@ class LLMJudge:
         # Critérios subjetivos (e objetivos não verificáveis): LLM
         usage = UsageReport()
         llm_overall: float | None = None
+        judge_models: list[str] = []
+        independent: bool | None = None
         if for_llm:
-            loop_outcome = await self._tool_loop.run(
-                self._tier,
-                self._build_request(task, context, for_llm),
-            )
-            verdict_out = loop_outcome.result.parse_as(JudgeOutput)
-            usage = UsageReport(
-                tokens=loop_outcome.tokens, cost_usd=loop_outcome.cost_usd
-            )
-            llm_overall = verdict_out.overall_score
-            llm_scores = self._match_scores(for_llm, verdict_out)
+            executor_model = self._executor_model(task)
+            rounds = self._critical_quorum if task.is_critical else 1
+            verdicts: list[tuple[JudgeOutput, str]] = []
+            total_tokens = 0
+            total_cost = 0.0
+            for _ in range(rounds):
+                request = self._build_request(task, context, for_llm).model_copy(
+                    update={
+                        "role": "judge",
+                        "avoid_models": self._avoid_models(
+                            executor_model, [model for _, model in verdicts]
+                        ),
+                    }
+                )
+                loop_outcome = await self._tool_loop.run(self._tier, request)
+                total_tokens += loop_outcome.tokens
+                total_cost += loop_outcome.cost_usd
+                verdicts.append(
+                    (
+                        loop_outcome.result.parse_as(JudgeOutput),
+                        loop_outcome.result.model,
+                    )
+                )
+            usage = UsageReport(tokens=total_tokens, cost_usd=total_cost)
+            judge_models = [model for _, model in verdicts]
+            if self._independence != "off" and executor_model is not None:
+                independent = executor_model not in judge_models
+            llm_overall = min(verdict.overall_score for verdict, _ in verdicts)
+
+            # Quórum: cada critério recebe a MENOR nota entre os juízes —
+            # aprovação exige unanimidade, reprovação de um basta.
+            per_round = [self._match_scores(for_llm, v) for v, _ in verdicts]
+            llm_scores = {
+                text: min(scores[text] for scores in per_round) for text in per_round[0]
+            }
             criteria_scores.update(llm_scores)
-            llm_rejected = any(score < PASS_THRESHOLD for score in llm_scores.values())
-            if llm_rejected:
-                failures.extend(verdict_out.failures)
-                required_changes.extend(verdict_out.required_changes)
+            rejecting = [
+                (verdict, model)
+                for (verdict, model), scores in zip(verdicts, per_round, strict=True)
+                if any(score < PASS_THRESHOLD for score in scores.values())
+            ]
+            if rejecting:
+                tag_models = len(verdicts) > 1
+                for llm_verdict, model in rejecting:
+                    tag = f"[judge {model}] " if tag_models else ""
+                    failures.extend(tag + item for item in llm_verdict.failures)
+                    required_changes.extend(llm_verdict.required_changes)
+                if tag_models and len(rejecting) < len(verdicts):
+                    failures.append(
+                        f"[quorum] juízes divergiram: {len(rejecting)} de "
+                        f"{len(verdicts)} reprovaram; a aprovação exige unanimidade."
+                    )
 
         for s in signals:
             if s.passed is False:
@@ -244,11 +291,34 @@ class LLMJudge:
                     by_name["mypy"].passed if "mypy" in by_name else None
                 ),
                 validated_by=validated_by,
+                judge_models=judge_models,
+                independent_judge=independent,
             ),
             usage=usage,
         )
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _executor_model(task: AgentTask) -> str | None:
+        """Modelo que produziu o resultado sob julgamento (última tentativa)."""
+        if not task.attempts:
+            return None
+        model = task.attempts[-1].model
+        return model if model and model != "unknown" else None
+
+    def _avoid_models(
+        self, executor_model: str | None, judges_used: list[str]
+    ) -> list[str]:
+        """Só em `escalate` o judge pede ao router que troque de modelo: evita
+        o executor e, no quórum, os juízes já usados. Em `bindings` a
+        independência vem da configuração e é apenas registrada."""
+        if self._independence != "escalate":
+            return []
+        avoid = list(judges_used)
+        if executor_model is not None:
+            avoid.append(executor_model)
+        return avoid
+
     def _build_request(
         self,
         task: AgentTask,

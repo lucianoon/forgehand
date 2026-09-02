@@ -173,6 +173,7 @@ Camadas:
 | Paralelismo | `AgentProfile.max_parallel_tasks` limita o fan-out por agente |
 | Idempotência | `idempotency_key()` determinística por (projeto, tarefa, tentativa) |
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando; critérios tipados (arquivo criado, só criações, conteúdo, testes/lint/tipos, citations) são decididos por código e o LLM só vê os subjetivos |
+| Judge não se auto-aprova | papel `judge` com bindings próprios no router; a avaliação registra `judge_models` e `independent_judge`; em `escalate` o router troca de modelo, e tarefas críticas exigem quórum unânime |
 | Modelo caro só por escalonamento | tiers no registry; `escalate()` sobe um degrau, fallback degrada para baixo |
 | Rastreabilidade | `TaskAttempt` por tentativa + checkpoints consultáveis via SQL |
 | Exploração limitada | agentes leem o workspace só por ferramentas confinadas ao root; teto de chamadas e de tokens no `ToolLoop`, `run_check` só por nome do allowlist |

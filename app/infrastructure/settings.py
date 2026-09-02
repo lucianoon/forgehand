@@ -175,6 +175,16 @@ class Settings(BaseSettings):
 
     pricing_json: str = json.dumps(_DEFAULT_PRICING)
     tier_bindings_json: str = json.dumps(_DEFAULT_BINDINGS)
+    # Judge independente do executor. JUDGE_TIER_BINDINGS_JSON sobrepõe o
+    # binding do tier só para o papel "judge" (ex.: outro fornecedor/modelo).
+    # judge_independence: "bindings" usa esses bindings e apenas REGISTRA se o
+    # modelo coincidiu com o do executor; "escalate" troca de tier para
+    # garantir modelo diferente (custa mais); "off" desliga a checagem.
+    # Tarefas críticas recebem `judge_critical_quorum` julgamentos e todos
+    # precisam aprovar (1 desliga).
+    judge_tier_bindings_json: str = "{}"
+    judge_independence: Literal["off", "bindings", "escalate"] = "bindings"
+    judge_critical_quorum: int = Field(default=2, ge=1, le=3)
 
     # Budgets default do workflow (sobrescrevíveis por request)
     default_max_tokens: int = Field(default=500_000, gt=0)
@@ -234,6 +244,7 @@ class Settings(BaseSettings):
     @field_validator(
         "pricing_json",
         "tier_bindings_json",
+        "judge_tier_bindings_json",
         "api_keys_json",
         "objective_validation_pipelines_json",
         "executor_strategies_json",
@@ -274,6 +285,11 @@ class Settings(BaseSettings):
         raw = json.loads(self.tier_bindings_json)
         if self.llm_provider_backend == "openrouter" and raw == _DEFAULT_BINDINGS:
             raw = _DEFAULT_OPENROUTER_BINDINGS
+        return {ModelTier(int(k)): TierBinding(**v) for k, v in raw.items()}
+
+    @property
+    def judge_tier_bindings(self) -> dict[ModelTier, TierBinding]:
+        raw = json.loads(self.judge_tier_bindings_json)
         return {ModelTier(int(k)): TierBinding(**v) for k, v in raw.items()}
 
     @property
