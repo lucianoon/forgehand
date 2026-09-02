@@ -5,6 +5,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.3.0] — 2026-09-02
+
+Agentes exploram o workspace com ferramentas antes de responder, e a entrega
+vira etapa do workflow: um commit atômico, um PR e o CI como veto.
+
 ### Adicionado
 
 - Entrega até o PR verde: `delivery` na criação do workflow faz o grafo
@@ -99,6 +104,7 @@ Primeira versão pública, com as sete fases do roadmap implementadas.
   requests.
 - Suíte com 95 testes unitários e de integração.
 
-[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.2.0...HEAD
+[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lucianoon/forgehand/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lucianoon/forgehand/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucianoon/forgehand/releases/tag/v0.1.0
