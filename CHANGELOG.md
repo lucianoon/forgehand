@@ -7,6 +7,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Judge independente do executor: bindings por papel no `ProviderRouter`
+  (`JUDGE_TIER_BINDINGS_JSON`), `CompletionRequest.role` / `avoid_models`,
+  modo `JUDGE_INDEPENDENCE` (`bindings` | `escalate` | `off`) e quórum para
+  tarefas críticas (`JUDGE_CRITICAL_QUORUM`, unanimidade, menor nota por
+  critério). `EvaluationResult` registra `judge_models` e
+  `independent_judge`.
+
 - Critérios de aceitação tipados: `AcceptanceCriterion` com `kind`
   (`subjective`, `tests_pass`, `lint_pass`, `types_pass`, `file_created`,
   `file_modified`, `no_existing_file_modified`, `changes_limited_to`,

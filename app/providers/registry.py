@@ -46,8 +46,13 @@ class ProviderRouter:
         bindings: dict[ModelTier, TierBinding],
         default_tier: ModelTier = ModelTier.STANDARD,
         tracer: Any | None = None,
+        role_bindings: dict[str, dict[ModelTier, TierBinding]] | None = None,
     ):
-        missing = {b.provider_name for b in bindings.values()} - set(providers)
+        role_bindings = role_bindings or {}
+        referenced = {b.provider_name for b in bindings.values()} | {
+            b.provider_name for table in role_bindings.values() for b in table.values()
+        }
+        missing = referenced - set(providers)
         if missing:
             raise ValueError(f"Bindings referenciam providers ausentes: {missing}")
         if ModelTier.STANDARD not in bindings:
@@ -55,17 +60,49 @@ class ProviderRouter:
 
         self._providers = providers
         self._bindings = bindings
+        # Por papel (ex.: "judge"): sobrepõe o binding do tier quando existe;
+        # tiers ausentes caem na tabela padrão. Permite julgar com outro
+        # modelo/fornecedor sem mudar o executor.
+        self._role_bindings = role_bindings
         self._default_tier = default_tier
         # Instrumentação na porta única (regra 1): todo consumo de LLM do
         # sistema passa por aqui, então todo consumo é rastreado aqui.
         self._tracer = tracer
 
-    def resolve(self, tier: ModelTier) -> tuple[LLMProvider, str]:
+    def _binding_for(self, tier: ModelTier, role: str | None) -> TierBinding | None:
+        table = self._role_bindings.get(role or "", {})
+        return table.get(tier) or self._bindings.get(tier)
+
+    def resolve(
+        self,
+        tier: ModelTier,
+        *,
+        role: str | None = None,
+        avoid_models: list[str] | None = None,
+    ) -> tuple[LLMProvider, str]:
         """Resolve tier → (provider, modelo). Tier sem binding cai para o
-        binding mais forte disponível ABAIXO dele — nunca escala sozinho."""
+        binding mais forte disponível ABAIXO dele — nunca escala sozinho.
+
+        Com avoid_models, procura um binding cujo modelo não esteja na lista:
+        primeiro o tier pedido, depois acima (mais forte), depois abaixo.
+        Sem alternativa, devolve a resolução normal — independência é
+        melhor-esforço; quem pediu confere `result.model`."""
+        avoid = set(avoid_models or [])
+        if avoid:
+            order = [tier]
+            order += [
+                ModelTier(t) for t in range(int(tier) + 1, int(ModelTier.STRONG) + 1)
+            ]
+            order += [
+                ModelTier(t) for t in range(int(tier) - 1, int(ModelTier.FAST) - 1, -1)
+            ]
+            for candidate_tier in order:
+                binding = self._binding_for(candidate_tier, role)
+                if binding is not None and binding.model not in avoid:
+                    return self._providers[binding.provider_name], binding.model
         candidate = int(tier)
         while candidate >= int(ModelTier.FAST):
-            binding = self._bindings.get(ModelTier(candidate))
+            binding = self._binding_for(ModelTier(candidate), role)
             if binding is not None:
                 return self._providers[binding.provider_name], binding.model
             candidate -= 1
@@ -86,7 +123,9 @@ class ProviderRouter:
         """Ponto único de chamada dos agentes. `request.model` é ignorado
         e substituído pela resolução do tier — agente não escolhe modelo."""
         resolved_tier = tier or self._default_tier
-        provider, model = self.resolve(resolved_tier)
+        provider, model = self.resolve(
+            resolved_tier, role=request.role, avoid_models=request.avoid_models
+        )
         bound = request.model_copy(update={"model": model})
         if self._tracer is None:
             return await provider.complete(bound)

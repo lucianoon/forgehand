@@ -127,6 +127,8 @@ def build_container(
             validation_pipeline=validation_pipeline,
             tools=judge_tools,
             max_tool_calls=settings.agent_tools_max_calls_judge,
+            independence=settings.judge_independence,
+            critical_quorum=settings.judge_critical_quorum,
         ),
         memory=memory or InMemoryProjectMemory(settings),
         checkpointer=checkpointer,
@@ -316,8 +318,10 @@ def build_provider_router(
     else:
         provider = AnthropicProvider(settings.pricing, client=anthropic_client)
         providers = {"anthropic": provider}
+    judge_bindings = settings.judge_tier_bindings
     return ProviderRouter(
         providers=providers,
         bindings=settings.tier_bindings,
         tracer=tracer,
+        role_bindings={"judge": judge_bindings} if judge_bindings else None,
     )

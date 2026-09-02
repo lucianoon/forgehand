@@ -120,6 +120,12 @@ class CompletionRequest(BaseModel):
     # tool_use/tool_result.
     tools: list[ToolSpec] = Field(default_factory=list)
     force_final: bool = False
+    # Papel que faz a chamada ("judge", ...): o router pode ter bindings
+    # próprios por papel. avoid_models: modelos que este papel NÃO deve usar
+    # (ex.: o judge evitando o modelo que executou a tarefa); o router tenta
+    # outro tier antes de desistir. Quem chama nunca escolhe modelo (regra 1).
+    role: str | None = None
+    avoid_models: list[str] = Field(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 

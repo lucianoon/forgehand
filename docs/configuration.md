@@ -88,6 +88,34 @@ export LLM_PROVIDER_BACKEND=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+## Judge independente do executor
+
+Um modelo tende a aprovar o próprio trabalho. O judge, por isso, é um papel
+com bindings próprios no router e registra na avaliação quais modelos
+julgaram e se algum deles foi o que executou a tarefa
+(`EvaluationResult.judge_models`, `independent_judge`).
+
+```bash
+# outro modelo (ou fornecedor) só para o papel "judge", por tier
+JUDGE_TIER_BINDINGS_JSON='{"2": {"provider_name": "anthropic", "model": "claude-opus-5"}}'
+
+# bindings (default): usa os bindings acima e apenas registra a coincidência
+# escalate: pede ao router outro modelo (tier acima, depois abaixo) quando o
+#           do judge coincide com o do executor — garante independência, custa mais
+# off: não registra
+JUDGE_INDEPENDENCE=bindings
+
+# tarefas com is_critical=true recebem N vereditos; todos precisam aprovar.
+# Em `escalate`, o segundo juiz também evita o modelo do primeiro. 1 desliga.
+JUDGE_CRITICAL_QUORUM=2
+```
+
+No quórum, cada critério recebe a menor nota entre os juízes; as falhas de
+quem reprovou entram prefixadas com o modelo e uma linha `[quorum]` registra
+a divergência. Com os defaults (sem bindings de judge), o comportamento é o
+anterior — mesmo modelo — mas `independent_judge=false` fica visível na
+avaliação para quem quiser cobrar a configuração.
+
 ## Critérios de aceitação tipados
 
 Cada tarefa do plano carrega `acceptance_criteria` como objetos
