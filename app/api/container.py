@@ -20,6 +20,7 @@ from app.agents.executor import ExecutionStrategy
 from app.agents.judge import LLMJudge
 from app.agents.planner import LLMPlanner
 from app.agents.registry import CapabilityExecutorRegistry
+from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.graph.workflow import build_serde, build_workflow
@@ -95,6 +96,13 @@ def build_container(
     )
     execution_strategies = build_execution_strategies(settings)
     workspace_runtime = build_workspace_runtime(settings, validation_pipeline)
+    # Executor e judge exploram o workspace onde os arquivos são aplicados;
+    # o planner explora o repositório do grounding. run_check só no executor.
+    executor_tools = build_agent_tools(
+        settings, settings.executor_workspace_root, validators=objective_validators
+    )
+    judge_tools = build_agent_tools(settings, settings.executor_workspace_root)
+    planner_tools = build_agent_tools(settings, settings.repository_root)
     graph_app = build_workflow(
         planner=LLMPlanner(
             router,
@@ -102,14 +110,23 @@ def build_container(
                 max_tokens=settings.default_task_max_tokens,
                 max_cost_usd=settings.default_task_max_cost_usd,
             ),
+            tools=planner_tools,
+            max_tool_calls=settings.agent_tools_max_calls_planner,
         ),
         registry=CapabilityExecutorRegistry(
             router,
             workspace_runtime=workspace_runtime,
             max_autocorrect_rounds=settings.executor_max_autocorrect_rounds,
             execution_strategies=execution_strategies,
+            tools=executor_tools,
+            max_tool_calls=settings.agent_tools_max_calls_executor,
         ),
-        judge=LLMJudge(router, validation_pipeline=validation_pipeline),
+        judge=LLMJudge(
+            router,
+            validation_pipeline=validation_pipeline,
+            tools=judge_tools,
+            max_tool_calls=settings.agent_tools_max_calls_judge,
+        ),
         memory=memory or InMemoryProjectMemory(settings),
         checkpointer=checkpointer,
         advisor=LLMAdvisor(router),
@@ -134,6 +151,23 @@ def build_container(
         ),
         job_queue,
         audit_log,
+    )
+
+
+def build_agent_tools(
+    settings: Settings,
+    root: str,
+    *,
+    validators: list[CommandObjectiveValidator] | None = None,
+) -> list[AgentTool]:
+    if not settings.agent_tools_enabled:
+        return []
+    return build_workspace_tools(
+        root,
+        max_output_chars=settings.agent_tools_max_output_chars,
+        validators=list(validators)
+        if validators and settings.agent_tools_allow_checks
+        else None,
     )
 
 

@@ -23,6 +23,7 @@ from app.agents.grounding import (
     normalize_citations,
     validate_citations,
 )
+from app.agents.tools import AgentTool, ToolLoop
 from app.agents.validation import (
     ObjectiveValidationPipeline,
     ObjectiveValidator,
@@ -48,6 +49,13 @@ consistência interna entre os arquivos;
 - quando houver grounding do repositório, trate ausência de citations válidas \
 como falha estrutural."""
 
+TOOLS_GUIDANCE = """
+
+Ferramentas disponíveis: read_file, list_directory e search_repository. \
+Quando o resultado declara arquivos aplicados, CONFIRA o conteúdo real no \
+workspace em vez de confiar no resumo do executor. Poucas chamadas, então \
+emita o veredito estruturado."""
+
 
 class CriterionVerdict(BaseModel):
     criterion: str
@@ -72,8 +80,11 @@ class LLMJudge:
         validators: list[ObjectiveValidator] | None = None,
         validation_pipeline: ObjectiveValidationPipeline | None = None,
         tier: ModelTier = ModelTier.STANDARD,
+        tools: list[AgentTool] | None = None,
+        max_tool_calls: int = 4,
     ):
         self._router = router
+        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
         self._validation_pipeline = validation_pipeline or ObjectiveValidationPipeline(
             validators or []
         )
@@ -207,12 +218,15 @@ class LLMJudge:
             focus = format_evidence_focus(task.evidence_ids)
             if focus:
                 prompt_content += f"\n\n{focus}"
-        result = await self._router.complete(
+        system_prompt = SYSTEM_PROMPT + (
+            TOOLS_GUIDANCE if self._tool_loop.has_tools else ""
+        )
+        loop_outcome = await self._tool_loop.run(
             self._tier,
             CompletionRequest(
                 model="",
                 cache_prefix=cache_prefix,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[
                     Message(
                         role="user",
@@ -223,7 +237,7 @@ class LLMJudge:
                 max_tokens=8192,
             ),
         )
-        verdict = result.parse_as(JudgeOutput)
+        verdict = loop_outcome.result.parse_as(JudgeOutput)
 
         # Sinais objetivos — veto estrutural sobre a opinião do LLM
         signals = await self._validation_pipeline.validate(task)
@@ -301,7 +315,7 @@ class LLMJudge:
                 ],
             ),
             usage=UsageReport(
-                tokens=result.usage.total_tokens,
-                cost_usd=result.cost_usd,
+                tokens=loop_outcome.tokens,
+                cost_usd=loop_outcome.cost_usd,
             ),
         )

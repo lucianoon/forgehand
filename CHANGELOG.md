@@ -5,6 +5,19 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Tool-use nos agentes: planner, executor e judge exploram o workspace com
+  `read_file`, `list_directory` e `search_repository` (executor também com
+  `run_check`, restrito às verificações configuradas) antes de emitir a
+  resposta estruturada. Loop com teto de chamadas por papel e pelo budget de
+  tokens da tarefa; leituras confinadas ao root, sem diretórios ignorados nem
+  arquivos sensíveis. Rastro da exploração em `result.exploration`.
+  Configuração via `AGENT_TOOLS_*`.
+- Providers Anthropic e OpenAI-compatible falam tool-use: `CompletionRequest`
+  ganha `tools` e `force_final`; `CompletionResult` ganha `tool_calls`;
+  `Message` carrega `tool_calls`/`tool_results`.
+
 ## [0.2.0] — 2026-09-02
 
 Executor edita por operações em vez de reescrever arquivos, e o grounding do

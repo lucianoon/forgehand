@@ -62,9 +62,40 @@ class StructuredOutputError(NonRetryableProviderError):
 # --------------------------------------------------------------------------
 
 
+class ToolSpec(BaseModel):
+    """Ferramenta oferecida ao modelo. `input_schema` é JSON Schema de objeto."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+
+
+class ToolCall(BaseModel):
+    """Pedido do modelo para executar uma ferramenta (bloco tool_use)."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResult(BaseModel):
+    """Resultado devolvido ao modelo (bloco tool_result)."""
+
+    tool_call_id: str
+    name: str
+    content: str
+    is_error: bool = False
+
+
 class Message(BaseModel):
     role: str  # "user" | "assistant"
-    content: str
+    content: str = ""
+    # assistant: chamadas que o modelo fez nesta mensagem
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    # user: resultados das chamadas da mensagem assistant anterior
+    tool_results: list[ToolResult] = Field(default_factory=list)
 
 
 class CompletionRequest(BaseModel):
@@ -82,6 +113,13 @@ class CompletionRequest(BaseModel):
     # idêntico byte a byte entre chamadas para o cache bater — o que varia por
     # tarefa fica em `system` ou nas mensagens.
     cache_prefix: str | None = None
+    # Ferramentas de exploração. Com response_schema, a resposta final
+    # continua sendo a ferramenta de saída estruturada: o modelo termina
+    # chamando-a. force_final obriga essa chamada (fim do loop de tool-use)
+    # mantendo as definições — a API exige `tools` quando o histórico tem
+    # tool_use/tool_result.
+    tools: list[ToolSpec] = Field(default_factory=list)
+    force_final: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -107,6 +145,7 @@ class Usage(BaseModel):
 class CompletionResult(BaseModel):
     text: str
     parsed: dict[str, Any] | None = None  # presente sse response_schema foi pedido
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     model: str
     provider: str
     usage: Usage

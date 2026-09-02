@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.agents.executor import ExecutionStrategy, LLMExecutor, WorkspaceRuntime
+from app.agents.tools import AgentTool
 from app.models.task import AgentTask, Capability
 from app.providers.registry import ModelTier, ProviderRouter
 
@@ -65,6 +66,8 @@ class CapabilityExecutorRegistry:
         workspace_runtime: WorkspaceRuntime | None = None,
         max_autocorrect_rounds: int = 0,
         execution_strategies: dict[Capability, ExecutionStrategy] | None = None,
+        tools: list[AgentTool] | None = None,
+        max_tool_calls: int = 8,
     ):
         self._router = router
         self._profiles = sorted(
@@ -84,6 +87,8 @@ class CapabilityExecutorRegistry:
                 workspace_runtime=workspace_runtime,
                 max_autocorrect_rounds=max_autocorrect_rounds,
                 execution_strategies=execution_strategies,
+                tools=tools,
+                max_tool_calls=max_tool_calls,
             )
             for p in self._profiles
         }
@@ -97,6 +102,8 @@ class CapabilityExecutorRegistry:
                 workspace_runtime=workspace_runtime,
                 max_autocorrect_rounds=max_autocorrect_rounds,
                 execution_strategies=execution_strategies,
+                tools=tools,
+                max_tool_calls=max_tool_calls,
             )
             for p in self._profiles
         }

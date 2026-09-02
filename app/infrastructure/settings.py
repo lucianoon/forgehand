@@ -201,6 +201,15 @@ class Settings(BaseSettings):
     # de max_lines_per_file). Necessário para op=replace em arquivos pequenos:
     # o executor só pode substituir trechos que viu. 0 desliga.
     repository_grounding_full_file_max_bytes: int = Field(default=0, ge=0)
+    # Tool-use dos agentes: exploração limitada do workspace (read_file,
+    # list_directory, search_repository e, para o executor, run_check).
+    # max_calls=0 desliga para aquele papel; enabled=False desliga tudo.
+    agent_tools_enabled: bool = True
+    agent_tools_max_calls_executor: int = Field(default=8, ge=0, le=32)
+    agent_tools_max_calls_planner: int = Field(default=4, ge=0, le=32)
+    agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
+    agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
+    agent_tools_allow_checks: bool = True
     executor_workspace_root: str = "."
     executor_apply_files_enabled: bool = False
     executor_command_backend: Literal["local", "docker"] = "local"

@@ -48,6 +48,12 @@ _IGNORED_DIRS = {
 }
 
 
+# Aliases públicos para as ferramentas dos agentes compartilharem a mesma
+# noção de "arquivo de texto" e "diretório ignorado".
+TEXT_EXTENSIONS = _TEXT_EXTENSIONS
+IGNORED_DIRS = _IGNORED_DIRS
+
+
 def _is_probably_text(path: Path) -> bool:
     return path.suffix.lower() in _TEXT_EXTENSIONS or path.name in _ALWAYS_INCLUDE
 

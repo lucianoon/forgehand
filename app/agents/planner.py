@@ -22,6 +22,7 @@ from app.agents.grounding import (
     get_evidence_index,
     grounding_required,
 )
+from app.agents.tools import AgentTool, ToolLoop
 from app.models.task import TaskBudget
 from app.models.task import AgentTask, Capability
 from app.graph.nodes import PlanningOutcome, UsageReport
@@ -60,6 +61,13 @@ Para pedidos de análise do repositório/código:
 - use uma tarefa factual para mapear evidências e uma segunda, dependente da primeira,
   apenas se a síntese final realmente precisar ser separada;
 - evite planos amplos que reavaliem a mesma evidência em múltiplas tarefas."""
+
+TOOLS_GUIDANCE = """
+
+Ferramentas disponíveis: read_file, list_directory e search_repository. \
+Use-as só quando as evidências do grounding não bastarem para decidir a \
+decomposição (ex.: confirmar se um módulo existe). Poucas chamadas, então \
+emita o plano."""
 
 
 class PlannedTask(BaseModel):
@@ -151,8 +159,11 @@ class LLMPlanner:
         tier: ModelTier = ModelTier.STANDARD,
         default_task_budget: TaskBudget | None = None,
         max_validation_attempts: int = 2,
+        tools: list[AgentTool] | None = None,
+        max_tool_calls: int = 4,
     ):
         self._router = router
+        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
         self._tier = tier
         self._default_task_budget = default_task_budget or TaskBudget()
         self._max_validation_attempts = max(1, max_validation_attempts)
@@ -244,20 +255,21 @@ class LLMPlanner:
                     "Gere o plano completo novamente, corrigindo índices, ciclos e "
                     "evidence_ids."
                 )
-            result = await self._router.complete(
+            loop_outcome = await self._tool_loop.run(
                 self._tier,
                 CompletionRequest(
                     model="",  # resolvido pelo router
                     cache_prefix=cache_prefix,
-                    system=SYSTEM_PROMPT,
+                    system=SYSTEM_PROMPT
+                    + (TOOLS_GUIDANCE if self._tool_loop.has_tools else ""),
                     messages=[Message(role="user", content=attempt_content)],
                     response_schema=PlanOutput,
                     max_tokens=8192,
                 ),
             )
-            total_tokens += result.usage.total_tokens
-            total_cost += result.cost_usd
-            parsed = result.parse_as(PlanOutput)
+            total_tokens += loop_outcome.tokens
+            total_cost += loop_outcome.cost_usd
+            parsed = loop_outcome.result.parse_as(PlanOutput)
             try:
                 self._validate_grounding(parsed, context)
                 tasks = _to_agent_tasks(parsed)

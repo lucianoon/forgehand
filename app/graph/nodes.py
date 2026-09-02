@@ -361,9 +361,7 @@ def build_nodes(
             # em paralelo com as demais — a rápida não espera a lenta para
             # receber veredito. O judge_router segue decidindo no join,
             # sobre o estado consolidado.
-            judged, evaluation, judge_usage = await judge_task(
-                updated, payload.context
-            )
+            judged, evaluation, judge_usage = await judge_task(updated, payload.context)
             update: dict[str, Any] = {
                 "plan": [judged],
                 "usage": {
