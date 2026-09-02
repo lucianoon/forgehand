@@ -15,7 +15,7 @@ import json
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.grounding import (
     build_grounding_prefix,
@@ -23,8 +23,13 @@ from app.agents.grounding import (
     grounding_required,
 )
 from app.agents.tools import AgentTool, ToolLoop
-from app.models.task import TaskBudget
-from app.models.task import AgentTask, Capability
+from app.models.task import (
+    AcceptanceCriterion,
+    AgentTask,
+    Capability,
+    TaskBudget,
+    coerce_criteria,
+)
 from app.graph.nodes import PlanningOutcome, UsageReport
 from app.providers.base import CompletionRequest, Message
 from app.providers.registry import ModelTier, ProviderRouter
@@ -37,8 +42,15 @@ Decomponha a requisição em tarefas atômicas e executáveis. Para cada tarefa:
 - description: o que fazer, com contexto suficiente para um executor \
 independente que NÃO viu a requisição original;
 - capability: exatamente uma competência;
-- acceptance_criteria: critérios objetivos e verificáveis (mínimo 1) — \
-serão usados pelo judge para aprovar ou rejeitar;
+- acceptance_criteria: critérios verificáveis (mínimo 1). Cada critério tem \
+`text` (o contrato legível) e `kind`. Prefira kinds OBJETIVOS, decididos por \
+código sem margem de interpretação: tests_pass / lint_pass / types_pass \
+(sinais pytest/ruff/mypy), file_created (path), file_modified (path), \
+no_existing_file_modified, changes_limited_to (paths, aceita globs), \
+content_contains (path + pattern regex), citations_valid (análises grounded). \
+Use `subjective` só para o que realmente exige julgamento (qualidade, \
+clareza, aderência a um desenho). Um plano bom mistura os dois: o objetivo \
+prova que a mudança aconteceu, o subjetivo julga se ficou boa;
 - evidence_ids: IDs das evidências do repositório que justificam a tarefa; \
   quando houver grounding no contexto, cada tarefa DEVE citar pelo menos 1 \
   evidência real;
@@ -74,10 +86,17 @@ class PlannedTask(BaseModel):
     title: str
     description: str
     capability: Capability
-    acceptance_criteria: list[str] = Field(min_length=1)
+    acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
     depends_on: list[int] = Field(default_factory=list)
     is_critical: bool = False
+
+    @field_validator("acceptance_criteria", mode="before")
+    @classmethod
+    def _coerce_criteria(cls, value: Any) -> Any:
+        # modelos que ainda devolvem strings: vira subjective (ou o kind
+        # inferido por compatibilidade), sem quebrar o plano
+        return coerce_criteria(value)
 
 
 class PlanOutput(BaseModel):
@@ -95,7 +114,9 @@ def _task_stable_id(task: PlannedTask) -> UUID:
             "title": task.title,
             "description": task.description,
             "capability": task.capability.value,
-            "acceptance_criteria": task.acceptance_criteria,
+            "acceptance_criteria": [
+                c.model_dump(mode="json") for c in task.acceptance_criteria
+            ],
             "evidence_ids": task.evidence_ids,
             "depends_on": task.depends_on,
             "is_critical": task.is_critical,

@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 
 class Capability(str, Enum):
@@ -52,6 +52,112 @@ class TaskStatus(str, Enum):
     def is_redispatchable(self) -> bool:
         """Só estes status voltam ao dispatch no replan. COMPLETED nunca re-executa."""
         return self in {TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.PENDING}
+
+
+class CriterionKind(str, Enum):
+    """Como um critério de aceitação é verificado.
+
+    Os objetivos são decididos por código a partir do workspace, dos sinais de
+    validação e do grounding — o LLM não os avalia. `subjective` fica com o
+    judge LLM. Um objetivo sem dado para decidir (ex.: tests_pass sem pytest
+    configurado) é declarado não verificável e cai para o LLM com essa nota.
+    """
+
+    SUBJECTIVE = "subjective"
+    TESTS_PASS = "tests_pass"  # sinal pytest passou
+    LINT_PASS = "lint_pass"  # sinal ruff passou
+    TYPES_PASS = "types_pass"  # sinal mypy passou
+    FILE_CREATED = "file_created"  # `path` criado pela tarefa
+    FILE_MODIFIED = "file_modified"  # `path` (existente) alterado pela tarefa
+    NO_EXISTING_FILE_MODIFIED = "no_existing_file_modified"  # só criações
+    CHANGES_LIMITED_TO = "changes_limited_to"  # mudanças só em `paths` (globs)
+    CONTENT_CONTAINS = "content_contains"  # `pattern` (regex) em `path` final
+    CITATIONS_VALID = "citations_valid"  # citations existem e estão no escopo
+
+    @property
+    def is_objective(self) -> bool:
+        return self is not CriterionKind.SUBJECTIVE
+
+
+_KINDS_NEEDING_PATH = {
+    CriterionKind.FILE_CREATED,
+    CriterionKind.FILE_MODIFIED,
+    CriterionKind.CONTENT_CONTAINS,
+}
+
+
+def infer_criterion_kind(text: str) -> CriterionKind:
+    """Compatibilidade com planos antigos (critérios como string): reconhece
+    as duas formulações que o judge tratava por heurística de texto. Planos
+    novos declaram `kind` explicitamente e não passam por aqui."""
+    lowered = text.lower()
+    if (
+        "alteração mínima" in lowered
+        or "restrita ao arquivo novo" in lowered
+        or "não altere arquivos existentes" in lowered
+    ):
+        return CriterionKind.NO_EXISTING_FILE_MODIFIED
+    has_citation = (
+        "citation" in lowered or "citaç" in lowered or "evidence_id" in lowered
+    )
+    has_validity = any(m in lowered for m in ("válid", "valid", "exist", "grounding"))
+    if has_citation and has_validity:
+        return CriterionKind.CITATIONS_VALID
+    return CriterionKind.SUBJECTIVE
+
+
+class AcceptanceCriterion(BaseModel):
+    """Critério de aceitação tipado. `text` é o contrato legível (chave em
+    criteria_scores); `kind` decide quem verifica e com quais parâmetros."""
+
+    text: str = Field(min_length=1)
+    kind: CriterionKind = CriterionKind.SUBJECTIVE
+    path: str | None = Field(
+        default=None, description="file_created / file_modified / content_contains"
+    )
+    paths: list[str] = Field(
+        default_factory=list, description="changes_limited_to: paths ou globs"
+    )
+    pattern: str | None = Field(
+        default=None, description="content_contains: regex Python"
+    )
+
+    @model_validator(mode="after")
+    def _parameters_match_kind(self) -> "AcceptanceCriterion":
+        if self.kind in _KINDS_NEEDING_PATH and not self.path:
+            raise ValueError(f"critério {self.kind.value} exige `path`.")
+        if self.kind is CriterionKind.CONTENT_CONTAINS and not self.pattern:
+            raise ValueError("critério content_contains exige `pattern`.")
+        if self.kind is CriterionKind.CHANGES_LIMITED_TO and not self.paths:
+            raise ValueError("critério changes_limited_to exige `paths`.")
+        return self
+
+    @property
+    def label(self) -> str:
+        """Linha para prompts: texto + tipo objetivo entre colchetes."""
+        if not self.kind.is_objective:
+            return self.text
+        detail = self.path or (", ".join(self.paths) if self.paths else "")
+        suffix = f"{self.kind.value}: {detail}" if detail else self.kind.value
+        return f"{self.text} [{suffix}]"
+
+
+def coerce_criteria(value: Any) -> Any:
+    """Validador `before`: aceita lista de str (planos/checkpoints antigos) e
+    dicts; str vira AcceptanceCriterion com kind inferido por compatibilidade."""
+    if not isinstance(value, list):
+        return value
+    coerced: list[Any] = []
+    for item in value:
+        if isinstance(item, str):
+            coerced.append({"text": item, "kind": infer_criterion_kind(item)})
+        else:
+            coerced.append(item)
+    return coerced
+
+
+def format_criteria(criteria: list["AcceptanceCriterion"]) -> str:
+    return "\n".join(f"- {c.label}" for c in criteria)
 
 
 class TaskBudget(BaseModel):
@@ -111,7 +217,7 @@ class AgentTask(BaseModel):
     description: str
     capability: Capability
     dependencies: list[UUID] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(min_length=1)
+    acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
 
     # Enforcement das regras arquiteturais
@@ -133,6 +239,11 @@ class AgentTask(BaseModel):
     attempts: list[TaskAttempt] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("acceptance_criteria", mode="before")
+    @classmethod
+    def _coerce_criteria(cls, value: Any) -> Any:
+        return coerce_criteria(value)
 
     @model_validator(mode="after")
     def _criteria_before_execution(self) -> "AgentTask":
