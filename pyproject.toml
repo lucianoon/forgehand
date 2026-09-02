@@ -1,6 +1,6 @@
 [project]
 name = "forgehand"
-version = "0.1.0"
+version = "0.2.0"
 description = "Plataforma multiagente de entrega de software: orquestração LangGraph, judge com veto objetivo e observabilidade OTel."
 requires-python = ">=3.12"
 dependencies = [
