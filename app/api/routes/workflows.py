@@ -28,7 +28,11 @@ from app.api.service import (
     WorkflowNotFound,
 )
 from app.graph.state import WorkflowBudget, WorkflowPhase
-from app.infrastructure.scm import GitHubSCMClient, SCMError
+from app.infrastructure.scm import (
+    GitHubSCMClient,
+    SCMError,
+    collect_publishable_changes,
+)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -345,20 +349,7 @@ async def publish_pull_request(
     access = await service.get_access_context(workflow_id)
     await ensure_workflow_access(request, client, access)
     details = await service.get_details(workflow_id)
-    files: list[dict[str, str]] = []
-    for task in details["tasks"]:
-        result = task.get("result")
-        if not isinstance(result, dict):
-            continue
-        artifacts = result.get("files")
-        if isinstance(artifacts, list):
-            files.extend(
-                {"path": item["path"], "content": item["content"]}
-                for item in artifacts
-                if isinstance(item, dict)
-                and isinstance(item.get("path"), str)
-                and isinstance(item.get("content"), str)
-            )
+    files, deletions = collect_publishable_changes(details["tasks"])
     token = os.getenv("GITHUB_TOKEN", "")
     if not token:
         raise HTTPException(
@@ -375,6 +366,7 @@ async def publish_pull_request(
             title=body.title or f"Forgehand: {details['project_id']}",
             body=f"Entrega auditável do workflow `{workflow_id}`.",
             files=files,
+            deletions=deletions,
         )
     except (SCMError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

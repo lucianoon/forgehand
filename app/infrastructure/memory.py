@@ -85,6 +85,7 @@ class BaseProjectMemory:
             max_files=settings.repository_grounding_max_files,
             max_excerpt_lines=settings.repository_grounding_max_lines_per_file,
             max_file_bytes=settings.repository_grounding_max_file_bytes,
+            full_file_max_bytes=settings.repository_grounding_full_file_max_bytes,
         )
         self._grounding_enabled = settings.repository_grounding_enabled
         self._recent_limit = settings.memory_recent_workflows_limit

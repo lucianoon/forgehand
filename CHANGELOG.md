@@ -7,6 +7,15 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Executor descreve mudanças como operações (`create`, `replace`, `delete`)
+  em vez de arquivo inteiro. `replace` usa trecho literal (`search`) com
+  casamento tolerante a CRLF/espaços à direita e exige unicidade ou
+  `occurrence`; falha de aplicação vira feedback para o autocorrect e veto
+  objetivo no judge. O payload legado `files` continua aceito.
+- Workspace expõe `published_files` (conteúdo final) e `deleted_paths`; a
+  publicação de PR usa esses dados e passa a remover arquivos na branch.
+- `REPOSITORY_GROUNDING_FULL_FILE_MAX_BYTES`: arquivos até esse tamanho entram
+  inteiros na evidência, para o executor poder editar qualquer trecho deles.
 - Prompt caching na porta única de LLM: `CompletionRequest.cache_prefix`
   leva o grounding do repositório como bloco estável marcado com
   `cache_control` (Anthropic e OpenRouter); tokens de cache são lidos,

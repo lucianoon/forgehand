@@ -18,6 +18,50 @@ class PullRequestResult:
     branch: str
 
 
+def collect_publishable_changes(
+    tasks: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Extrai (arquivos finais, remoções) dos resultados das tarefas.
+
+    Fonte preferida: `workspace.published_files` / `workspace.deleted_paths`
+    (conteúdo FINAL após create/replace/delete). Fallback: `files` legado do
+    payload do executor (arquivo inteiro). Última escrita de um path vence;
+    remoção posterior anula publicação anterior e vice-versa."""
+    latest: dict[str, str | None] = {}
+    for task in tasks:
+        result = task.get("result")
+        if not isinstance(result, dict):
+            continue
+        workspace = result.get("workspace")
+        source: list[Any] = []
+        deleted: list[Any] = []
+        if isinstance(workspace, dict) and isinstance(
+            workspace.get("published_files"), list
+        ):
+            source = workspace["published_files"]
+            if isinstance(workspace.get("deleted_paths"), list):
+                deleted = workspace["deleted_paths"]
+        elif isinstance(result.get("files"), list):
+            source = result["files"]
+        for item in source:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+                and isinstance(item.get("content"), str)
+            ):
+                latest[item["path"]] = item["content"]
+        for path in deleted:
+            if isinstance(path, str):
+                latest[path] = None
+    files = [
+        {"path": path, "content": content}
+        for path, content in latest.items()
+        if content is not None
+    ]
+    deletions = [path for path, content in latest.items() if content is None]
+    return files, deletions
+
+
 class GitHubSCMClient:
     """Publica artefatos do workflow em uma branch e abre um pull request."""
 
@@ -48,10 +92,12 @@ class GitHubSCMClient:
         title: str,
         body: str,
         files: list[dict[str, str]],
+        deletions: list[str] | None = None,
     ) -> PullRequestResult:
         if "/" not in repository:
             raise ValueError("Repositório deve usar o formato owner/name.")
-        if not files:
+        deletions = deletions or []
+        if not files and not deletions:
             raise ValueError("Workflow sem arquivos publicáveis.")
 
         base_ref = await self._request(
@@ -84,6 +130,20 @@ class GitHubSCMClient:
                 payload["sha"] = existing[0]
             await self._request(
                 "PUT", f"/repos/{repository}/contents/{path}", json=payload
+            )
+
+        for path in deletions:
+            existing = await self._existing_file(repository, path, head_branch)
+            if existing is None:
+                continue  # já não existe na branch: idempotente
+            await self._request(
+                "DELETE",
+                f"/repos/{repository}/contents/{path}",
+                json={
+                    "message": f"forgehand: delete {path}",
+                    "sha": existing[0],
+                    "branch": head_branch,
+                },
             )
 
         existing_pull = await self._existing_pull_request(

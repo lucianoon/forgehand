@@ -83,12 +83,14 @@ def handler(request):
             },
             model,
         )
-    if "files" in props:
+    if "operations" in props:
         title = user.split("Tarefa: ")[1].split("\n")[0]
         return tool_result(
             {
                 "summary": f"{title} feito",
-                "files": [{"path": f"{title}.py", "content": "# ok"}],
+                "operations": [
+                    {"op": "create", "path": f"{title}.py", "content": "# ok"}
+                ],
                 "notes": [],
             },
             model,

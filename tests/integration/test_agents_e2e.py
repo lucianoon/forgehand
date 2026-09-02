@@ -130,7 +130,8 @@ def handler(request):
             model,
         )
 
-    if "files" in schema_props:  # ExecutionOutput
+    if "operations" in schema_props:  # ExecutionOutput
+        assert "files" not in schema_props, "formato legado não vai ao modelo"
         if "Resultados das dependências" in user:
             state["executor_saw_deps"] = True
         if "Grounding obrigatório do repositório" in system_text:
@@ -149,7 +150,9 @@ def handler(request):
         return tool_result(
             {
                 "summary": f"{title} implementado",
-                "files": [{"path": f"app/{title}.py", "content": f"# {title}"}],
+                "operations": [
+                    {"op": "create", "path": f"app/{title}.py", "content": f"# {title}"}
+                ],
                 "notes": [],
                 "citations": citations_by_title[title],
             },

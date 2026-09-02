@@ -7,9 +7,10 @@ CompletionResult, fechando o circuito TaskBudget → WorkflowBudget (regra 9).
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 from app.agents.grounding import (
     build_grounding_prefix,
     format_evidence_focus,
@@ -25,8 +26,18 @@ SYSTEM_PROMPT = """Você é um executor especializado do Forgehand \
 ({capability}).
 
 Execute EXATAMENTE a tarefa descrita. Regras:
-- produza artefatos completos e funcionais, nunca trechos com "...";
-- cada arquivo em files com path relativo à raiz do projeto;
+- descreva as mudanças em `operations`, com path relativo à raiz do projeto:
+  - arquivo NOVO: op=create com o conteúdo completo e funcional, nunca \
+trechos com "...";
+  - arquivo EXISTENTE: op=replace com `search` = o menor trecho que \
+identifique unicamente o ponto a alterar, copiado LITERALMENTE das evidências \
+do grounding (mesma indentação, mesmas linhas), e `replace` = o texto final \
+desse trecho. Nunca reescreva um arquivo existente inteiro; use um replace por \
+ponto alterado. Se o trecho aparece mais de uma vez, amplie `search` ou \
+informe `occurrence`;
+  - remover arquivo: op=delete;
+- não edite trechos que você não viu nas evidências: se o arquivo alvo não \
+está no grounding, registre isso em notes em vez de adivinhar o conteúdo;
 - os acceptance_criteria são o contrato: o judge vai reprovar qualquer \
 critério não atendido;
 - se a descrição contém "Correções exigidas pelo judge", trate cada \
@@ -43,13 +54,59 @@ correção como obrigatória;
 
 
 class FileArtifact(BaseModel):
+    """Formato legado (arquivo inteiro). Aceito na entrada por compatibilidade
+    com checkpoints antigos; não vai mais no schema enviado ao modelo."""
+
     path: str
     content: str
 
 
+class CreateFile(BaseModel):
+    op: Literal["create"]
+    path: str = Field(description="Path relativo à raiz do projeto.")
+    content: str = Field(description="Conteúdo completo do arquivo novo.")
+
+
+class ReplaceInFile(BaseModel):
+    op: Literal["replace"]
+    path: str = Field(description="Path relativo de um arquivo EXISTENTE.")
+    search: str = Field(
+        min_length=1,
+        description=(
+            "Trecho literal e único do arquivo atual (copiado das evidências, "
+            "com a mesma indentação)."
+        ),
+    )
+    replace: str = Field(description="Texto que substitui `search`.")
+    occurrence: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Qual ocorrência substituir (1 = primeira) quando `search` aparece "
+            "mais de uma vez. Omitido: `search` precisa ser único."
+        ),
+    )
+
+
+class DeleteFile(BaseModel):
+    op: Literal["delete"]
+    path: str = Field(description="Path relativo do arquivo a remover.")
+
+
+FileOperation = Annotated[
+    CreateFile | ReplaceInFile | DeleteFile, Field(discriminator="op")
+]
+
+
 class ExecutionOutput(BaseModel):
     summary: str = Field(description="O que foi feito, em 2-4 frases.")
-    files: list[FileArtifact] = Field(default_factory=list)
+    operations: list[FileOperation] = Field(
+        default_factory=list,
+        description="Mudanças no workspace, na ordem em que devem ser aplicadas.",
+    )
+    # Legado: fora do JSON Schema (o modelo não vê), mas validado se vier em
+    # payloads antigos. O workspace runtime converte para op=create.
+    files: SkipJsonSchema[list[FileArtifact]] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
 
@@ -134,6 +191,8 @@ class LLMExecutor:
             last_model = result.model
             output = result.parse_as(ExecutionOutput)
             payload = output.model_dump(mode="json")
+            if not payload.get("files"):
+                payload.pop("files", None)
             self._ensure_grounded_citations(task, context, payload)
             if self._workspace_runtime is not None:
                 payload.update(
