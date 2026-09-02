@@ -5,6 +5,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.2.0] — 2026-09-02
+
+Executor edita por operações em vez de reescrever arquivos, e o grounding do
+repositório passa a ser cacheado no fornecedor de LLM.
+
 ### Adicionado
 
 - Executor descreve mudanças como operações (`create`, `replace`, `delete`)
@@ -32,17 +37,18 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 - Parágrafo de abertura do README alinhado à descrição pública da plataforma
   (LangGraph, veto objetivo, gate humano, circuit breakers e OTel).
+- Resultado medido do piloto técnico destacado no README, com metodologia,
+  metas e limitações explícitas.
+- Captura real do mission control e roteiro para reproduzir o dashboard sem
+  consumo de tokens.
 
-### Adicionado
+### Segurança
 
 - Política de reporte de vulnerabilidades em `SECURITY.md` e reporte privado
   habilitado no GitHub.
 - CodeQL, Dependabot e política de atualizações compatível com os runtimes
   suportados.
-- Resultado medido do piloto técnico destacado no README, com metodologia,
-  metas e limitações explícitas.
-- Captura real do mission control e roteiro para reproduzir o dashboard sem
-  consumo de tokens.
+- `langgraph-checkpoint-postgres` 3.1.0 → 3.1.2 (CVE-2026-71433).
 
 ## [0.1.0] — 2026-07-26
 
@@ -62,5 +68,6 @@ Primeira versão pública, com as sete fases do roadmap implementadas.
   requests.
 - Suíte com 95 testes unitários e de integração.
 
-[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.1.0...HEAD
+[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lucianoon/forgehand/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucianoon/forgehand/releases/tag/v0.1.0
