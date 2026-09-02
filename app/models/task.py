@@ -126,6 +126,10 @@ class AgentTask(BaseModel):
     # Concedido SOMENTE pelo advisor (regra 8) — o registry seleciona o
     # executor um tier acima; executor nunca escala a si mesmo.
     tier_escalated: bool = False
+    # Preenchido quando uma tarefa COMPLETED é reaberta por sinal externo
+    # (ex.: "ci:<sha>"). O reducer só aceita rebaixar COMPLETED com um valor
+    # novo aqui — evita reabertura acidental por update tardio.
+    reopen_reason: str | None = None
     attempts: list[TaskAttempt] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

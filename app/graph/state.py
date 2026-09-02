@@ -54,7 +54,12 @@ def merge_tasks_by_id(
             current.status == TaskStatus.COMPLETED
             and task.status != TaskStatus.COMPLETED
         ):
-            continue  # tarefa aprovada nunca é reaberta por update tardio
+            # Tarefa aprovada não é reaberta por update tardio — a exceção é
+            # a reabertura EXPLÍCITA por sinal externo (CI reprovou o commit
+            # publicado), marcada com um reopen_reason novo.
+            if task.reopen_reason and task.reopen_reason != current.reopen_reason:
+                merged[key] = task
+            continue
         if current.status == TaskStatus.ESCALATED and task.status not in {
             TaskStatus.ESCALATED,
             TaskStatus.REJECTED,
@@ -108,10 +113,50 @@ class WorkflowPhase(str, Enum):
     REPLANNING = "replanning"
     AWAITING_HUMAN = "awaiting_human"  # interrupt() — gate humano explícito
     SYNTHESIZING = "synthesizing"
+    DELIVERING = "delivering"  # publicando PR e aguardando CI
     PERSISTING = "persisting"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+# --------------------------------------------------------------------------
+# Entrega (PR + CI) — o último trecho do ciclo
+# --------------------------------------------------------------------------
+
+
+class DeliveryConfig(BaseModel):
+    """Para onde a entrega vai. Definido na criação do workflow; imutável."""
+
+    repository: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
+    base_branch: str = Field(default="main", min_length=1)
+    head_branch: str | None = Field(default=None, min_length=1)
+    title: str | None = None
+    wait_for_checks: bool = True
+    checks_timeout_seconds: int = Field(default=900, ge=30, le=7200)
+
+
+class DeliveryResult(BaseModel):
+    """O que aconteceu na última publicação. ci_state:
+    success | failure | pending (timeout) | none (repo sem CI) |
+    skipped (não esperou / nada a publicar) | error (falha ao publicar)."""
+
+    pull_request_number: int | None = None
+    url: str | None = None
+    branch: str | None = None
+    commit_sha: str | None = None
+    ci_state: str = "skipped"
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+    failures: list[str] = Field(default_factory=list)
+    files: int = 0
+    deletions: int = 0
+    attempts: int = 0
+    error: str | None = None
+    note: str | None = None
+
+    @property
+    def ci_failed(self) -> bool:
+        return self.ci_state == "failure"
 
 
 # --------------------------------------------------------------------------
@@ -130,6 +175,7 @@ class WorkflowState(BaseModel):
     owner_client_id: str
     budget: WorkflowBudget = Field(default_factory=WorkflowBudget)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivery: DeliveryConfig | None = None
 
     # Fonte única de verdade das tarefas — reducer de merge por id
     plan: Annotated[list[AgentTask], merge_tasks_by_id] = Field(default_factory=list)
@@ -153,6 +199,7 @@ class WorkflowState(BaseModel):
     human_decision: Annotated[str | None, keep_latest] = (
         None  # preenchido pós-interrupt
     )
+    delivery_result: Annotated[DeliveryResult | None, keep_latest] = None
 
     # ----------------------------------------------------------------------
     # Views derivadas — substituem completed_tasks / failed_tasks

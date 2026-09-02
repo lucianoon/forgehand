@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["langgraph-checkpoint-postgres>=3.1.1", "psycopg[binary]>=3.2"]
 neo4j = ["neo4j>=5.23"]
+github-app = ["pyjwt[crypto]>=2.9"]
 otel = [
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",

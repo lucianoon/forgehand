@@ -176,6 +176,7 @@ Camadas:
 | Modelo caro só por escalonamento | tiers no registry; `escalate()` sobe um degrau, fallback degrada para baixo |
 | Rastreabilidade | `TaskAttempt` por tentativa + checkpoints consultáveis via SQL |
 | Exploração limitada | agentes leem o workspace só por ferramentas confinadas ao root; teto de chamadas e de tokens no `ToolLoop`, `run_check` só por nome do allowlist |
+| CI é veto | com `delivery`, o workflow só termina verde: CI vermelho reabre as tarefas que publicaram, com as falhas como `required_changes`, dentro de `max_iterations` |
 
 ## Testes
 

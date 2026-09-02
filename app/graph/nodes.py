@@ -30,7 +30,12 @@ from langgraph.types import Send, interrupt
 from pydantic import BaseModel, Field
 
 from app.agents.validation import format_validation_feedback
-from app.graph.state import WorkflowPhase, WorkflowState
+from app.graph.state import (
+    DeliveryConfig,
+    DeliveryResult,
+    WorkflowPhase,
+    WorkflowState,
+)
 from app.infrastructure.tracing import current_trace_id
 from app.models.task import (
     AdvisorTrigger,
@@ -114,6 +119,22 @@ class Advisor(Protocol):
     ) -> AdvisingOutcome: ...
 
 
+class DeliveryPublisher(Protocol):
+    """Publica os artefatos aprovados (PR) e, se configurado, espera o CI.
+    Nunca levanta: erro vira DeliveryResult(ci_state="error")."""
+
+    async def publish(
+        self,
+        *,
+        config: DeliveryConfig,
+        workflow_id: str,
+        project_id: str,
+        files: list[dict[str, str]],
+        deletions: list[str],
+        summary: str,
+    ) -> DeliveryResult: ...
+
+
 # --------------------------------------------------------------------------
 # Fábrica de nós
 # --------------------------------------------------------------------------
@@ -125,7 +146,15 @@ def build_nodes(
     judge: Judge,
     memory: MemoryStore,
     advisor: Advisor | None = None,
+    delivery: DeliveryPublisher | None = None,
 ) -> dict[str, Any]:
+    # import local: scm importa state (modelos de entrega); nodes não deve
+    # depender de infraestrutura além desta função pura de coleta.
+    from app.infrastructure.scm import (
+        collect_publishable_changes,
+        task_publishes_changes,
+    )
+
     def attempt_operational_summary(
         result: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
@@ -520,17 +549,31 @@ def build_nodes(
     # Gate humano — resolve o "rejeitado vira síntese"
     # ------------------------------------------------------------------
     async def human_gate(state: WorkflowState) -> dict[str, Any]:
+        ci_failed = (
+            state.delivery_result is not None and state.delivery_result.ci_failed
+        )
         if state.budget_exhausted:
             reason = "budget_exhausted"
         elif state.iterations_exhausted and state.tasks_needing_replan:
-            reason = "iterations_exhausted"
+            reason = (
+                "ci_failed_iterations_exhausted"
+                if ci_failed
+                else "iterations_exhausted"
+            )
         elif state.escalated_tasks:
             reason = "tasks_escalated"
+        elif ci_failed:
+            reason = "ci_failed"
         else:
             reason = "dependency_deadlock"
         decision = interrupt(
             {
                 "reason": reason,
+                "delivery": (
+                    state.delivery_result.model_dump(mode="json")
+                    if state.delivery_result is not None
+                    else None
+                ),
                 "escalated_tasks": [
                     {
                         "id": str(t.id),
@@ -626,6 +669,126 @@ def build_nodes(
             "phase": WorkflowPhase.FAILED,
         }
 
+    # ------------------------------------------------------------------
+    # Entrega: PR + CI como sinal objetivo (fecha o ciclo até o PR verde)
+    # ------------------------------------------------------------------
+    def delivery_router(state: WorkflowState) -> str:
+        """Após synthesize: publica se o workflow tem destino configurado."""
+        if state.delivery is None or delivery is None:
+            return "persist_memory"
+        if state.phase == WorkflowPhase.FAILED:
+            return "persist_memory"
+        return "publish_delivery"
+
+    async def publish_delivery(state: WorkflowState) -> dict[str, Any]:
+        assert state.delivery is not None and delivery is not None
+        previous = state.delivery_result
+        attempts = (previous.attempts if previous is not None else 0) + 1
+        # Só tarefas APROVADAS publicam — parcial aceito por humano inclusive.
+        completed = state.completed_tasks
+        files, deletions = collect_publishable_changes(
+            [{"result": t.result} for t in completed]
+        )
+        if not files and not deletions:
+            if previous is not None and previous.url:
+                # Nada novo aprovado (ex.: parcial aceito após CI vermelho):
+                # a última publicação continua sendo a verdade sobre o PR.
+                result = previous.model_copy(
+                    update={
+                        "note": "nenhuma tarefa aprovada nova; última publicação mantida"
+                    }
+                )
+            else:
+                result = DeliveryResult(
+                    ci_state="skipped",
+                    note="nenhum arquivo publicável nas tarefas aprovadas",
+                    attempts=attempts,
+                )
+            return {
+                "delivery_result": result,
+                "phase": WorkflowPhase.DELIVERING,
+                "final_output": _with_delivery_section(state.final_output, result),
+            }
+
+        summary = (
+            f"{state.project_id} — iteração {state.iteration}, {len(files)} arquivo(s)"
+        )
+        if deletions:
+            summary += f", {len(deletions)} remoção(ões)"
+        result = await delivery.publish(
+            config=state.delivery,
+            workflow_id=state.workflow_id,
+            project_id=state.project_id,
+            files=files,
+            deletions=deletions,
+            summary=summary,
+        )
+        result = result.model_copy(update={"attempts": attempts})
+
+        updates: dict[str, Any] = {
+            "delivery_result": result,
+            "phase": WorkflowPhase.DELIVERING,
+            "final_output": _with_delivery_section(state.final_output, result),
+        }
+        if not result.ci_failed or state.human_decision == "accept_partial":
+            return updates
+
+        # CI reprovou o commit publicado: sinal objetivo. Reabre as tarefas
+        # que contribuíram com arquivos, com as falhas como required_changes,
+        # e deixa o judge_router/replan decidirem (iterações continuam a
+        # limitar o ciclo; esgotadas, cai no gate humano).
+        now = datetime.now(timezone.utc)
+        reopen_reason = f"ci:{result.commit_sha or attempts}"
+        reopened: list[AgentTask] = []
+        evaluations: list[EvaluationResult] = []
+        feedback = result.failures[:15] or ["CI reprovou o commit publicado."]
+        for task in completed:
+            if not task_publishes_changes(task.result):
+                continue
+            evaluations.append(
+                EvaluationResult(
+                    task_id=task.id,
+                    approved=False,
+                    score=0.0,
+                    criteria_scores={c: 0.0 for c in task.acceptance_criteria},
+                    failures=[f"[ci] {line}" for line in feedback],
+                    required_changes=[
+                        "O CI do pull request reprovou o código publicado. "
+                        "Corrija as falhas abaixo mantendo os critérios já atendidos:",
+                        *[f"- {line}" for line in feedback],
+                    ],
+                    tests_passed=False,
+                    validated_by=["ci"],
+                )
+            )
+            reopened.append(
+                task.model_copy(
+                    update={
+                        "status": task.next_status_after_failure(),
+                        "reopen_reason": reopen_reason,
+                        "updated_at": now,
+                    }
+                )
+            )
+        updates["plan"] = reopened
+        updates["evaluations"] = evaluations
+        return updates
+
+    def delivery_result_router(state: WorkflowState) -> str:
+        """Após publish_delivery: CI verde/sem CI → persiste; CI vermelho →
+        replan enquanto houver iteração, senão gate humano. Parcial aceito
+        por humano nunca volta ao ciclo."""
+        result = state.delivery_result
+        if result is None or not result.ci_failed:
+            return "persist_memory"
+        if state.human_decision == "accept_partial":
+            return "persist_memory"
+        if state.escalated_tasks or state.budget_exhausted:
+            return "human_gate"
+        if state.tasks_needing_replan:
+            return "human_gate" if state.iterations_exhausted else "replan"
+        return "persist_memory"
+
     async def persist_memory(state: WorkflowState) -> dict[str, Any]:
         await memory.persist(state)
         terminal = (
@@ -648,5 +811,22 @@ def build_nodes(
         "authorize_retry": authorize_retry,
         "synthesize": synthesize,
         "abort": abort,
+        "delivery_router": delivery_router,
+        "publish_delivery": publish_delivery,
+        "delivery_result_router": delivery_result_router,
         "persist_memory": persist_memory,
     }
+
+
+def _with_delivery_section(final_output: str | None, result: DeliveryResult) -> str:
+    lines = [final_output or "", "", "## Entrega"]
+    if result.url:
+        lines.append(f"Pull request: {result.url} (branch `{result.branch}`)")
+    if result.commit_sha:
+        lines.append(f"Commit: `{result.commit_sha[:12]}`")
+    lines.append(f"CI: {result.ci_state}")
+    if result.error:
+        lines.append(f"Erro: {result.error}")
+    for line in result.failures[:10]:
+        lines.append(f"- {line}")
+    return "\n".join(lines).strip()

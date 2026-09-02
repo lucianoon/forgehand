@@ -18,12 +18,22 @@ from typing import Any
 from typing import cast
 from uuid import uuid4
 
-from app.graph.state import WorkflowBudget, WorkflowPhase
+from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
 from app.infrastructure.workflow_queue import WorkflowAccessContext
 from app.models.task import TaskStatus
 
 logger = logging.getLogger("forgehand")
+
+
+def _dump_model(value: Any) -> dict[str, Any] | None:
+    """Modelos Pydantic voltam do checkpoint como instância; de canais soltos
+    podem voltar como dict. Normaliza para dict JSON ou None."""
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return cast(dict[str, Any], value.model_dump(mode="json"))
+    return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
 class WorkflowNotFound(LookupError):
@@ -287,9 +297,10 @@ class WorkflowService:
         request: str,
         budget: WorkflowBudget | None,
         owner_client_id: str,
+        delivery: DeliveryConfig | None = None,
     ) -> str:
         workflow_id = str(uuid4())
-        initial = {
+        initial: dict[str, Any] = {
             "request": request,
             "project_id": project_id,
             "workflow_id": workflow_id,
@@ -302,6 +313,8 @@ class WorkflowService:
                 max_wall_clock_seconds=self._settings.default_max_wall_clock_seconds,
             ),
         }
+        if delivery is not None:
+            initial["delivery"] = delivery
         self._failures.pop(workflow_id, None)
         self._ensure_workers_started()
         await self._job_queue.enqueue(
@@ -370,6 +383,7 @@ class WorkflowService:
             "pending_decision": interrupts[0] if interrupts else None,
             "final_output": values.get("final_output"),
             "error": values.get("error") or self._failures.get(workflow_id),
+            "delivery": _dump_model(values.get("delivery_result")),
         }
 
     async def get_details(self, workflow_id: str) -> dict[str, Any]:
@@ -385,6 +399,7 @@ class WorkflowService:
                 evaluation.model_dump(mode="json")
                 for evaluation in values.get("evaluations", [])
             ],
+            "delivery": _dump_model(values.get("delivery_result")),
         }
 
     # ------------------------------------------------------------------
