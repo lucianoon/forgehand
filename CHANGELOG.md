@@ -5,6 +5,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.4.0] — 2026-09-02
+
+O judge deixa de julgar por texto e de julgar o próprio trabalho: critérios
+tipados decididos por código e um papel de judge com modelo próprio e quórum
+para tarefas críticas.
+
 ### Adicionado
 
 - Judge independente do executor: bindings por papel no `ProviderRouter`
@@ -129,7 +135,8 @@ Primeira versão pública, com as sete fases do roadmap implementadas.
   requests.
 - Suíte com 95 testes unitários e de integração.
 
-[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.3.0...HEAD
+[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lucianoon/forgehand/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lucianoon/forgehand/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lucianoon/forgehand/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucianoon/forgehand/releases/tag/v0.1.0
