@@ -311,15 +311,13 @@ class GitHubSCMClient:
         )
         base_sha = str(base_ref["object"]["sha"])
         head_sha = await self._branch_sha(repository, head_branch)
-        if head_sha is None:
-            await self._request(
-                "POST",
-                f"/repos/{repository}/git/refs",
-                json={"ref": f"refs/heads/{head_branch}", "sha": base_sha},
-            )
-            head_sha = base_sha
+        branch_exists = head_sha is not None
+        # Branch nova só é criada DEPOIS do commit, já apontando para ele: criar
+        # a ref na base e depois movê-la disparava um CI vermelho inútil no
+        # commit antigo (visto na primeira rodada real).
+        parent_sha = head_sha or base_sha
         parent_commit = await self._request(
-            "GET", f"/repos/{repository}/git/commits/{head_sha}"
+            "GET", f"/repos/{repository}/git/commits/{parent_sha}"
         )
         parent_tree = str(parent_commit["tree"]["sha"])
 
@@ -334,12 +332,12 @@ class GitHubSCMClient:
         ]
         for path in deletions:
             # remover path ausente é erro 422 na API; pular mantém idempotência
-            if await self._path_exists(repository, path, head_sha):
+            if await self._path_exists(repository, path, parent_sha):
                 entries.append(
                     {"path": path, "mode": "100644", "type": "blob", "sha": None}
                 )
 
-        commit_sha = head_sha
+        commit_sha = parent_sha
         changed = False
         if entries:
             tree = await self._request(
@@ -355,16 +353,23 @@ class GitHubSCMClient:
                     json={
                         "message": commit_message or f"forgehand: {title}",
                         "tree": new_tree,
-                        "parents": [head_sha],
+                        "parents": [parent_sha],
                     },
                 )
                 commit_sha = str(commit["sha"])
-                await self._request(
-                    "PATCH",
-                    f"/repos/{repository}/git/refs/heads/{head_branch}",
-                    json={"sha": commit_sha, "force": False},
-                )
                 changed = True
+        if not branch_exists:
+            await self._request(
+                "POST",
+                f"/repos/{repository}/git/refs",
+                json={"ref": f"refs/heads/{head_branch}", "sha": commit_sha},
+            )
+        elif changed:
+            await self._request(
+                "PATCH",
+                f"/repos/{repository}/git/refs/heads/{head_branch}",
+                json={"sha": commit_sha, "force": False},
+            )
 
         existing_pull = await self._existing_pull_request(
             repository, base_branch, head_branch
