@@ -127,7 +127,8 @@ Cada tarefa do plano carrega `acceptance_criteria` como objetos
 | `tests_pass` / `lint_pass` / `types_pass` | — | sinal `pytest` / `ruff` / `mypy` do workspace |
 | `file_created` | `path` | diff da tarefa tem `path` com `change_type=created` |
 | `file_modified` | `path` | diff da tarefa tem `path` com `change_type=modified` |
-| `no_existing_file_modified` | — | todas as mudanças são criações (`op=create`) |
+| `file_unchanged` | `path` | `path` não aparece entre os arquivos alterados pela tarefa |
+| `no_existing_file_modified` | — | todas as mudanças são criações (`op=create`); só para tarefas que criam arquivos novos |
 | `changes_limited_to` | `paths` (globs) | todos os arquivos alterados casam com algum glob |
 | `content_contains` | `path`, `pattern` (regex) | conteúdo final publicado de `path` casa com `pattern` |
 | `citations_valid` | — | `citations` existem no grounding e estão no escopo da tarefa |

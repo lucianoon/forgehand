@@ -5,6 +5,28 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Critério `file_unchanged` (path): o arquivo não pode ser alterado nem
+  removido pela tarefa. Cobre "não altere os testes", que antes acabava
+  mapeado para `no_existing_file_modified` (só criações) e reprovava qualquer
+  edição legítima. Prompt do planner esclarece a diferença.
+
+### Corrigido
+
+- Planner passa a saber quais capabilities não gravam arquivos (execution
+  strategies com `apply_files=false`, ou aplicação desligada) e deixa de
+  exigir `file_created`/`content_contains` nelas — antes, uma análise em
+  `research` planejava "criar documento", o executor não gravava e o judge
+  reprovava.
+- Saída estruturada embrulhada em uma chave única (`{"parameters": {...}}`,
+  visto com Claude Sonnet 5 no judge) passa a ser desembrulhada antes de
+  falhar a validação, em vez de escalar a tarefa por erro do judge.
+- `temperature` deixou de ser enviado por padrão aos fornecedores: os modelos
+  Claude 5 rejeitam o parâmetro (400 "deprecated for this model"), o que
+  derrubava toda chamada com a configuração padrão. `CompletionRequest.
+  temperature` passa a ser opcional (`None` = não enviar) nos dois providers.
+
 ## [0.4.0] — 2026-09-02
 
 O judge deixa de julgar por texto e de julgar o próprio trabalho: critérios

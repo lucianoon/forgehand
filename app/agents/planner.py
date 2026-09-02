@@ -46,8 +46,11 @@ independente que NÃO viu a requisição original;
 `text` (o contrato legível) e `kind`. Prefira kinds OBJETIVOS, decididos por \
 código sem margem de interpretação: tests_pass / lint_pass / types_pass \
 (sinais pytest/ruff/mypy), file_created (path), file_modified (path), \
-no_existing_file_modified, changes_limited_to (paths, aceita globs), \
-content_contains (path + pattern regex), citations_valid (análises grounded). \
+file_unchanged (path: "X não pode ser alterado"), no_existing_file_modified \
+(SÓ para tarefas que criam arquivos novos sem tocar em nenhum existente — \
+não use quando a tarefa edita um arquivo), changes_limited_to (paths, aceita \
+globs), content_contains (path + pattern regex), citations_valid (análises \
+grounded). \
 Use `subjective` só para o que realmente exige julgamento (qualidade, \
 clareza, aderência a um desenho). Um plano bom mistura os dois: o objetivo \
 prova que a mudança aconteceu, o subjetivo julga se ficou boa;
@@ -182,12 +185,40 @@ class LLMPlanner:
         max_validation_attempts: int = 2,
         tools: list[AgentTool] | None = None,
         max_tool_calls: int = 4,
+        non_writing_capabilities: set[Capability] | None = None,
+        apply_files_enabled: bool = True,
     ):
         self._router = router
         self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
+        # Vem das execution strategies do container: capabilities cujo
+        # resultado é só texto (apply_files=False). O planner precisa saber
+        # para não exigir file_created/content_contains de quem não grava.
+        self._non_writing = set(non_writing_capabilities or ())
+        self._apply_files_enabled = apply_files_enabled
         self._tier = tier
         self._default_task_budget = default_task_budget or TaskBudget()
         self._max_validation_attempts = max(1, max_validation_attempts)
+
+    def _system_prompt(self) -> str:
+        prompt = SYSTEM_PROMPT
+        if not self._apply_files_enabled:
+            prompt += (
+                "\n\nNesta execução NENHUMA tarefa grava arquivos no workspace: o "
+                "resultado de cada tarefa é o texto de `summary`/`notes`. Não use "
+                "critérios de arquivo (file_created, file_modified, content_contains, "
+                "changes_limited_to); descreva o entregável como conteúdo do resultado."
+            )
+        elif self._non_writing:
+            names = ", ".join(sorted(c.value for c in self._non_writing))
+            prompt += (
+                f"\n\nCapabilities que NÃO gravam arquivos ({names}): o resultado é o "
+                "texto de `summary`/`notes`. Nelas, não use critérios de arquivo "
+                "(file_created, file_modified, content_contains, changes_limited_to); "
+                "para produzir um documento no repositório use `documentation`."
+            )
+        if self._tool_loop.has_tools:
+            prompt += TOOLS_GUIDANCE
+        return prompt
 
     @staticmethod
     def _non_grounding_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -281,8 +312,7 @@ class LLMPlanner:
                 CompletionRequest(
                     model="",  # resolvido pelo router
                     cache_prefix=cache_prefix,
-                    system=SYSTEM_PROMPT
-                    + (TOOLS_GUIDANCE if self._tool_loop.has_tools else ""),
+                    system=self._system_prompt(),
                     messages=[Message(role="user", content=attempt_content)],
                     response_schema=PlanOutput,
                     max_tokens=8192,

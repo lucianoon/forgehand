@@ -113,6 +113,12 @@ def build_container(
             ),
             tools=planner_tools,
             max_tool_calls=settings.agent_tools_max_calls_planner,
+            non_writing_capabilities={
+                capability
+                for capability, strategy in execution_strategies.items()
+                if not strategy.apply_files
+            },
+            apply_files_enabled=workspace_runtime is not None,
         ),
         registry=CapabilityExecutorRegistry(
             router,

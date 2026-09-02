@@ -103,7 +103,10 @@ class CompletionRequest(BaseModel):
     messages: list[Message] = Field(min_length=1)
     system: str | None = None
     max_tokens: int = Field(default=4096, gt=0)
-    temperature: float = Field(default=0.2, ge=0, le=1)
+    # None = não enviar. Modelos Claude 5 rejeitam `temperature` (400:
+    # "deprecated for this model"); quem precisa de amostragem específica
+    # define explicitamente e o provider repassa.
+    temperature: float | None = Field(default=None, ge=0, le=1)
     timeout_seconds: float = Field(default=120.0, gt=0)
     # Regra 2: quando presente, o provider DEVE devolver parsed validado
     response_schema: type[BaseModel] | None = None
@@ -338,6 +341,17 @@ class LLMProvider(ABC):
         try:
             return schema.model_validate(raw).model_dump(mode="json")
         except ValidationError as exc:
+            # Modelos às vezes embrulham a saída em uma chave única
+            # ({"parameters": {...}}, {"input": {...}}). Visto em produção com
+            # Claude Sonnet 5 no judge. Desembrulhar é mais barato que repetir
+            # a chamada — e a validação continua estrita no conteúdo.
+            if len(raw) == 1:
+                (inner,) = raw.values()
+                if isinstance(inner, dict):
+                    try:
+                        return schema.model_validate(inner).model_dump(mode="json")
+                    except ValidationError:
+                        pass
             raise StructuredOutputError(
                 f"Saída não valida contra {schema.__name__}: {exc}",
                 provider=provider,
