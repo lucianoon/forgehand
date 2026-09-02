@@ -513,3 +513,23 @@ def test_file_unchanged_passes_only_when_path_is_untouched():
     assert "foi alterado (replace)" in verdicts["old intacto"].detail
     with pytest.raises(ValidationError, match="exige `path`"):
         AcceptanceCriterion(text="x", kind=CriterionKind.FILE_UNCHANGED)
+
+
+def test_planner_prompt_declares_non_writing_capabilities():
+    from app.agents.planner import LLMPlanner
+
+    class Router:
+        async def complete(self, tier, request):
+            raise AssertionError("não chamado")
+
+    plain = LLMPlanner(Router())._system_prompt()
+    assert "NÃO gravam arquivos" not in plain
+
+    scoped = LLMPlanner(
+        Router(), non_writing_capabilities={Capability.RESEARCH, Capability.REVIEW}
+    )._system_prompt()
+    assert "NÃO gravam arquivos (research, review)" in scoped
+    assert "use `documentation`" in scoped
+
+    disabled = LLMPlanner(Router(), apply_files_enabled=False)._system_prompt()
+    assert "NENHUMA tarefa grava arquivos" in disabled

@@ -14,6 +14,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Planner passa a saber quais capabilities não gravam arquivos (execution
+  strategies com `apply_files=false`, ou aplicação desligada) e deixa de
+  exigir `file_created`/`content_contains` nelas — antes, uma análise em
+  `research` planejava "criar documento", o executor não gravava e o judge
+  reprovava.
 - Saída estruturada embrulhada em uma chave única (`{"parameters": {...}}`,
   visto com Claude Sonnet 5 no judge) passa a ser desembrulhada antes de
   falhar a validação, em vez de escalar a tarefa por erro do judge.
