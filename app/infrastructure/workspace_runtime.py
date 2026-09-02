@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Protocol
@@ -147,8 +148,96 @@ def _command_result(
     }
 
 
+class OperationApplyError(ValueError):
+    """Falha SEMÂNTICA de uma operação (search não encontrado, ambíguo, arquivo
+    inexistente). Não derruba a tarefa: vira feedback operacional para o
+    autocorrect e sinal objetivo para o judge. Falhas de segurança (path fora
+    do workspace) continuam sendo ValueError comum e abortam a tarefa."""
+
+
+def normalize_operations(result_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """`operations` novo + `files` legado (arquivo inteiro → op=create), na
+    ordem: legado primeiro, depois as operações — um payload não deveria
+    misturar os dois, mas se misturar o replace vê o arquivo já criado."""
+    operations: list[dict[str, Any]] = []
+    legacy = result_payload.get("files")
+    if isinstance(legacy, list):
+        for artifact in legacy:
+            if isinstance(artifact, dict):
+                operations.append(
+                    {
+                        "op": "create",
+                        "path": artifact.get("path"),
+                        "content": artifact.get("content"),
+                    }
+                )
+    declared = result_payload.get("operations")
+    if isinstance(declared, list):
+        operations.extend(item for item in declared if isinstance(item, dict))
+    return operations
+
+
+def _line_offsets(text: str) -> list[int]:
+    offsets = [0]
+    for line in text.split("\n")[:-1]:
+        offsets.append(offsets[-1] + len(line) + 1)
+    return offsets
+
+
+def _find_line_tolerant_spans(text: str, search: str) -> list[tuple[int, int]]:
+    """Casamento linha a linha ignorando espaços à direita — cobre CRLF e
+    trailing whitespace, os erros mais comuns quando o modelo copia um trecho."""
+    text_lines = text.split("\n")
+    search_lines = [line.rstrip() for line in search.strip("\n").split("\n")]
+    if not search_lines or not any(search_lines):
+        return []
+    offsets = _line_offsets(text)
+    spans: list[tuple[int, int]] = []
+    width = len(search_lines)
+    for index in range(len(text_lines) - width + 1):
+        window = text_lines[index : index + width]
+        if all(a.rstrip() == b for a, b in zip(window, search_lines, strict=True)):
+            start = offsets[index]
+            end = offsets[index + width - 1] + len(text_lines[index + width - 1])
+            spans.append((start, end))
+    return spans
+
+
+def find_replace_span(
+    text: str, search: str, occurrence: int | None
+) -> tuple[int, int]:
+    """Localiza `search` em `text`. Exato primeiro; se não achar e o trecho é
+    multilinha, tenta o casamento tolerante. Ambiguidade sem `occurrence` é
+    erro: substituir "a primeira" silenciosamente é como bugs entram."""
+    if not search:
+        raise OperationApplyError("`search` vazio.")
+    spans = [
+        (match.start(), match.end()) for match in re.finditer(re.escape(search), text)
+    ]
+    if not spans and "\n" in search:
+        spans = _find_line_tolerant_spans(text, search)
+    if not spans:
+        raise OperationApplyError(
+            "trecho `search` não encontrado no arquivo atual; copie-o "
+            "literalmente das evidências (indentação e linhas iguais)."
+        )
+    if occurrence is None:
+        if len(spans) > 1:
+            raise OperationApplyError(
+                f"trecho `search` aparece {len(spans)} vezes; amplie o trecho "
+                "para torná-lo único ou informe `occurrence`."
+            )
+        return spans[0]
+    if occurrence > len(spans):
+        raise OperationApplyError(
+            f"`occurrence`={occurrence}, mas o trecho aparece apenas "
+            f"{len(spans)} vez(es)."
+        )
+    return spans[occurrence - 1]
+
+
 class LocalWorkspaceRuntime:
-    """Aplica artefatos do executor no workspace local de forma controlada."""
+    """Aplica operações do executor no workspace local de forma controlada."""
 
     def __init__(
         self,
@@ -171,13 +260,8 @@ class LocalWorkspaceRuntime:
         strategy: ExecutionStrategy | None = None,
     ) -> dict[str, Any]:
         strategy = strategy or ExecutionStrategy()
-        files = result_payload.get("files")
-        if (
-            not self._apply_files_enabled
-            or not strategy.apply_files
-            or not isinstance(files, list)
-            or not files
-        ):
+        operations = normalize_operations(result_payload)
+        if not self._apply_files_enabled or not strategy.apply_files or not operations:
             return {
                 "workspace": {
                     "apply_files_enabled": self._apply_files_enabled
@@ -191,25 +275,42 @@ class LocalWorkspaceRuntime:
         applied_files: list[str] = []
         file_diffs: list[dict[str, Any]] = []
         operation_history: list[dict[str, Any]] = []
-        for artifact in files:
-            if not isinstance(artifact, dict):
-                continue
-            path = self._resolve_artifact_path(artifact.get("path"))
-            content = artifact.get("content")
-            if not isinstance(content, str):
-                raise ValueError(
-                    f"Artefato inválido para {path.name}: content ausente."
-                )
-            before = path.read_text(encoding="utf-8") if path.exists() else None
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+        apply_errors: list[dict[str, Any]] = []
+        published: dict[str, str] = {}
+        deleted_paths: list[str] = []
+        for operation in operations:
+            op = operation.get("op")
+            path = self._resolve_artifact_path(operation.get("path"))
             relative_path = path.relative_to(self._root).as_posix()
+            try:
+                before, after = self._apply_operation(op, path, operation)
+            except OperationApplyError as exc:
+                apply_errors.append(
+                    {"path": relative_path, "operation": op, "error": str(exc)}
+                )
+                operation_history.append(
+                    {
+                        "step": "apply_file",
+                        "operation": op,
+                        "path": relative_path,
+                        "applied": False,
+                        "error": str(exc),
+                    }
+                )
+                continue
             applied_files.append(relative_path)
-            diff_entry = self._build_diff_entry(relative_path, before, content)
+            diff_entry = self._build_diff_entry(relative_path, before, after)
+            diff_entry["operation"] = op
             file_diffs.append(diff_entry)
+            if after is None:
+                deleted_paths.append(relative_path)
+                published.pop(relative_path, None)
+            else:
+                published[relative_path] = after
             operation_history.append(
                 {
                     "step": "apply_file",
+                    "operation": op,
                     "path": relative_path,
                     "change_type": diff_entry["change_type"],
                     "changed": diff_entry["changed"],
@@ -217,10 +318,23 @@ class LocalWorkspaceRuntime:
             )
 
         command_feedback: list[ValidationSignal] = []
+        if apply_errors:
+            command_feedback.append(
+                ValidationSignal(
+                    name="apply",
+                    passed=False,
+                    details="; ".join(
+                        f"{item['operation']} {item['path']}: {item['error']}"
+                        for item in apply_errors
+                    ),
+                )
+            )
         if strategy.run_objective_validation:
-            command_feedback = await self._run_command_feedback(
-                task,
-                applied_files=applied_files,
+            command_feedback.extend(
+                await self._run_command_feedback(
+                    task,
+                    applied_files=applied_files,
+                )
             )
         for signal in command_feedback:
             operation_history.append(
@@ -257,6 +371,15 @@ class LocalWorkspaceRuntime:
                     signal.model_dump(mode="json") for signal in command_feedback
                 ],
                 "file_diffs": file_diffs,
+                "apply_errors": apply_errors,
+                # Conteúdo FINAL dos arquivos tocados — o que a publicação de PR
+                # envia. Com replace o payload do executor não carrega o
+                # arquivo inteiro, então ele precisa viver aqui.
+                "published_files": [
+                    {"path": item_path, "content": content}
+                    for item_path, content in published.items()
+                ],
+                "deleted_paths": deleted_paths,
                 "operation_history": operation_history,
                 "command_executions": [
                     {
@@ -338,6 +461,42 @@ class LocalWorkspaceRuntime:
             "stderr": stderr.decode("utf-8", errors="ignore")[:output_limit],
         }
 
+    @staticmethod
+    def _apply_operation(
+        op: Any, path: Path, operation: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """Executa uma operação e devolve (before, after). after=None é remoção."""
+        before = path.read_text(encoding="utf-8") if path.exists() else None
+        if op == "create":
+            content = operation.get("content")
+            if not isinstance(content, str):
+                raise ValueError(f"Operação create em {path.name} sem content.")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return before, content
+        if op == "replace":
+            if before is None:
+                raise OperationApplyError(
+                    "arquivo não existe; use op=create para arquivos novos."
+                )
+            search = operation.get("search")
+            replacement = operation.get("replace")
+            if not isinstance(search, str) or not isinstance(replacement, str):
+                raise ValueError(f"Operação replace em {path.name} malformada.")
+            occurrence = operation.get("occurrence")
+            start, end = find_replace_span(
+                before, search, occurrence if isinstance(occurrence, int) else None
+            )
+            after = before[:start] + replacement + before[end:]
+            path.write_text(after, encoding="utf-8")
+            return before, after
+        if op == "delete":
+            if before is None:
+                raise OperationApplyError("arquivo não existe; nada a remover.")
+            path.unlink()
+            return before, None
+        raise ValueError(f"Operação desconhecida: {op!r}")
+
     def _resolve_artifact_path(self, raw_path: Any) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("Artefato sem path relativo válido.")
@@ -357,17 +516,21 @@ class LocalWorkspaceRuntime:
     def _build_diff_entry(
         relative_path: str,
         before: str | None,
-        after: str,
+        after: str | None,
     ) -> dict[str, Any]:
         before_text = before or ""
+        after_text = after or ""
         changed = before != after
-        change_type = (
-            "created" if before is None else "modified" if changed else "unchanged"
-        )
+        if after is None:
+            change_type = "deleted"
+        elif before is None:
+            change_type = "created"
+        else:
+            change_type = "modified" if changed else "unchanged"
         diff_lines = list(
             difflib.unified_diff(
                 before_text.splitlines(),
-                after.splitlines(),
+                after_text.splitlines(),
                 fromfile=f"a/{relative_path}",
                 tofile=f"b/{relative_path}",
                 lineterm="",

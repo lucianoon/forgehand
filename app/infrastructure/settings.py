@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     repository_grounding_max_files: int = Field(default=16, ge=4, le=64)
     repository_grounding_max_lines_per_file: int = Field(default=60, ge=10, le=200)
     repository_grounding_max_file_bytes: int = Field(default=64_000, ge=4_096)
+    # Arquivos até este tamanho entram INTEIROS na evidência (em vez do recorte
+    # de max_lines_per_file). Necessário para op=replace em arquivos pequenos:
+    # o executor só pode substituir trechos que viu. 0 desliga.
+    repository_grounding_full_file_max_bytes: int = Field(default=0, ge=0)
     executor_workspace_root: str = "."
     executor_apply_files_enabled: bool = False
     executor_command_backend: Literal["local", "docker"] = "local"

@@ -133,7 +133,32 @@ class LLMJudge:
         ]
         if not changed_diffs:
             return False
-        return all(item.get("change_type") == "created" for item in changed_diffs)
+        # Determinístico: só criações. `operation` vem do workspace runtime;
+        # um replace/delete em arquivo existente nunca é "alteração mínima
+        # restrita ao arquivo novo", independente do que o LLM achar.
+        return all(
+            item.get("change_type") == "created"
+            and item.get("operation", "create") == "create"
+            for item in changed_diffs
+        )
+
+    @staticmethod
+    def _apply_failures(task: AgentTask) -> list[str]:
+        """Operações que o runtime não conseguiu aplicar (search não encontrado,
+        ambíguo...). Sinal objetivo: a mudança pretendida NÃO está no workspace."""
+        if not isinstance(task.result, dict):
+            return []
+        workspace = task.result.get("workspace")
+        if not isinstance(workspace, dict):
+            return []
+        errors = workspace.get("apply_errors")
+        if not isinstance(errors, list):
+            return []
+        return [
+            f"{item.get('operation')} {item.get('path')}: {item.get('error')}"
+            for item in errors
+            if isinstance(item, dict)
+        ]
 
     @staticmethod
     def _criterion_is_minimal_change(criterion: str) -> bool:
@@ -203,7 +228,10 @@ class LLMJudge:
         # Sinais objetivos — veto estrutural sobre a opinião do LLM
         signals = await self._validation_pipeline.validate(task)
         by_name = {s.name: s for s in signals}
-        objective_ok = all(s.passed is not False for s in signals)
+        apply_failures = self._apply_failures(task)
+        objective_ok = (
+            all(s.passed is not False for s in signals) and not apply_failures
+        )
 
         criteria_scores = {c.criterion: c.score for c in verdict.criteria}
         minimal_change_ok = self._minimal_change_satisfied(task)
@@ -215,6 +243,7 @@ class LLMJudge:
         for s in signals:
             if s.passed is False:
                 failures.append(f"[{s.name}] {s.details}")
+        failures.extend(f"[apply] {item}" for item in apply_failures)
 
         required_changes = list(verdict.required_changes)
         if minimal_change_ok:
@@ -268,6 +297,7 @@ class LLMJudge:
                 validated_by=[
                     "llm",
                     *[s.name for s in signals if s.passed is not None],
+                    *(["apply"] if apply_failures else []),
                 ],
             ),
             usage=UsageReport(

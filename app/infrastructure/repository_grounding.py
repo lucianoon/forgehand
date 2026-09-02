@@ -116,11 +116,13 @@ class RepositoryGroundingCollector:
         max_files: int = 16,
         max_excerpt_lines: int = 60,
         max_file_bytes: int = 64_000,
+        full_file_max_bytes: int = 0,
     ) -> None:
         self._repo_root = Path(repo_root).expanduser().resolve()
         self._max_files = max_files
         self._max_excerpt_lines = max_excerpt_lines
         self._max_file_bytes = max_file_bytes
+        self._full_file_max_bytes = full_file_max_bytes
 
     def collect(self, request: str) -> dict[str, Any]:
         keywords = _keywordize(request)
@@ -135,11 +137,19 @@ class RepositoryGroundingCollector:
 
         evidence: list[dict[str, Any]] = []
         for index, candidate in enumerate(candidates[: self._max_files], start=1):
-            excerpt, line_start, line_end = _extract_excerpt(
-                candidate.text,
-                keywords,
-                self._max_excerpt_lines,
-            )
+            if (
+                self._full_file_max_bytes > 0
+                and len(candidate.text.encode("utf-8")) <= self._full_file_max_bytes
+            ):
+                # Arquivo inteiro: permite op=replace em qualquer ponto dele.
+                excerpt = candidate.text
+                line_start, line_end = 1, max(1, len(candidate.text.splitlines()))
+            else:
+                excerpt, line_start, line_end = _extract_excerpt(
+                    candidate.text,
+                    keywords,
+                    self._max_excerpt_lines,
+                )
             if not excerpt.strip():
                 continue
             evidence.append(

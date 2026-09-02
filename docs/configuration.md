@@ -134,6 +134,36 @@ export DEFAULT_TASK_MAX_COST_USD=3.0
 
 ## Executor operacional
 
+### Operações de arquivo
+
+O executor devolve `operations`, aplicadas em ordem pelo workspace runtime:
+
+| op | campos | uso |
+|---|---|---|
+| `create` | `path`, `content` | arquivo novo (conteúdo completo) |
+| `replace` | `path`, `search`, `replace`, `occurrence?` | trecho de arquivo existente |
+| `delete` | `path` | remover arquivo |
+
+`search` precisa ser um trecho literal e único do arquivo atual; se aparecer
+mais de uma vez o executor deve ampliar o trecho ou informar `occurrence`
+(1 = primeira). O casamento é exato e, para trechos multilinha, tolera CRLF e
+espaços à direita. Uma operação que não pode ser aplicada (trecho ausente,
+ambíguo, arquivo inexistente) não derruba a tarefa: entra em
+`workspace.apply_errors`, vira o sinal `apply: failed` no feedback do
+autocorrect e veta a aprovação do judge até ser corrigida.
+
+O runtime também grava `workspace.published_files` (conteúdo final de cada
+arquivo tocado) e `workspace.deleted_paths`; é isso que
+`POST /workflows/{id}/pull-request` publica. Payloads antigos com `files`
+(arquivo inteiro) continuam aceitos e são tratados como `create`.
+
+Para que o executor consiga editar qualquer ponto de um arquivo, ele precisa
+ter visto o texto. `REPOSITORY_GROUNDING_FULL_FILE_MAX_BYTES` (default `0`,
+desligado) faz arquivos até esse tamanho entrarem inteiros na evidência, em
+vez do recorte de `REPOSITORY_GROUNDING_MAX_LINES_PER_FILE` linhas. Um valor
+como `12000` cobre arquivos de até ~300 linhas; avalie o impacto no tamanho do
+prompt (o grounding é cacheado, então o custo recorrente é baixo).
+
 Executor operacional (opt-in):
 
 ```bash
