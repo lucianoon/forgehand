@@ -5,11 +5,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.4.1] — 2026-09-02
+
+Primeira rodada com LLM real (Claude Sonnet 5) contra um projeto-alvo com CI:
+o ciclo correção → PR → CI verde fechou de primeira, e os cinco achados da
+rodada entram aqui.
+
 ### Adicionado
 
-- Publicação no GitHub cria a branch da entrega só depois do commit, já
-  apontando para ele: antes a ref nascia na base e era movida em seguida, o
-  que disparava uma execução de CI vermelha inútil no commit antigo.
 - Benchmark aceita `delivery` por caso (mesmo shape de `POST /workflows`) e
   devolve o `delivery` do status no resultado — permite medir o ciclo
   completo até o PR verde em um repositório de teste.
@@ -21,6 +24,9 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Publicação no GitHub cria a branch da entrega só depois do commit, já
+  apontando para ele: antes a ref nascia na base e era movida em seguida, o
+  que disparava uma execução de CI vermelha inútil no commit antigo.
 - Planner passa a saber quais capabilities não gravam arquivos (execution
   strategies com `apply_files=false`, ou aplicação desligada) e deixa de
   exigir `file_created`/`content_contains` nelas — antes, uma análise em
@@ -164,7 +170,8 @@ Primeira versão pública, com as sete fases do roadmap implementadas.
   requests.
 - Suíte com 95 testes unitários e de integração.
 
-[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.4.0...HEAD
+[Não publicado]: https://github.com/lucianoon/forgehand/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lucianoon/forgehand/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lucianoon/forgehand/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lucianoon/forgehand/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lucianoon/forgehand/compare/v0.1.0...v0.2.0

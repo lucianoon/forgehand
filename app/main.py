@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Forgehand", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="Forgehand", version="0.4.1", lifespan=lifespan)
     app.state.settings = settings
     app.state.http_metrics = HttpMetrics()
 
