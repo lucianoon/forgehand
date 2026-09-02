@@ -5,6 +5,13 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Corrigido
+
+- `temperature` deixou de ser enviado por padrão aos fornecedores: os modelos
+  Claude 5 rejeitam o parâmetro (400 "deprecated for this model"), o que
+  derrubava toda chamada com a configuração padrão. `CompletionRequest.
+  temperature` passa a ser opcional (`None` = não enviar) nos dois providers.
+
 ## [0.4.0] — 2026-09-02
 
 O judge deixa de julgar por texto e de julgar o próprio trabalho: critérios

@@ -146,9 +146,10 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": request.model,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
             "messages": build_messages(request.messages),
         }
+        if request.temperature is not None:
+            kwargs["temperature"] = request.temperature
         system = build_system_blocks(request)
         if system:
             kwargs["system"] = system

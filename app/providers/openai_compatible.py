@@ -236,8 +236,9 @@ class OpenAICompatibleProvider(LLMProvider):
             "model": request.model,
             "messages": messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if use_tools:
             payload.update(
                 build_tool_payload(request, strict=self._supports_json_schema)

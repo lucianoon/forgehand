@@ -103,7 +103,10 @@ class CompletionRequest(BaseModel):
     messages: list[Message] = Field(min_length=1)
     system: str | None = None
     max_tokens: int = Field(default=4096, gt=0)
-    temperature: float = Field(default=0.2, ge=0, le=1)
+    # None = não enviar. Modelos Claude 5 rejeitam `temperature` (400:
+    # "deprecated for this model"); quem precisa de amostragem específica
+    # define explicitamente e o provider repassa.
+    temperature: float | None = Field(default=None, ge=0, le=1)
     timeout_seconds: float = Field(default=120.0, gt=0)
     # Regra 2: quando presente, o provider DEVE devolver parsed validado
     response_schema: type[BaseModel] | None = None
