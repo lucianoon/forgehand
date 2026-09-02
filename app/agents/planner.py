@@ -18,7 +18,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import BaseModel, Field
 
 from app.agents.grounding import (
-    format_repository_grounding,
+    build_grounding_prefix,
     get_evidence_index,
     grounding_required,
 )
@@ -223,9 +223,7 @@ class LLMPlanner:
         extra_context = self._non_grounding_context(context)
         if extra_context:
             user_content += f"\n\nContexto adicional do projeto:\n{extra_context}"
-        grounding_block = format_repository_grounding(context, max_items=8)
-        if grounding_block:
-            user_content += f"\n\n{grounding_block}"
+        cache_prefix = build_grounding_prefix(context)
         if self._is_repository_analysis(request, context):
             user_content += (
                 "\n\nDiretriz de economia para análise grounded do repositório:\n"
@@ -250,6 +248,7 @@ class LLMPlanner:
                 self._tier,
                 CompletionRequest(
                     model="",  # resolvido pelo router
+                    cache_prefix=cache_prefix,
                     system=SYSTEM_PROMPT,
                     messages=[Message(role="user", content=attempt_content)],
                     response_schema=PlanOutput,

@@ -258,6 +258,7 @@ def build_provider_router(
             supports_json_schema=settings.openrouter_supports_json_schema,
             require_parameters=settings.openrouter_require_parameters,
             response_healing=settings.openrouter_response_healing,
+            supports_prompt_caching=settings.openrouter_prompt_caching,
             extra_headers={
                 **(
                     {"HTTP-Referer": settings.openrouter_http_referer}

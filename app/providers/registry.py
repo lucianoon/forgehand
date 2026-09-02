@@ -111,5 +111,7 @@ class ProviderRouter:
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
             cost_usd=result.cost_usd,
+            cache_read_tokens=result.usage.cache_read_tokens,
+            cache_write_tokens=result.usage.cache_write_tokens,
         )
         return result

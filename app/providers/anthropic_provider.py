@@ -4,6 +4,13 @@ Saída estruturada (regra 2): tool use forçado com o JSON Schema do modelo
 Pydantic. Mais confiável que pedir JSON no prompt — o modelo é obrigado a
 preencher o schema, e ainda validamos com Pydantic antes de devolver.
 
+Prompt caching: `cache_prefix` vira o primeiro bloco do system com
+`cache_control: ephemeral`; `system` vira um segundo bloco, também marcado.
+Dois breakpoints de propósito — o prefixo (grounding) é compartilhado entre
+planner, executor e judge do mesmo workflow; o system é por papel. A API só
+cacheia blocos acima do mínimo do modelo (1024/2048 tokens); abaixo disso a
+marca é ignorada sem custo.
+
 Modelos e preços: verificar sempre contra a documentação oficial
 (https://platform.claude.com/docs/en/about-claude/models/overview e a página
 de preços). Os IDs abaixo são os vigentes em jul/2026; a tabela de preços
@@ -32,6 +39,22 @@ MODEL_STANDARD = "claude-sonnet-5"
 MODEL_STRONG = "claude-opus-5"
 
 _STRUCTURED_TOOL_NAME = "emit_structured_output"
+_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def build_system_blocks(request: CompletionRequest) -> str | list[dict[str, Any]]:
+    """Sem prefixo: string simples (comportamento original). Com prefixo:
+    lista de blocos, cada um com breakpoint de cache."""
+    if not request.cache_prefix:
+        return request.system or ""
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": request.cache_prefix, "cache_control": _CACHE_CONTROL}
+    ]
+    if request.system:
+        blocks.append(
+            {"type": "text", "text": request.system, "cache_control": _CACHE_CONTROL}
+        )
+    return blocks
 
 
 class AnthropicProvider(LLMProvider):
@@ -52,8 +75,9 @@ class AnthropicProvider(LLMProvider):
             "temperature": request.temperature,
             "messages": [m.model_dump() for m in request.messages],
         }
-        if request.system:
-            kwargs["system"] = request.system
+        system = build_system_blocks(request)
+        if system:
+            kwargs["system"] = system
 
         if request.response_schema is not None:
             kwargs["tools"] = [

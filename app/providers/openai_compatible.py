@@ -7,6 +7,13 @@ Uma classe cobre três requisitos do desenho: OpenAI, modelos locais
 Saída estruturada: tenta response_format json_schema (strict); se o
 endpoint não suportar (comum em locais), degrada para json_object +
 instrução no system — a validação Pydantic na base pega qualquer desvio.
+
+Prompt caching: com `supports_prompt_caching`, o system vira lista de blocos
+com `cache_control` (formato aceito pelo OpenRouter para modelos Anthropic;
+modelos OpenAI cacheiam prefixo automaticamente e ignoram a marca). Sem
+suporte, prefixo e system são concatenados em texto puro. Tokens cacheados
+chegam em `usage.prompt_tokens_details.cached_tokens` e já estão contidos em
+`prompt_tokens` — por isso são subtraídos de input_tokens antes de precificar.
 """
 
 from __future__ import annotations
@@ -27,6 +34,37 @@ from app.providers.base import (
 )
 
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def build_system_message(
+    system: str, cache_prefix: str | None, *, supports_prompt_caching: bool
+) -> dict[str, Any] | None:
+    if not cache_prefix:
+        return {"role": "system", "content": system} if system else None
+    if not supports_prompt_caching:
+        joined = f"{cache_prefix}\n\n{system}".strip()
+        return {"role": "system", "content": joined}
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": cache_prefix, "cache_control": _CACHE_CONTROL}
+    ]
+    if system:
+        blocks.append({"type": "text", "text": system, "cache_control": _CACHE_CONTROL})
+    return {"role": "system", "content": blocks}
+
+
+def parse_usage(raw_usage: dict[str, Any]) -> Usage:
+    prompt_tokens = int(raw_usage.get("prompt_tokens", 0) or 0)
+    details = raw_usage.get("prompt_tokens_details") or {}
+    cached = (
+        int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
+    )
+    cached = min(cached, prompt_tokens)
+    return Usage(
+        input_tokens=prompt_tokens - cached,
+        output_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
+        cache_read_tokens=cached,
+    )
 
 
 def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +108,7 @@ class OpenAICompatibleProvider(LLMProvider):
         supports_json_schema: bool = True,
         require_parameters: bool = False,
         response_healing: bool = False,
+        supports_prompt_caching: bool = False,
         extra_headers: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
         **kwargs: Any,
@@ -79,6 +118,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._supports_json_schema = supports_json_schema
         self._require_parameters = require_parameters
         self._response_healing = response_healing
+        self._supports_prompt_caching = supports_prompt_caching
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -87,7 +127,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._client = client or httpx.AsyncClient(base_url=base_url, headers=headers)
 
     async def _do_complete(self, request: CompletionRequest) -> CompletionResult:
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         system = request.system or ""
 
         if request.response_schema is not None and not self._supports_json_schema:
@@ -96,8 +136,13 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"{json.dumps(request.response_schema.model_json_schema())}"
             ).strip()
 
-        if system:
-            messages.append({"role": "system", "content": system})
+        system_message = build_system_message(
+            system,
+            request.cache_prefix,
+            supports_prompt_caching=self._supports_prompt_caching,
+        )
+        if system_message is not None:
+            messages.append(system_message)
         messages.extend(m.model_dump() for m in request.messages)
 
         payload: dict[str, Any] = {
@@ -142,11 +187,7 @@ class OpenAICompatibleProvider(LLMProvider):
         data = response.json()
         choice = data["choices"][0]
         text = choice["message"].get("content") or ""
-        raw_usage = data.get("usage") or {}
-        usage = Usage(
-            input_tokens=raw_usage.get("prompt_tokens", 0),
-            output_tokens=raw_usage.get("completion_tokens", 0),
-        )
+        usage = parse_usage(data.get("usage") or {})
 
         parsed: dict[str, Any] | None = None
         if request.response_schema is not None:
