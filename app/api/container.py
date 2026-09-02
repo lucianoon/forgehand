@@ -26,6 +26,7 @@ from app.api.service import WorkflowService
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog
 from app.infrastructure.memory import InMemoryProjectMemory
+from app.infrastructure.scm import GitHubDeliveryService
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
@@ -130,6 +131,10 @@ def build_container(
         memory=memory or InMemoryProjectMemory(settings),
         checkpointer=checkpointer,
         advisor=LLMAdvisor(router),
+        delivery=GitHubDeliveryService(
+            poll_interval_seconds=settings.delivery_checks_poll_interval_seconds,
+            grace_seconds=settings.delivery_checks_grace_seconds,
+        ),
     )
     audit_log = audit_log or (
         JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)

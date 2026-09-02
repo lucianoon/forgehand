@@ -42,6 +42,8 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.task", "TaskAttempt"),
     ("app.models.task", "TaskBudget"),
     ("app.models.task", "EvaluationResult"),
+    ("app.graph.state", "DeliveryConfig"),
+    ("app.graph.state", "DeliveryResult"),
     ("app.graph.nodes", "ExecutionPayload"),  # viaja nos Send pendentes
 ]
 
@@ -59,8 +61,9 @@ def build_workflow(
     memory: Any,
     checkpointer: Any,
     advisor: Any = None,
+    delivery: Any = None,
 ) -> Any:
-    nodes = build_nodes(planner, registry, judge, memory, advisor)
+    nodes = build_nodes(planner, registry, judge, memory, advisor, delivery)
 
     graph = StateGraph(WorkflowState)
 
@@ -74,6 +77,7 @@ def build_workflow(
     graph.add_node("synthesize", nodes["synthesize"])
     graph.add_node("abort", nodes["abort"])
     graph.add_node("authorize_retry", nodes["authorize_retry"])
+    graph.add_node("publish_delivery", nodes["publish_delivery"])
     graph.add_node("persist_memory", nodes["persist_memory"])
 
     graph.set_entry_point("load_context")
@@ -127,7 +131,23 @@ def build_workflow(
 
     graph.add_edge("authorize_retry", "replan")
 
-    graph.add_edge("synthesize", "persist_memory")
+    # Entrega: synthesize → (publica PR + espera CI) → persiste; CI vermelho
+    # reabre as tarefas que publicaram e volta ao replan (bounded por
+    # max_iterations); esgotado, gate humano.
+    graph.add_conditional_edges(
+        "synthesize",
+        nodes["delivery_router"],
+        {"publish_delivery": "publish_delivery", "persist_memory": "persist_memory"},
+    )
+    graph.add_conditional_edges(
+        "publish_delivery",
+        nodes["delivery_result_router"],
+        {
+            "persist_memory": "persist_memory",
+            "replan": "replan",
+            "human_gate": "human_gate",
+        },
+    )
     graph.add_edge("abort", "persist_memory")
     graph.add_edge("persist_memory", END)
 

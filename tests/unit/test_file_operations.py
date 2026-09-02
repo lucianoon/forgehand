@@ -3,16 +3,14 @@ runtime; conteúdo final na publicação de PR; veto do judge em falha de apply.
 
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
 from app.agents.executor import ExecutionOutput, LLMExecutor
 from app.agents.judge import LLMJudge
-from app.infrastructure.scm import GitHubSCMClient, collect_publishable_changes
+from app.infrastructure.scm import collect_publishable_changes
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.workspace_runtime import (
     LocalWorkspaceRuntime,
@@ -428,89 +426,6 @@ def test_collect_publishable_changes_prefers_final_content_and_tracks_deletes():
         {"path": "b.py", "content": "b\n"},
     ]
     assert deletions == ["old.py"]
-
-
-@pytest.mark.asyncio
-async def test_github_scm_deletes_files_on_head_branch():
-    requests: list[tuple[str, str, dict[str, object]]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else {}
-        requests.append((request.method, request.url.path, body))
-        if request.method == "GET" and request.url.path.endswith("/heads/main"):
-            return httpx.Response(200, json={"object": {"sha": "base-sha"}})
-        if request.method == "GET" and "/git/ref/" in request.url.path:
-            return httpx.Response(404, json={"message": "Not Found"})
-        if request.method == "GET" and request.url.path.endswith("/contents/old.py"):
-            return httpx.Response(
-                200,
-                json={"sha": "old-sha", "content": base64.b64encode(b"bye\n").decode()},
-            )
-        if request.method == "GET" and "/contents/" in request.url.path:
-            return httpx.Response(404, json={"message": "Not Found"})
-        if request.method == "GET" and request.url.path.endswith("/pulls"):
-            return httpx.Response(200, json=[])
-        if request.method == "POST" and request.url.path.endswith("/pulls"):
-            return httpx.Response(
-                201, json={"number": 7, "html_url": "https://gh.test/pr/7"}
-            )
-        return httpx.Response(200, json={"ok": True})
-
-    client = GitHubSCMClient(
-        "token",
-        client=httpx.AsyncClient(
-            base_url="https://api.github.test", transport=httpx.MockTransport(handler)
-        ),
-    )
-    result = await client.publish_pull_request(
-        repository="acme/service",
-        base_branch="main",
-        head_branch="forgehand/wf",
-        title="t",
-        body="b",
-        files=[{"path": "a.py", "content": "y\n"}],
-        deletions=["old.py", "never-existed.py"],
-    )
-
-    assert result.number == 7
-    deletes = [item for item in requests if item[0] == "DELETE"]
-    assert len(deletes) == 1
-    assert deletes[0][1].endswith("/contents/old.py")
-    assert deletes[0][2]["sha"] == "old-sha"
-    assert deletes[0][2]["branch"] == "forgehand/wf"
-
-
-@pytest.mark.asyncio
-async def test_github_scm_accepts_deletions_only():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and request.url.path.endswith("/heads/main"):
-            return httpx.Response(200, json={"object": {"sha": "base-sha"}})
-        if request.method == "GET" and "/git/ref/" in request.url.path:
-            return httpx.Response(404, json={"message": "Not Found"})
-        if request.method == "GET" and "/contents/" in request.url.path:
-            return httpx.Response(200, json={"sha": "s", "content": ""})
-        if request.method == "GET" and request.url.path.endswith("/pulls"):
-            return httpx.Response(200, json=[])
-        if request.method == "POST" and request.url.path.endswith("/pulls"):
-            return httpx.Response(201, json={"number": 1, "html_url": "u"})
-        return httpx.Response(200, json={"ok": True})
-
-    client = GitHubSCMClient(
-        "token",
-        client=httpx.AsyncClient(
-            base_url="https://api.github.test", transport=httpx.MockTransport(handler)
-        ),
-    )
-    result = await client.publish_pull_request(
-        repository="acme/service",
-        base_branch="main",
-        head_branch="h",
-        title="t",
-        body="b",
-        files=[],
-        deletions=["gone.py"],
-    )
-    assert result.number == 1
 
 
 # --------------------------------------------------------------------------

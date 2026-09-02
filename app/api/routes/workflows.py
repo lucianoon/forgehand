@@ -7,7 +7,6 @@ POST /workflows/{id}/decision → retoma interrupt do human_gate
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -27,10 +26,11 @@ from app.api.service import (
     WorkflowAlreadyTerminal,
     WorkflowNotFound,
 )
-from app.graph.state import WorkflowBudget, WorkflowPhase
+from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.scm import (
     GitHubSCMClient,
     SCMError,
+    build_token_provider_from_env,
     collect_publishable_changes,
 )
 
@@ -45,6 +45,7 @@ _PHASE_STATUS: dict[WorkflowPhase, str] = {
     WorkflowPhase.EVALUATING: "running",
     WorkflowPhase.REPLANNING: "running",
     WorkflowPhase.SYNTHESIZING: "running",
+    WorkflowPhase.DELIVERING: "running",
     WorkflowPhase.PERSISTING: "running",
     WorkflowPhase.AWAITING_HUMAN: "awaiting_decision",
     WorkflowPhase.COMPLETED: "completed",
@@ -59,6 +60,19 @@ class BudgetIn(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1)
 
 
+class DeliveryIn(BaseModel):
+    """Destino da entrega: ao final, o workflow publica um PR com os arquivos
+    das tarefas aprovadas e, por padrão, espera o CI. CI vermelho reabre as
+    tarefas e volta ao ciclo (limitado por max_iterations)."""
+
+    repository: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
+    base_branch: str = Field(default="main", min_length=1)
+    head_branch: str | None = Field(default=None, min_length=1)
+    title: str | None = None
+    wait_for_checks: bool = True
+    checks_timeout_seconds: int = Field(default=900, ge=30, le=7200)
+
+
 class CreateWorkflowRequest(BaseModel):
     project_id: str = Field(min_length=1)
     request: str = Field(min_length=10)
@@ -66,6 +80,7 @@ class CreateWorkflowRequest(BaseModel):
     # acceptance_criteria do payload original: anexados à requisição para o
     # planner distribuí-los entre as tarefas
     acceptance_criteria: list[str] = Field(default_factory=list)
+    delivery: DeliveryIn | None = None
 
 
 class CreateWorkflowResponse(BaseModel):
@@ -92,6 +107,7 @@ class WorkflowStatusResponse(BaseModel):
     pending_decision: dict[str, Any] | None = None
     final_output: str | None = None
     error: str | None = None
+    delivery: dict[str, Any] | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -103,6 +119,9 @@ class PullRequestRequest(BaseModel):
     base_branch: str = Field(default="main", min_length=1)
     head_branch: str | None = Field(default=None, min_length=1)
     title: str | None = None
+    # Espera os checks do commit publicado e devolve o resultado do CI.
+    wait_for_checks: bool = False
+    checks_timeout_seconds: int = Field(default=600, ge=30, le=7200)
 
 
 def _container(request: Request) -> Container:
@@ -130,6 +149,7 @@ def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
         pending_decision=data["pending_decision"],
         final_output=data["final_output"],
         error=data.get("error"),
+        delivery=data.get("delivery"),
     )
 
 
@@ -141,7 +161,8 @@ async def create_workflow(
     request: Request,
     client: AuthenticatedClient = Depends(require_api_client),
 ) -> CreateWorkflowResponse:
-    require_role(client, "operator")
+    # Publicar PR é ação de approver; só operator basta sem entrega.
+    require_role(client, "approver" if body.delivery is not None else "operator")
     service = _container(request).workflow_service
     await ensure_project_access(request, client, body.project_id)
 
@@ -155,8 +176,13 @@ async def create_workflow(
         overrides = body.budget.model_dump(exclude_none=True)
         budget = WorkflowBudget(**overrides) if overrides else None
 
+    delivery = DeliveryConfig(**body.delivery.model_dump()) if body.delivery else None
     workflow_id = await service.start(
-        body.project_id, full_request, budget, owner_client_id=client.client_id
+        body.project_id,
+        full_request,
+        budget,
+        owner_client_id=client.client_id,
+        delivery=delivery,
     )
     await record_audit_event(
         request,
@@ -350,14 +376,18 @@ async def publish_pull_request(
     await ensure_workflow_access(request, client, access)
     details = await service.get_details(workflow_id)
     files, deletions = collect_publishable_changes(details["tasks"])
-    token = os.getenv("GITHUB_TOKEN", "")
-    if not token:
+    try:
+        token_provider = build_token_provider_from_env()
+    except SCMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if token_provider is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="GITHUB_TOKEN não configurado.",
+            detail="Nenhuma credencial GitHub configurada (GITHUB_TOKEN ou GitHub App).",
         )
-    client_scm = GitHubSCMClient(token)
+    client_scm = GitHubSCMClient(token_provider=token_provider)
     head = body.head_branch or f"forgehand/{workflow_id[:12]}"
+    ci: dict[str, Any] | None = None
     try:
         pull = await client_scm.publish_pull_request(
             repository=body.repository,
@@ -368,6 +398,17 @@ async def publish_pull_request(
             files=files,
             deletions=deletions,
         )
+        if body.wait_for_checks:
+            checks = await client_scm.wait_for_checks(
+                body.repository,
+                pull.commit_sha,
+                timeout_seconds=body.checks_timeout_seconds,
+            )
+            ci = {
+                "state": checks.state,
+                "checks": checks.as_dicts(),
+                "failures": checks.failures,
+            }
     except (SCMError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
@@ -382,4 +423,11 @@ async def publish_pull_request(
         status_code=201,
         detail=pull.url,
     )
-    return {"number": pull.number, "url": pull.url, "branch": pull.branch}
+    return {
+        "number": pull.number,
+        "url": pull.url,
+        "branch": pull.branch,
+        "commit_sha": pull.commit_sha,
+        "changed": pull.changed,
+        "ci": ci,
+    }

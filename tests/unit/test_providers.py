@@ -310,9 +310,7 @@ async def test_providers():
             model="IGNORADO", messages=[Message(role="user", content="oi")]
         ),
     )
-    assert "claude-sonnet-5" in r7.text, (
-        "default = STANDARD, model do request ignorado"
-    )
+    assert "claude-sonnet-5" in r7.text, "default = STANDARD, model do request ignorado"
     tier = router.escalate(ModelTier.STANDARD)
     assert tier == ModelTier.STRONG
     r7b = await router.complete(

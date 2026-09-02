@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
     agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     agent_tools_allow_checks: bool = True
+    # Entrega (PR + CI): cadência de polling dos checks e quanto esperar por
+    # um primeiro check antes de concluir que o repositório não tem CI.
+    # Credenciais (GITHUB_TOKEN ou GITHUB_APP_*) vêm do ambiente, não daqui.
+    delivery_checks_poll_interval_seconds: float = Field(default=15.0, gt=0)
+    delivery_checks_grace_seconds: float = Field(default=90.0, ge=0)
     executor_workspace_root: str = "."
     executor_apply_files_enabled: bool = False
     executor_command_backend: Literal["local", "docker"] = "local"

@@ -7,6 +7,16 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Entrega até o PR verde: `delivery` na criação do workflow faz o grafo
+  publicar um único commit (Git Data API) na branch da entrega, abrir ou
+  reutilizar o PR e esperar os checks do CI. CI vermelho reabre as tarefas
+  que publicaram arquivos com as falhas (resumo e anotações) como
+  `required_changes` e volta ao replan, limitado por `max_iterations`; depois
+  cai no gate humano. Status expõe `delivery`; `final_output` ganha seção
+  "Entrega". Rota manual de PR passa a aceitar `wait_for_checks`.
+- Autenticação GitHub por App (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
+  `GITHUB_APP_PRIVATE_KEY[_PATH]`, extra `github-app`) além de `GITHUB_TOKEN`.
+
 - Tool-use nos agentes: planner, executor e judge exploram o workspace com
   `read_file`, `list_directory` e `search_repository` (executor também com
   `run_check`, restrito às verificações configuradas) antes de emitir a
@@ -17,6 +27,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 - Providers Anthropic e OpenAI-compatible falam tool-use: `CompletionRequest`
   ganha `tools` e `force_final`; `CompletionResult` ganha `tool_calls`;
   `Message` carrega `tool_calls`/`tool_results`.
+
+### Alterado
+
+- Publicação no GitHub deixa a Contents API (um commit por arquivo) pela Git
+  Data API (árvore + commit atômico); remoções entram no mesmo commit e
+  retry com conteúdo idêntico não cria commit.
+- `AgentTask.reopen_reason`: uma tarefa aprovada só é rebaixada pelo reducer
+  quando reaberta explicitamente por sinal externo com motivo novo.
 
 ## [0.2.0] — 2026-09-02
 
