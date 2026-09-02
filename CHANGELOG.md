@@ -7,6 +7,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Benchmark aceita `delivery` por caso (mesmo shape de `POST /workflows`) e
+  devolve o `delivery` do status no resultado — permite medir o ciclo
+  completo até o PR verde em um repositório de teste.
+
 - Critério `file_unchanged` (path): o arquivo não pode ser alterado nem
   removido pela tarefa. Cobre "não altere os testes", que antes acabava
   mapeado para `no_existing_file_modified` (só criações) e reprovava qualquer

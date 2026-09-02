@@ -19,6 +19,8 @@ class BenchmarkCase(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     max_cost_usd: float = Field(default=1.0, gt=0)
     timeout_seconds: float = Field(default=300, gt=0)
+    # Entrega (PR + CI) — mesmo shape de `delivery` em POST /workflows.
+    delivery: dict[str, Any] | None = None
 
 
 class CaseResult(BaseModel):
@@ -32,6 +34,7 @@ class CaseResult(BaseModel):
     elapsed_seconds: float = 0.0
     error: str | None = None
     diagnostics: dict[str, Any] | None = None
+    delivery: dict[str, Any] | None = None
 
 
 class BenchmarkPolicy(BaseModel):
@@ -110,6 +113,7 @@ async def run_case(
             "request": case.request,
             "acceptance_criteria": case.acceptance_criteria,
             "budget": {"max_cost_usd": case.max_cost_usd},
+            **({"delivery": case.delivery} if case.delivery else {}),
         },
     )
     if created.status_code != 202:
@@ -168,6 +172,7 @@ async def run_case(
                     )
                 ),
                 diagnostics=diagnostics,
+                delivery=state.get("delivery"),
             )
         await asyncio.sleep(0.5)
     try:
