@@ -60,6 +60,8 @@ class WorkflowTracer:
         output_tokens: int = 0,
         cost_usd: float = 0.0,
         error: str | None = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         return None
 
@@ -116,6 +118,8 @@ class OtelWorkflowTracer(WorkflowTracer):
         output_tokens: int = 0,
         cost_usd: float = 0.0,
         error: str | None = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         from opentelemetry.trace import Status, StatusCode
 
@@ -130,6 +134,8 @@ class OtelWorkflowTracer(WorkflowTracer):
                 "gen_ai.request.model": model,
                 "gen_ai.usage.input_tokens": input_tokens,
                 "gen_ai.usage.output_tokens": output_tokens,
+                "gen_ai.usage.cache_read.input_tokens": cache_read_tokens,
+                "gen_ai.usage.cache_creation.input_tokens": cache_write_tokens,
                 "forgehand.tier": tier,
                 "forgehand.cost_usd": cost_usd,
             },

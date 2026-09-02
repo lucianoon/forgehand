@@ -17,7 +17,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agents.grounding import (
-    format_repository_grounding,
+    build_grounding_prefix,
+    format_evidence_focus,
     grounding_required,
     normalize_citations,
     validate_citations,
@@ -170,23 +171,22 @@ class LLMJudge:
         if citation_errors:
             return self._grounding_failure(task, citation_errors)
 
-        grounding_block = format_repository_grounding(
-            context,
-            evidence_ids=task.evidence_ids,
-            max_items=8,
-        )
+        cache_prefix = build_grounding_prefix(context)
         prompt_content = (
             f"Tarefa: {task.title}\n\n"
             f"Descrição:\n{task.description}\n\n"
             f"Critérios de aceitação:\n{criteria}\n\n"
             f"Resultado do executor:\n{task.result}"
         )
-        if grounding_block:
-            prompt_content += f"\n\n{grounding_block}"
+        if cache_prefix:
+            focus = format_evidence_focus(task.evidence_ids)
+            if focus:
+                prompt_content += f"\n\n{focus}"
         result = await self._router.complete(
             self._tier,
             CompletionRequest(
                 model="",
+                cache_prefix=cache_prefix,
                 system=SYSTEM_PROMPT,
                 messages=[
                     Message(

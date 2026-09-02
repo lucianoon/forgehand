@@ -5,7 +5,21 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Prompt caching na porta única de LLM: `CompletionRequest.cache_prefix`
+  leva o grounding do repositório como bloco estável marcado com
+  `cache_control` (Anthropic e OpenRouter); tokens de cache são lidos,
+  precificados (`cache_read_per_mtok` / `cache_write_per_mtok`) e exportados
+  nos spans OTel. `OPENROUTER_PROMPT_CACHING` controla o envio dos blocos.
+
 ### Alterado
+
+- Planner, executor e judge recebem o grounding completo do workflow no
+  prefixo cacheável e apenas a lista de `evidence_ids` da tarefa no user
+  content, em vez de um recorte de até 8 evidências por chamada.
+- `Usage.total_tokens` passa a incluir tokens lidos/escritos em cache, que
+  ocupam contexto e contam para o budget da tarefa.
 
 - Parágrafo de abertura do README alinhado à descrição pública da plataforma
   (LangGraph, veto objetivo, gate humano, circuit breakers e OTel).

@@ -20,11 +20,32 @@ from app.providers.registry import ModelTier, TierBinding
 
 # Defaults de referência (jul/2026). VERIFICAR contra a página de preços
 # oficial antes de produção — valores desatualizados corrompem o budget.
+# Cache (Anthropic): escrita = 1.25x entrada, leitura = 0.10x entrada.
+# OpenAI: leitura cacheada = 0.5x entrada, sem custo extra de escrita.
 _DEFAULT_PRICING = {
-    "claude-haiku-4-5": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
-    "claude-sonnet-5": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
-    "claude-opus-5": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
-    "openai/gpt-4o-mini": {"input_per_mtok": 0.15, "output_per_mtok": 0.60},
+    "claude-haiku-4-5": {
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 5.0,
+        "cache_write_per_mtok": 1.25,
+        "cache_read_per_mtok": 0.10,
+    },
+    "claude-sonnet-5": {
+        "input_per_mtok": 3.0,
+        "output_per_mtok": 15.0,
+        "cache_write_per_mtok": 3.75,
+        "cache_read_per_mtok": 0.30,
+    },
+    "claude-opus-5": {
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 25.0,
+        "cache_write_per_mtok": 6.25,
+        "cache_read_per_mtok": 0.50,
+    },
+    "openai/gpt-4o-mini": {
+        "input_per_mtok": 0.15,
+        "output_per_mtok": 0.60,
+        "cache_read_per_mtok": 0.075,
+    },
 }
 
 _DEFAULT_BINDINGS = {
@@ -125,6 +146,7 @@ class Settings(BaseSettings):
     openrouter_supports_json_schema: bool = True
     openrouter_require_parameters: bool = True
     openrouter_response_healing: bool = True
+    openrouter_prompt_caching: bool = True
     openrouter_http_referer: str | None = None
     openrouter_app_name: str = "forgehand"
 

@@ -10,7 +10,11 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
-from app.agents.grounding import format_repository_grounding, grounding_required
+from app.agents.grounding import (
+    build_grounding_prefix,
+    format_evidence_focus,
+    grounding_required,
+)
 from app.agents.validation import format_validation_feedback
 
 from app.models.task import AgentTask, Capability
@@ -96,11 +100,13 @@ class LLMExecutor:
         stopped_reason = "completed_without_runtime"
         max_rounds = self._max_autocorrect_rounds if strategy.allow_autocorrect else 0
 
+        cache_prefix = build_grounding_prefix(context)
         for iteration_index in range(max_rounds + 1):
             result = await self._router.complete(
                 self.tier,
                 CompletionRequest(
                     model="",
+                    cache_prefix=cache_prefix,
                     system=SYSTEM_PROMPT.format(capability=task.capability.value),
                     messages=[
                         Message(
@@ -208,13 +214,12 @@ class LLMExecutor:
                 "uma afirmação depender deles, indique o evidence_id inline, por "
                 "exemplo `[E1]`."
             )
-        grounding_block = format_repository_grounding(
-            context,
-            evidence_ids=context.get("task_evidence_ids") or task.evidence_ids,
-            max_items=8,
-        )
-        if grounding_block:
-            user_content += f"\n\n{grounding_block}"
+        if build_grounding_prefix(context):
+            focus = format_evidence_focus(
+                context.get("task_evidence_ids") or task.evidence_ids
+            )
+            if focus:
+                user_content += f"\n\n{focus}"
         return user_content
 
     @staticmethod

@@ -76,6 +76,12 @@ class CompletionRequest(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0)
     # Regra 2: quando presente, o provider DEVE devolver parsed validado
     response_schema: type[BaseModel] | None = None
+    # Bloco ESTÁVEL entre chamadas do mesmo workflow (ex.: grounding do
+    # repositório). Vai ANTES de `system` e é marcado para cache no fornecedor
+    # quando ele suporta; onde não suporta, é apenas concatenado. Precisa ser
+    # idêntico byte a byte entre chamadas para o cache bater — o que varia por
+    # tarefa fica em `system` ou nas mensagens.
+    cache_prefix: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -88,7 +94,14 @@ class Usage(BaseModel):
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        """Entrada + saída, incluindo tokens lidos/escritos em cache: eles
+        ocupam contexto e contam para o budget de tokens da tarefa."""
+        return (
+            self.input_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+            + self.output_tokens
+        )
 
 
 class CompletionResult(BaseModel):

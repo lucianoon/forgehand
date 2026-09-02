@@ -88,6 +88,37 @@ export LLM_PROVIDER_BACKEND=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+## Prompt caching
+
+O grounding do repositório é o maior bloco repetido entre as chamadas de um
+workflow: planner, cada executor e cada judge recebem o mesmo texto. Esse bloco
+vai como `cache_prefix` da `CompletionRequest`, antes do system prompt, e os
+providers o marcam para cache no fornecedor:
+
+- **Anthropic**: `system` vira dois blocos com `cache_control: ephemeral` —
+  o prefixo (compartilhado entre papéis) e o prompt do papel. Blocos abaixo do
+  mínimo do modelo (1024 tokens no Sonnet, 2048 no Haiku) são ignorados sem
+  custo extra.
+- **OpenRouter**: mesmo formato de blocos quando
+  `OPENROUTER_PROMPT_CACHING=true` (default). Modelos OpenAI cacheiam o
+  prefixo automaticamente e ignoram a marca; endpoints locais recebem o
+  prefixo concatenado em texto puro.
+
+Tokens lidos e escritos em cache aparecem em `Usage.cache_read_tokens` /
+`Usage.cache_write_tokens`, contam para o budget de tokens da tarefa e são
+precificados por `cache_read_per_mtok` / `cache_write_per_mtok` em
+`PRICING_JSON`. Os defaults seguem a tabela pública (escrita 1.25x, leitura
+0.10x da entrada na Anthropic; leitura 0.5x na OpenAI) — confira antes de
+produção. Os spans OTel carregam
+`gen_ai.usage.cache_read.input_tokens` e
+`gen_ai.usage.cache_creation.input_tokens` para acompanhar a taxa de acerto no
+Langfuse.
+
+Para o cache bater, o prefixo precisa ser idêntico entre chamadas: por isso o
+grounding completo do workflow vai no prefixo e a seleção por tarefa
+(`evidence_ids`) vai no user content como "Evidências atribuídas a esta
+tarefa".
+
 ## Tuning de fila e worker
 
 Tuning da fila/worker:

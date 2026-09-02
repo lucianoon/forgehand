@@ -73,10 +73,23 @@ def handler(request):
     model = body["model"]
     state["models_used"].add(model)
     user = body["messages"][-1]["content"]
+    # Grounding vive no primeiro bloco do system (prefixo cacheável), não no
+    # user content — o user content só aponta as evidências da tarefa.
+    system = body.get("system", "")
+    system_blocks = system if isinstance(system, list) else []
+    system_text = (
+        system
+        if isinstance(system, str)
+        else "\n".join(block["text"] for block in system_blocks)
+    )
+    if "Grounding obrigatório do repositório" in system_text:
+        assert system_blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert "Grounding obrigatório do repositório" in system_blocks[0]["text"]
+        assert "Grounding obrigatório do repositório" not in user
 
     if "rationale" in schema_props and "tasks" in schema_props:  # PlanOutput
-        assert "Grounding obrigatório do repositório" in user
-        assert "[E1] app/main.py:1-3" in user
+        assert "Grounding obrigatório do repositório" in system_text
+        assert "[E1] app/main.py:1-3" in system_text
         state["planner_saw_grounding"] = True
         return tool_result(
             {
@@ -120,7 +133,8 @@ def handler(request):
     if "files" in schema_props:  # ExecutionOutput
         if "Resultados das dependências" in user:
             state["executor_saw_deps"] = True
-        if "Grounding obrigatório do repositório" in user:
+        if "Grounding obrigatório do repositório" in system_text:
+            assert "Evidências atribuídas a esta tarefa" in user
             state["executor_saw_grounding"] = True
         if "Correções exigidas pelo judge" in user:
             assert "endpoint DELETE" in user, (
