@@ -1,0 +1,93 @@
+name: Factory qualification (manual, paid)
+on:
+  workflow_dispatch:
+    inputs:
+      llm_provider:
+        description: Explicit LLM provider for this paid run
+        required: true
+        type: choice
+        default: openai
+        options:
+          - openai
+          - openrouter
+      python_repository:
+        description: Approved public Python fixture repository (owner/name), seeded at the manifest SHA
+        required: true
+        type: string
+      node_repository:
+        description: Approved public Node fixture repository (owner/name), seeded at the manifest SHA
+        required: true
+        type: string
+      total_budget:
+        description: Maximum total LLM budget in USD
+        required: true
+        default: '5'
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: factory-qualification
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    environment: factory-qualification
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - run: uv sync --extra dev --locked
+      - name: Verify explicit credentials
+        env:
+          LLM_PROVIDER_BACKEND: ${{ inputs.llm_provider }}
+          OPENAI_API_KEY: ${{ inputs.llm_provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.llm_provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+        run: |
+          case "$LLM_PROVIDER_BACKEND" in
+            openai) test -n "$OPENAI_API_KEY" || { echo 'Missing OPENAI_API_KEY'; exit 1; } ;;
+            openrouter) test -n "$OPENROUTER_API_KEY" || { echo 'Missing OPENROUTER_API_KEY'; exit 1; } ;;
+            *) echo 'Unsupported LLM provider'; exit 1 ;;
+          esac
+          test -n "$GITHUB_TOKEN" || { echo 'Missing FACTORY_GITHUB_TOKEN scoped to fixture repositories'; exit 1; }
+      - name: Pull immutable fixture images
+        run: |
+          docker pull python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+          docker pull node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+      - name: Qualify using API, queue, worker and independent checks
+        env:
+          OPENAI_API_KEY: ${{ inputs.llm_provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.llm_provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
+          GITHUB_TOKEN: ${{ secrets.FACTORY_GITHUB_TOKEN }}
+          LLM_PROVIDER_BACKEND: ${{ inputs.llm_provider }}
+          FACTORY_MODE_ENABLED: 'true'
+          FACTORY_SUCCESS_RETENTION_SECONDS: '0'
+          CHECKPOINTER_BACKEND: memory
+          WORKFLOW_QUEUE_BACKEND: memory
+          API_KEYS_JSON: '{"qualification-local":{"client_id":"qualification","projects":["factory-qualification"],"role":"admin"}}'
+          FORGEHAND_API_KEY: qualification-local
+          PYTHON_REPOSITORY: ${{ inputs.python_repository }}
+          NODE_REPOSITORY: ${{ inputs.node_repository }}
+          TOTAL_BUDGET: ${{ inputs.total_budget }}
+        run: |
+          export FACTORY_BUILD_PROFILES_JSON="$(< benchmarks/factory/profiles.json)"
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/forgehand-runtime.log 2>&1 &
+          runtime_pid=$!
+          trap 'kill "$runtime_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:8000/readyz && break
+            sleep 1
+          done
+          uv run python -m app.evaluation.factory_qualification --allow-live \
+            --python-repository "$PYTHON_REPOSITORY" --node-repository "$NODE_REPOSITORY" \
+            --total-budget "$TOTAL_BUDGET" --output reports/factory-qualification.json
+      - name: Upload reports and remote inventory (no logs or credentials)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: factory-qualification
+          path: reports/factory-qualification.*
+          retention-days: 90
+          if-no-files-found: warn

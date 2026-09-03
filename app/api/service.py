@@ -22,6 +22,10 @@ from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
 from app.infrastructure.workflow_queue import WorkflowAccessContext
 from app.models.factory import WorkOrder
+from app.models.factory import WorkspaceLifecycle, WorkspaceRetention
+from app.factory.lifecycle import WorkspaceBusy
+from app.factory.workspace import LocalGitWorkspaceManager
+from app.infrastructure.audit import build_audit_event
 from app.models.task import TaskStatus
 
 logger = logging.getLogger("forgehand")
@@ -86,6 +90,9 @@ class WorkflowService:
         run_workers: bool,
         event_publisher: Any | None = None,
         tracer: Any | None = None,
+        workspace_manager: LocalGitWorkspaceManager | None = None,
+        build_runner: Any | None = None,
+        audit_log: Any | None = None,
     ):
         self._app = graph_app
         self._settings = settings
@@ -99,6 +106,10 @@ class WorkflowService:
         self._event_publisher = event_publisher
         self._invocations: dict[str, asyncio.Task[Any]] = {}
         self._cancel_requested: set[str] = set()
+        self._workspace_manager = workspace_manager
+        self._build_runner = build_runner
+        self._audit_log = audit_log
+        self._reconciler: asyncio.Task[Any] | None = None
 
     # ------------------------------------------------------------------
     def _config(self, workflow_id: str) -> dict[str, Any]:
@@ -107,6 +118,8 @@ class WorkflowService:
     def _ensure_workers_started(self) -> None:
         if self._workers or not self._run_workers:
             return
+        if self._workspace_manager is not None:
+            self._reconciler = asyncio.create_task(self._reconcile_loop())
         for index in range(self._settings.workflow_worker_concurrency):
             task = asyncio.create_task(self._worker_loop(index))
             self._workers.append(task)
@@ -195,13 +208,114 @@ class WorkflowService:
             if self._tracer is not None
             else nullcontext()
         )
-        with span:
+        manager = self._workspace_manager
+        lock = manager.journal.exclusive(job.workflow_id) if manager else nullcontext()
+        with span, lock:
+            if manager and job.kind == "resume" and job.payload == "retry":
+                retained = manager.journal.get(job.workflow_id)
+                if retained and retained.state in {
+                    WorkspaceLifecycle.RELEASED,
+                    WorkspaceLifecycle.RELEASING,
+                }:
+                    raise NoPendingDecision(
+                        "Workspace expirado; crie uma nova ordem de trabalho."
+                    )
+                if retained and retained.state == WorkspaceLifecycle.RETAINED:
+                    await manager.reconstruct(retained)
+                    manager.transition(
+                        retained,
+                        WorkspaceLifecycle.ACTIVE,
+                        retention=WorkspaceRetention(),
+                    )
+            if manager and self._build_runner is not None:
+                if not await self._build_runner.retry_cleanup(job.workflow_id):
+                    raise WorkspaceBusy("sandbox_cleanup_pending")
             if job.kind == "start":
                 await self._app.ainvoke(job.payload, self._config(job.workflow_id))
             else:
                 await self._app.ainvoke(
                     Command(resume=job.payload), self._config(job.workflow_id)
                 )
+
+    async def _reconcile_loop(self) -> None:
+        while True:
+            try:
+                await self.reconcile_workspaces()
+            except Exception:
+                logger.exception("Workspace reconciliation failed")
+            await asyncio.sleep(10)
+
+    async def reconcile_workspaces(self) -> None:
+        manager = self._workspace_manager
+        if manager is None:
+            return
+        terminal = {
+            WorkflowPhase.COMPLETED,
+            WorkflowPhase.READY_FOR_HUMAN_REVIEW,
+            WorkflowPhase.FAILED,
+            WorkflowPhase.CANCELLED,
+        }
+        for lease in manager.journal.leases():
+            if lease.state == WorkspaceLifecycle.RELEASED:
+                continue
+            queue_state = await self._job_queue.get_state(lease.workflow_id)
+            if queue_state and queue_state.status in {"queued", "processing"}:
+                continue
+            snapshot = await self._app.aget_state(self._config(lease.workflow_id))
+            values = snapshot.values or {}
+            phase = WorkflowPhase(values.get("phase", WorkflowPhase.FAILED))
+            paused = bool(getattr(snapshot, "interrupts", ()))
+            if (
+                phase not in terminal
+                and not paused
+                and not (queue_state and queue_state.status == "failed")
+            ):
+                continue
+            try:
+                with manager.journal.exclusive(lease.workflow_id):
+                    current_job = await self._job_queue.get_state(lease.workflow_id)
+                    if current_job and current_job.status in {"queued", "processing"}:
+                        continue
+                    if (
+                        self._build_runner is not None
+                        and not await self._build_runner.retry_cleanup(
+                            lease.workflow_id
+                        )
+                    ):
+                        manager.transition(
+                            lease,
+                            WorkspaceLifecycle.FAILED,
+                            failure_reason="sandbox_cleanup_pending",
+                        )
+                        continue
+                    if lease.retention.retain_until is None:
+                        success = phase in {
+                            WorkflowPhase.COMPLETED,
+                            WorkflowPhase.READY_FOR_HUMAN_REVIEW,
+                        }
+                        ttl = (
+                            self._settings.factory_success_retention_seconds
+                            if success
+                            else self._settings.factory_failure_retention_seconds
+                        )
+                        lease = manager.retain(lease, ttl, phase.value)
+                    cleaned = await manager.cleanup(lease)
+                    if values and not paused:
+                        await self._app.aupdate_state(
+                            self._config(lease.workflow_id), {"workspace": cleaned}
+                        )
+                    if self._audit_log is not None and cleaned.state != lease.state:
+                        await self._audit_log.record(
+                            build_audit_event(
+                                action="workspace_lifecycle",
+                                outcome=cleaned.state.value,
+                                workflow_id=lease.workflow_id,
+                                project_id=values.get("project_id"),
+                                client_id=values.get("owner_client_id"),
+                            )
+                        )
+            except WorkspaceBusy:
+                continue
 
     async def _maintain_lease(self, job: Any) -> None:
         interval = max(self._settings.workflow_queue_lease_seconds / 3, 0.01)
@@ -246,6 +360,10 @@ class WorkflowService:
             self._cancel_requested.discard(job.workflow_id)
 
     async def shutdown(self) -> None:
+        if self._reconciler is not None:
+            self._reconciler.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reconciler
         for worker in self._workers:
             worker.cancel()
         for worker in self._workers:
@@ -425,8 +543,23 @@ class WorkflowService:
             "error": values.get("error") or self._failures.get(workflow_id),
             "delivery": _dump_model(values.get("delivery_result")),
             "work_order": _dump_model(values.get("work_order")),
+            "workspace": _dump_model(
+                (
+                    self._workspace_manager.journal.get(workflow_id)
+                    if self._workspace_manager
+                    else None
+                )
+                or values.get("workspace")
+            ),
+            "budget": _dump_model(values.get("budget")),
+            "workspace_history": self._workspace_manager.journal.history(workflow_id)
+            if self._workspace_manager
+            else [],
             "build_strategy": _dump_model(values.get("build_strategy")),
             "factory_stage": _dump_enum(values.get("factory_stage")),
+            "active_phase": self._workspace_manager.journal.phase(workflow_id)
+            if self._workspace_manager
+            else None,
             "phase_evidence": _latest_build_validation(plan),
         }
 
@@ -438,6 +571,7 @@ class WorkflowService:
         return {
             "workflow_id": workflow_id,
             "project_id": values.get("project_id"),
+            "work_order": _dump_model(values.get("work_order")),
             "tasks": [task.model_dump(mode="json") for task in values.get("plan", [])],
             "evaluations": [
                 evaluation.model_dump(mode="json")
@@ -452,6 +586,15 @@ class WorkflowService:
     # ------------------------------------------------------------------
     async def decide(self, workflow_id: str, decision: str) -> None:
         status = await self.get(workflow_id)  # levanta WorkflowNotFound
+        if decision == "retry" and self._workspace_manager is not None:
+            lease = self._workspace_manager.journal.get(workflow_id)
+            if lease and lease.state in {
+                WorkspaceLifecycle.RELEASED,
+                WorkspaceLifecycle.RELEASING,
+            }:
+                raise NoPendingDecision(
+                    "Workspace expirado; crie uma nova ordem de trabalho."
+                )
         if status["pending_decision"] is None:
             raise NoPendingDecision(
                 f"Workflow {workflow_id} não está aguardando decisão."
@@ -472,6 +615,7 @@ class WorkflowService:
         phase = WorkflowPhase(status["phase"])
         if phase in {
             WorkflowPhase.COMPLETED,
+            WorkflowPhase.READY_FOR_HUMAN_REVIEW,
             WorkflowPhase.FAILED,
             WorkflowPhase.CANCELLED,
         }:

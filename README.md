@@ -89,10 +89,12 @@ curl localhost:8000/metrics/prometheus
 curl localhost:8000/audit/events -H 'X-API-Key: dev-key'
 ```
 
-Provedor de LLM (OpenRouter ou Anthropic), execução sem Docker, worker dedicado
+Provedor de LLM (OpenAI direto, OpenRouter ou Anthropic), execução sem Docker, worker dedicado
 com Postgres, memória persistente em Neo4j, tracing OTel/Langfuse, tuning de
 fila e o executor operacional (aplicação de arquivos e validação objetiva por
 capability): [docs/configuration.md](docs/configuration.md).
+
+Para usar a chave OpenAI em `.env.local`, consulte [OpenAI direto](docs/openai.md).
 
 Integrações e produto:
 

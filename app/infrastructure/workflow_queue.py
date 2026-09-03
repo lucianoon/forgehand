@@ -148,6 +148,18 @@ class InMemoryWorkflowQueue:
         async with self._condition:
             self._worker_heartbeats[worker_id] = time.monotonic()
 
+    async def list_workflows(
+        self, *, owner_client_id: str, project_id: str | None = None, limit: int = 20
+    ) -> list[WorkflowAccessContext]:
+        """Inventory survives audit rotation; retries do not duplicate entries."""
+        async with self._condition:
+            return [
+                access
+                for access in reversed(list(self._access.values()))
+                if access.owner_client_id == owner_client_id
+                and (project_id is None or access.project_id == project_id)
+            ][: max(0, limit)]
+
     async def enqueue(
         self,
         workflow_id: str,
@@ -345,6 +357,27 @@ class InMemoryWorkflowQueue:
 
 
 class PostgresWorkflowQueue:
+    async def list_workflows(
+        self, *, owner_client_id: str, project_id: str | None = None, limit: int = 20
+    ) -> list[WorkflowAccessContext]:
+        assert self._conn is not None
+        async with self._lock:
+            cur = await self._conn.execute(
+                """
+                SELECT workflow_id, project_id, owner_client_id
+                FROM workflow_jobs
+                WHERE owner_client_id = %s
+                  AND (%s::text IS NULL OR project_id = %s)
+                GROUP BY workflow_id, project_id, owner_client_id
+                ORDER BY MIN(id) DESC
+                LIMIT %s
+                """,
+                (owner_client_id, project_id, project_id, max(0, limit)),
+            )
+            rows = await cur.fetchall()
+            await self._conn.commit()
+        return [WorkflowAccessContext(*row) for row in rows]
+
     def __init__(
         self, dsn: str, lease_seconds: float = 30.0, max_delivery_attempts: int = 3
     ) -> None:

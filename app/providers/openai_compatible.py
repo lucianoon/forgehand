@@ -10,7 +10,7 @@ instrução no system — a validação Pydantic na base pega qualquer desvio.
 
 Prompt caching: com `supports_prompt_caching`, o system vira lista de blocos
 com `cache_control` (formato aceito pelo OpenRouter para modelos Anthropic;
-modelos OpenAI cacheiam prefixo automaticamente e ignoram a marca). Sem
+OpenAI direto deve deixar essa opção desligada: o cache é automático). Sem
 suporte, prefixo e system são concatenados em texto puro. Tokens cacheados
 chegam em `usage.prompt_tokens_details.cached_tokens` e já estão contidos em
 `prompt_tokens` — por isso são subtraídos de input_tokens antes de precificar.
@@ -152,6 +152,14 @@ def parse_usage(raw_usage: dict[str, Any]) -> Usage:
 def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Normaliza o schema Pydantic para o contrato strict OpenAI/OpenRouter."""
     normalized = dict(schema)
+    # Pydantic emits defaults beside $ref; OpenAI's strict subset rejects them.
+    # All properties are required below, so defaults are only local validation.
+    normalized.pop("default", None)
+    # Tagged Pydantic unions have mutually exclusive const/enum discriminators,
+    # so anyOf preserves their meaning while fitting OpenAI's strict subset.
+    if "discriminator" in normalized and "oneOf" in normalized:
+        normalized.pop("discriminator")
+        normalized["anyOf"] = normalized.pop("oneOf")
     properties = normalized.get("properties")
     if isinstance(properties, dict):
         normalized["additionalProperties"] = False
@@ -235,8 +243,12 @@ class OpenAICompatibleProvider(LLMProvider):
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": messages,
-            "max_tokens": request.max_tokens,
         }
+        if self.name == "openai":
+            payload["max_completion_tokens"] = request.max_tokens
+            payload["store"] = False
+        else:
+            payload["max_tokens"] = request.max_tokens
         if request.temperature is not None:
             payload["temperature"] = request.temperature
         if use_tools:
@@ -263,7 +275,9 @@ class OpenAICompatibleProvider(LLMProvider):
                 payload["plugins"] = [{"id": "response-healing"}]
 
         try:
-            response = await self._client.post("/v1/chat/completions", json=payload)
+            response = await self._client.post(
+                "/v1/chat/completions", json=payload, timeout=request.timeout_seconds
+            )
         except httpx.TransportError as exc:
             raise RetryableProviderError(str(exc), self.name) from exc
 

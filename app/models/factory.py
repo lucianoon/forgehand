@@ -58,6 +58,7 @@ class RepositoryTarget(BaseModel):
     full_name: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
     base_ref: str = Field(default="main", min_length=1, max_length=255)
     scm_host: str = Field(default="github.com", min_length=1)
+    expected_base_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
     @field_validator("scm_host")
     @classmethod

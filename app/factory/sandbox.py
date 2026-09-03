@@ -18,6 +18,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from app.factory.build_strategy import BuildProfileRegistry
+from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
 from app.infrastructure.command_policy import AuthorizedBuildCommand, CommandPolicy
 from app.models.build import BuildPhase, BuildProfile
 from app.models.build_execution import (
@@ -84,6 +85,7 @@ class DockerCLI:
             stderr=asyncio.subprocess.PIPE,
             # Não herda DOCKER_HOST/CONTEXT, proxies, credenciais ou env de LLM.
             env={"PATH": os.defpath, "HOME": "/nonexistent", "LANG": "C"},
+            pass_fds=inherited_lock_fds(),
         )
         assert process.stdout is not None and process.stderr is not None
         stdout, stderr = _Capture(output_limit), _Capture(output_limit)
@@ -135,6 +137,7 @@ class DockerBuildRunner:
         limits: SandboxLimits | None = None,
         allow_dependency_network: bool = False,
         redacted_values: tuple[str, ...] = (),
+        journal: WorkspaceJournal | None = None,
     ) -> None:
         self._registry = registry
         self._docker = docker
@@ -145,6 +148,9 @@ class DockerBuildRunner:
         self._redacted_values = tuple(value for value in redacted_values if value)
         self._active: dict[str, str | None] = {}
         self._quarantined: dict[str, tuple[str, str]] = {}
+        self._journal = journal
+        if journal is not None:
+            self._quarantined.update(journal.containers())
 
     @property
     def active_containers(self) -> dict[str, str | None]:
@@ -155,12 +161,20 @@ class DockerBuildRunner:
 
     async def retry_cleanup(self, workflow_id: str) -> bool:
         """Libera uma quarentena somente após remoção confirmada e com ownership."""
+        if workflow_id in self._active:
+            return False
+        if self._journal is not None:
+            pending_resource = self._journal.containers().get(workflow_id)
+            if pending_resource is not None:
+                self._quarantined[workflow_id] = pending_resource
         pending = self._quarantined.get(workflow_id)
         if pending is None:
             return workflow_id not in self._active
         if not await self._cleanup(*pending):
             return False
         self._quarantined.pop(workflow_id, None)
+        if self._journal is not None:
+            self._journal.forget_container(workflow_id)
         return True
 
     async def run(
@@ -182,6 +196,13 @@ class DockerBuildRunner:
                 error_code=error_code,
             )
 
+        if (
+            self._journal is not None
+            and lease.workflow_id in self._journal.containers()
+        ):
+            self._quarantined[lease.workflow_id] = self._journal.containers()[
+                lease.workflow_id
+            ]
         if lease.workflow_id in self._quarantined:
             return report(
                 BuildOutcome.INFRASTRUCTURE_ERROR, error_code="sandbox_cleanup_pending"
@@ -198,7 +219,15 @@ class DockerBuildRunner:
         results: list[BuildPhaseResult] = []
         try:
             for phase in profile.phases:
+                if self._journal is not None:
+                    self._journal.record_phase(
+                        lease.workflow_id, phase.name.value, "running"
+                    )
                 result = await self._run_phase(lease, profile, phase)
+                if self._journal is not None:
+                    self._journal.record_phase(
+                        lease.workflow_id, phase.name.value, result.outcome.value
+                    )
                 results.append(result)
                 if result.outcome == BuildOutcome.CANCELLED:
                     raise BuildRunCancelled(report(result.outcome, tuple(results)))
@@ -364,6 +393,8 @@ class DockerBuildRunner:
                     create_attempted = True
                     creation_uncertain = True
                     self._active[lease.workflow_id] = name
+                    if self._journal is not None:
+                        self._journal.record_container(lease.workflow_id, name, token)
                     created = await self._control(args)
                     creation_uncertain = created.timed_out
                     if created.exit_code != 0 or created.timed_out:
@@ -425,6 +456,8 @@ class DockerBuildRunner:
                 cleanup_failed = not cleanup.result()
                 if cleanup_failed:
                     self._quarantined[lease.workflow_id] = (name, token)
+                elif self._journal is not None:
+                    self._journal.forget_container(lease.workflow_id)
                 self._active[lease.workflow_id] = None
         if cleanup_failed:
             outcome = BuildOutcome.INFRASTRUCTURE_ERROR

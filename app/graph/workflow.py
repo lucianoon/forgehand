@@ -182,6 +182,7 @@ def build_workflow(
         {
             "authorize_retry": "authorize_retry",
             "select_build_strategy": "select_build_strategy",
+            "publish_delivery": "publish_delivery",
             "synthesize": "synthesize",
             "abort": "abort",
         },

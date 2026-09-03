@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
 
@@ -29,6 +31,9 @@ from app.api.service import (
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.factory.intake import (
     DirectWorkOrderInput,
+    GitHubIssueWorkOrderInput,
+    normalize_github_issue_work_order,
+    parse_github_issue_url,
     normalize_direct_work_order,
     planner_request,
 )
@@ -55,6 +60,7 @@ _PHASE_STATUS: dict[WorkflowPhase, str] = {
     WorkflowPhase.PERSISTING: "running",
     WorkflowPhase.AWAITING_HUMAN: "awaiting_decision",
     WorkflowPhase.COMPLETED: "completed",
+    WorkflowPhase.READY_FOR_HUMAN_REVIEW: "ready_for_human_review",
     WorkflowPhase.FAILED: "failed",
     WorkflowPhase.CANCELLED: "cancelled",
 }
@@ -82,7 +88,7 @@ class DeliveryIn(BaseModel):
 class CreateWorkflowRequest(BaseModel):
     project_id: str = Field(min_length=1)
     request: str | None = Field(default=None, min_length=10)
-    work_order: DirectWorkOrderInput | None = None
+    work_order: DirectWorkOrderInput | GitHubIssueWorkOrderInput | None = None
     budget: BudgetIn | None = None
     # acceptance_criteria do payload original: anexados à requisição para o
     # planner distribuí-los entre as tarefas
@@ -131,9 +137,14 @@ class WorkflowStatusResponse(BaseModel):
     error: str | None = None
     delivery: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None
+    workspace: dict[str, Any] | None = None
+    workspace_history: list[dict[str, str]] = Field(default_factory=list)
+    budget: dict[str, Any] | None = None
     build_strategy: dict[str, Any] | None = None
     factory_stage: str | None = None
+    active_phase: dict[str, str] | None = None
     phase_evidence: dict[str, Any] | None = None
+    next_human_action: str | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -154,7 +165,9 @@ def _container(request: Request) -> Container:
     return cast(Container, request.app.state.container)
 
 
-def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
+def _to_response(
+    data: dict[str, Any], *, include_local_path: bool = False
+) -> WorkflowStatusResponse:
     phase: WorkflowPhase = data["phase"]
     # O interrupt() pausa ANTES de human_gate retornar seu update de fase,
     # então a fase persistida ainda é a anterior. O interrupt pendente é o
@@ -182,9 +195,26 @@ def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
         error=data.get("error"),
         delivery=data.get("delivery"),
         provenance=data.get("work_order"),
+        workspace=(
+            {
+                key: value
+                for key, value in data["workspace"].items()
+                if key != "local_path" or include_local_path
+            }
+            if data.get("workspace")
+            else None
+        ),
+        workspace_history=data.get("workspace_history", []),
+        budget=data.get("budget"),
         build_strategy=data.get("build_strategy"),
         factory_stage=data.get("factory_stage"),
+        active_phase=data.get("active_phase"),
         phase_evidence=data.get("phase_evidence"),
+        next_human_action=(
+            "Revisar o pull request e decidir o merge no GitHub."
+            if phase == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+            else None
+        ),
     )
 
 
@@ -222,7 +252,44 @@ async def create_workflow(
             raise HTTPException(
                 status_code=409, detail="Factory mode não está habilitado."
             )
-        work_order = normalize_direct_work_order(body.work_order)
+        if isinstance(body.work_order, GitHubIssueWorkOrderInput):
+            try:
+                repository, number, host = parse_github_issue_url(
+                    body.work_order.issue_url,
+                    request.app.state.settings.factory_approved_scm_hosts,
+                )
+                if host != "github.com":
+                    raise ValueError("Este cliente suporta somente github.com.")
+                provider = build_token_provider_from_env()
+                if provider is None:
+                    raise ValueError("Credencial GitHub não configurada no servidor.")
+                scm = GitHubSCMClient(token_provider=provider)
+                try:
+                    snapshot = await scm.fetch_issue_snapshot(
+                        repository=repository,
+                        issue_number=number,
+                        source_url=body.work_order.issue_url,
+                    )
+                finally:
+                    await scm.close()
+                work_order = normalize_github_issue_work_order(
+                    body.work_order, snapshot
+                )
+            except (ValueError, SCMError, httpx.HTTPError):
+                await record_audit_event(
+                    request,
+                    action="work_order_intake",
+                    outcome="issue_rejected",
+                    client_id=client.client_id,
+                    project_id=body.project_id,
+                    status_code=422,
+                )
+                raise HTTPException(
+                    422,
+                    "Issue inválida ou inacessível à credencial GitHub configurada.",
+                ) from None
+        else:
+            work_order = normalize_direct_work_order(body.work_order)
         full_request = planner_request(work_order)
         budget = WorkflowBudget(**work_order.limits.model_dump())
         delivery = DeliveryConfig(
@@ -291,29 +358,19 @@ async def list_workflows(
     if project_id is not None:
         await ensure_project_access(request, client, project_id)
     container = _container(request)
-    events = await container.audit_log.list_recent(
-        limit=min(limit * 20, 2000), client_id=client.client_id
+    inventory = await container.job_queue.list_workflows(
+        limit=limit, owner_client_id=client.client_id, project_id=project_id
     )
-    workflow_ids: list[str] = []
-    for event in events:
-        if (
-            event.action != "workflow_create"
-            or event.outcome != "accepted"
-            or event.client_id != client.client_id
-            or event.workflow_id is None
-            or (project_id is not None and event.project_id != project_id)
-            or event.workflow_id in workflow_ids
-        ):
-            continue
-        workflow_ids.append(event.workflow_id)
-        if len(workflow_ids) >= limit:
-            break
 
     workflows: list[WorkflowStatusResponse] = []
-    for workflow_id in workflow_ids:
+    for access in inventory:
         try:
+            await ensure_workflow_access(request, client, access)
             workflows.append(
-                _to_response(await container.workflow_service.get(workflow_id))
+                _to_response(
+                    await container.workflow_service.get(access.workflow_id),
+                    include_local_path=client.can("operator"),
+                )
             )
         except WorkflowNotFound:
             continue
@@ -330,7 +387,9 @@ async def get_workflow(
     try:
         access = await service.get_access_context(workflow_id)
         await ensure_workflow_access(request, client, access)
-        response = _to_response(await service.get(workflow_id))
+        response = _to_response(
+            await service.get(workflow_id), include_local_path=client.can("operator")
+        )
         await record_audit_event(
             request,
             action="workflow_get",
@@ -457,6 +516,12 @@ async def publish_pull_request(
     access = await service.get_access_context(workflow_id)
     await ensure_workflow_access(request, client, access)
     details = await service.get_details(workflow_id)
+    if details.get("work_order") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ordens de fábrica publicam somente pelo fluxo validado; "
+            "use a decisão de retry quando houver um gate pendente.",
+        )
     files, deletions = collect_publishable_changes(details["tasks"])
     try:
         token_provider = build_token_provider_from_env()

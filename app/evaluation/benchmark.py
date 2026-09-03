@@ -133,6 +133,7 @@ async def run_case(
         state = response.json()
         if state["status"] in {
             "completed",
+            "ready_for_human_review",
             "failed",
             "cancelled",
             "awaiting_decision",
@@ -140,7 +141,7 @@ async def run_case(
             tasks = state.get("tasks") or []
             usage = state.get("usage") or {}
             diagnostics = None
-            if state["status"] != "completed":
+            if state["status"] not in {"completed", "ready_for_human_review"}:
                 details_response = await client.get(
                     f"/workflows/{workflow_id}/details", headers=headers
                 )
@@ -157,7 +158,7 @@ async def run_case(
                 case_id=case.id,
                 workflow_id=workflow_id,
                 outcome=state["status"],
-                completed=state["status"] == "completed",
+                completed=state["status"] in {"completed", "ready_for_human_review"},
                 first_pass=bool(tasks)
                 and all(task.get("attempts") == 1 for task in tasks),
                 cost_usd=float(usage.get("cost_usd", 0)),

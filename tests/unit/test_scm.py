@@ -8,10 +8,12 @@ import json
 import httpx
 import pytest
 
+from app.graph.state import DeliveryConfig
 from app.infrastructure.scm import (
     CheckRunsResult,
     GitHubAppTokenProvider,
     GitHubSCMClient,
+    GitHubDeliveryService,
     SCMError,
     StaticTokenProvider,
     build_token_provider_from_env,
@@ -165,6 +167,137 @@ async def test_fetch_issue_snapshot_has_no_anonymous_fallback(status: int):
 # --------------------------------------------------------------------------
 # Publicação
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_factory_publication_uses_pinned_base_not_moving_main():
+    mock = GitHubMock()
+    pinned = "b" * 40
+    await _client(mock).publish_pull_request(
+        repository="acme/service",
+        base_branch="main",
+        head_branch="forgehand/wf",
+        title="t",
+        body="b",
+        files=[{"path": "a.py", "content": "ok"}],
+        pinned_base_sha=pinned,
+    )
+    assert not any(p.endswith("/git/ref/heads/main") for _, p, _ in mock.requests)
+    commits = [
+        b for m, p, b in mock.requests if m == "POST" and p.endswith("/git/commits")
+    ]
+    assert commits[0]["parents"] == [pinned]
+    assert not any("/merge" in p for _, p, _ in mock.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected", [None, "unexpected-sha"])
+async def test_factory_ref_collision_stops_before_remote_writes(expected):
+    mock = GitHubMock(head_exists=True)
+    with pytest.raises(SCMError, match="factory_head_mismatch"):
+        await _client(mock).publish_pull_request(
+            repository="acme/service",
+            base_branch="main",
+            head_branch="forgehand/wf",
+            title="t",
+            body="b",
+            files=[{"path": "a.py", "content": "ok"}],
+            pinned_base_sha="b" * 40,
+            expected_head_sha=expected,
+        )
+    assert all(m == "GET" for m, _, _ in mock.requests)
+
+
+@pytest.mark.asyncio
+async def test_factory_known_retry_uses_head_parent_and_pinned_tree():
+    pinned = "b" * 40
+    mock = GitHubMock(head_exists=True)
+
+    def transport(request):
+        response = mock(request)
+        if request.url.path.endswith(f"/git/commits/{pinned}"):
+            return httpx.Response(200, json={"tree": {"sha": "pinned-tree"}})
+        return response
+
+    client = GitHubSCMClient(
+        "token",
+        client=httpx.AsyncClient(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(transport),
+        ),
+    )
+    await client.publish_pull_request(
+        repository="acme/service",
+        base_branch="main",
+        head_branch="forgehand/wf",
+        title="t",
+        body="b",
+        files=[{"path": "a.py", "content": "ok"}],
+        pinned_base_sha=pinned,
+        expected_head_sha="head-sha",
+    )
+    tree = next(
+        b for m, p, b in mock.requests if m == "POST" and p.endswith("/git/trees")
+    )
+    commit = next(
+        b for m, p, b in mock.requests if m == "POST" and p.endswith("/git/commits")
+    )
+    assert tree["base_tree"] == "pinned-tree"
+    assert commit["parents"] == ["head-sha"]
+
+
+@pytest.mark.asyncio
+async def test_factory_cannot_publish_directly_to_base_branch():
+    mock = GitHubMock()
+    with pytest.raises(ValueError, match="head_must_differ"):
+        await _client(mock).publish_pull_request(
+            repository="acme/service",
+            base_branch="main",
+            head_branch="main",
+            title="t",
+            body="b",
+            files=[{"path": "a.py", "content": "ok"}],
+            pinned_base_sha="b" * 40,
+        )
+    assert mock.requests == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_service_preserves_pin_and_publication_when_ci_read_fails():
+    mock = GitHubMock()
+
+    def transport(request):
+        if request.url.path.endswith("/check-runs"):
+            raise httpx.ReadTimeout("CI unavailable", request=request)
+        return mock(request)
+
+    service = GitHubDeliveryService(
+        token_provider_factory=lambda: StaticTokenProvider("token"),
+        client_factory=lambda: httpx.AsyncClient(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(transport),
+        ),
+    )
+    result = await service.publish(
+        config=DeliveryConfig(
+            repository="acme/service",
+            head_branch="forgehand/wf",
+            pinned_base_sha="b" * 40,
+        ),
+        workflow_id="wf",
+        project_id="p",
+        files=[{"path": "a.py", "content": "ok"}],
+        deletions=[],
+        summary="validated",
+    )
+    assert result.ci_state == "error"
+    assert result.url == "https://gh.test/pr/42"
+    assert result.commit_sha == "commit-1"
+    assert result.branch == "forgehand/wf"
+    commit = next(
+        b for m, p, b in mock.requests if m == "POST" and p.endswith("/git/commits")
+    )
+    assert commit["parents"] == ["b" * 40]
 
 
 @pytest.mark.asyncio

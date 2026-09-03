@@ -66,3 +66,14 @@ def test_unsupported_strategy_remains_visible_during_human_interrupt() -> None:
     assert response.current_stage == "unsupported_build_strategy"
     assert response.pending_decision is not None
     assert response.pending_decision["options"] == ["retry", "abort"]
+
+
+def test_ready_for_review_is_terminal_and_explains_next_human_action():
+    data = status_data()
+    data["phase"] = WorkflowPhase.READY_FOR_HUMAN_REVIEW
+    data["factory_stage"] = "ready_for_human_review"
+    response = _to_response(data)
+    assert response.status == "ready_for_human_review"
+    assert response.current_stage == "ready_for_human_review"
+    assert response.next_human_action is not None
+    assert "merge no GitHub" in response.next_human_action

@@ -28,23 +28,23 @@
 
 ## 4. Workspace lifecycle and cancellation
 
-- [ ] 4.1 Persist workspace lifecycle transitions and expose them through workflow status and audit events.
-- [ ] 4.2 Track active local processes and Docker containers by workflow so cancellation terminates execution before releasing the lease.
-- [ ] 4.3 Implement idempotent cleanup for completed, failed, expired, and partially provisioned workspaces without deleting remote branches or pull requests.
-- [ ] 4.4 Add a reconciler for abandoned leases and tests for restart, repeated cleanup, TTL retention, and cancellation during validation.
+- [x] 4.1 Persist workspace lifecycle transitions and expose them through workflow status and audit events.
+- [x] 4.2 Track active local processes and Docker containers by workflow so cancellation terminates execution before releasing the lease.
+- [x] 4.3 Implement idempotent cleanup for completed, failed, expired, and partially provisioned workspaces without deleting remote branches or pull requests.
+- [x] 4.4 Add a reconciler for abandoned leases and tests for restart, repeated cleanup, TTL retention, and cancellation during validation.
 
 ## 5. Project build strategies
 
 - [x] 5.1 Define typed build profiles and named `prepare`, `build`, `test`, `lint`, and `types` phases backed only by operator-approved commands.
 - [x] 5.2 Implement strategy selection precedence for explicit profile, managed repository mapping, safe Python/Node detection, and `unsupported_build_strategy`.
 - [x] 5.3 Extend `CommandPolicy` to validate the complete executable, argument, environment, and working-directory contract of a selected phase.
-- [ ] 5.4 Add Python and Node fixture profiles with deterministic images or dependency caches and document how operators add profiles safely.
+- [x] 5.4 Add Python and Node fixture profiles with deterministic images or dependency caches and document how operators add profiles safely.
 - [x] 5.5 Persist the chosen strategy and selection reason before executing repository code and expose both in API and audit output.
 - [x] 5.6 Add policy tests proving agent output and repository files cannot introduce commands, shell metacharacters, environment secrets, or paths outside the lease.
 
 Progress note: profile configuration documentation is available in
-`docs/factory-build-profiles.md`; 5.4 still requires executable,
-digest-pinned Python/Node fixtures. Selection is checkpointed and exposed.
+`docs/factory-build-profiles.md`; executable, digest-pinned Python/Node fixtures
+are in `benchmarks/factory`. Selection is checkpointed and exposed.
 The DockerBuildRunner executes selected profiles and its reports now flow
 through task attempts, the judge, workflow status, audit, and final summaries.
 
@@ -56,38 +56,61 @@ through task attempts, the judge, workflow status, audit, and final summaries.
 - [x] 6.4 Execute selected build phases in order and return typed success, command failure, policy rejection, timeout, resource-limit, cancellation, and infrastructure outcomes.
 - [x] 6.5 Sanitize and attach phase evidence to task attempts, judge input, workflow status, audit events, and delivery summaries.
 - [x] 6.6 Feed failed phase evidence into the bounded executor autocorrection loop and prevent judge approval while required phases fail.
-- [ ] 6.7 Add integration tests for network denial, resource termination, credential absence, output truncation, phase ordering, and successful Python and Node builds.
+- [x] 6.7 Add integration tests for network denial, resource termination, credential absence, output truncation, phase ordering, and successful Python and Node builds.
 
 Validation note: unit tests cover the runner with a controlled Docker client.
 Graph tests prove successful evidence propagation, audit callbacks, structural
 judge veto, and a failed-test correction followed by a successful bounded retry.
-Real Python/Node container tests are opt-in and require preloaded digest-pinned
-images; none were available locally during implementation. Real isolation and
-resource/cancellation qualification remains pending in 6.7. Runner quarantine
-is process-local; durable lifecycle/reconciliation is still open in section 4.
+Real Python/Node container tests ran successfully using the pinned official
+images. Isolation, resource limits, cancellation, phase ordering and both fixture
+profiles are covered. Lifecycle and container ownership are journaled outside
+the checkout, with lease-aware reconciliation. See `docs/factory-lifecycle.md`.
 
 ## 7. Verified delivery workflow
 
-- [ ] 7.1 Route factory workflows from approved local validation to the existing atomic GitHub delivery service using the lease branch and pinned base.
-- [ ] 7.2 Make branch, commit, and pull-request publication idempotent across retry and worker restart, including a crash between commit and PR creation.
-- [ ] 7.3 Map failed required CI checks and annotations back to tasks and files, then reopen only responsible tasks while repair budget remains.
-- [ ] 7.4 Add the terminal `ready_for_human_review` state and ensure the MVP never invokes a GitHub merge operation.
-- [ ] 7.5 Extend cancellation and human-gate behavior for unsupported strategy, dependency preparation, exhausted repair budget, and retained workspace decisions.
-- [ ] 7.6 Add end-to-end tests covering green CI, red-CI repair, exhausted repairs, no-check repositories, cancellation, and durable resume without duplicated side effects.
+- [x] 7.1 Route factory workflows from approved local validation to the existing atomic GitHub delivery service using the lease branch and pinned base.
+- [x] 7.2 Make branch, commit, and pull-request publication idempotent across retry and worker restart, including a crash between commit and PR creation.
+- [x] 7.3 Map failed required CI checks and annotations back to tasks and files, then reopen only responsible tasks while repair budget remains.
+- [x] 7.4 Add the terminal `ready_for_human_review` state and ensure the MVP never invokes a GitHub merge operation.
+- [x] 7.5 Extend cancellation and human-gate behavior for unsupported strategy, dependency preparation, exhausted repair budget, and retained workspace decisions.
+- [x] 7.6 Add end-to-end tests covering green CI, red-CI repair, exhausted repairs, no-check repositories, cancellation, and durable resume without duplicated side effects.
+
+Progress note: publication now binds the lease branch and pinned base, requires
+complete successful phase reports, and reaches `ready_for_human_review` only
+with an identified PR and green CI. The manual PR endpoint cannot bypass this
+factory path. Tests cover moving-base isolation, unexpected remote heads, CI
+gates, bounded red-CI repair, cancellation and explicit retry in a rebuilt graph
+without agent reexecution. Publication intent, parents and tree enable recovery
+after a lost commit/ref response; unknown branches remain refused. See
+`docs/factory-delivery.md`. Live qualification has run; its gate failed at 2/5.
 
 ## 8. Mission control
 
-- [ ] 8.1 Add work-order creation controls for direct requests and GitHub issue URLs, including repository, base branch, profile, criteria, budget, and delivery settings.
-- [ ] 8.2 Display provenance, pinned SHA, workspace state, selected strategy, active phase, phase evidence, attempts, budget, PR, CI, and next human action.
-- [ ] 8.3 Add accessible states and actionable error messages for provisioning, unsupported strategy, policy rejection, sandbox failure, cancellation, and cleanup.
-- [ ] 8.4 Add dashboard integration tests for submitting and observing a factory workflow without exposing credentials or unrestricted terminal output.
+- [x] 8.1 Add work-order creation controls for direct requests and GitHub issue URLs, including repository, base branch, profile, criteria, budget, and delivery settings.
+- [x] 8.2 Display provenance, pinned SHA, workspace state, selected strategy, active phase, phase evidence, attempts, budget, PR, CI, and next human action.
+- [x] 8.3 Add accessible states and actionable error messages for provisioning, unsupported strategy, policy rejection, sandbox failure, cancellation, and cleanup.
+- [x] 8.4 Add dashboard integration tests for submitting and observing a factory workflow without exposing credentials or unrestricted terminal output.
 
 ## 9. Factory qualification
 
-- [ ] 9.1 Create versioned Python and Node fixture repositories with independent validation and clean-reset tooling.
-- [ ] 9.2 Define at least five cases covering defect repair, feature addition, test addition, behavior-preserving refactor, and executable documentation or configuration change.
-- [ ] 9.3 Extend the benchmark runner with base-SHA pinning, expected path scope, hidden-check results, PR/CI evidence, total budget, and remote artifact inventory.
-- [ ] 9.4 Calculate green-PR rate, first-pass rate, intervention rate, technical-failure rate, isolation violations, tokens, cost, mean duration, and p95 duration.
-- [ ] 9.5 Enforce the release gate of at least four green PRs in five cases, zero isolation violations, and zero unclassified technical failures.
-- [ ] 9.6 Add a manually triggered GitHub Actions workflow that requires explicit secrets, never runs on push, uploads reports, and identifies created branches and PRs.
-- [ ] 9.7 Run the complete local test suite and factory qualification, document results and known limitations, and keep factory mode disabled by default until the gate passes.
+- [x] 9.1 Create versioned Python and Node fixture repositories with independent validation and clean-reset tooling.
+- [x] 9.2 Define at least five cases covering defect repair, feature addition, test addition, behavior-preserving refactor, and executable documentation or configuration change.
+- [x] 9.3 Extend the benchmark runner with base-SHA pinning, expected path scope, hidden-check results, PR/CI evidence, total budget, and remote artifact inventory.
+- [x] 9.4 Calculate green-PR rate, first-pass rate, intervention rate, technical-failure rate, isolation violations, tokens, cost, mean duration, and p95 duration.
+- [x] 9.5 Enforce the release gate of at least four green PRs in five cases, zero isolation violations, and zero unclassified technical failures.
+- [x] 9.6 Add a manually triggered GitHub Actions workflow that requires explicit secrets, never runs on push, uploads reports, and identifies created branches and PRs.
+- [x] 9.7 Run the complete local test suite and factory qualification, document results and known limitations, and keep factory mode disabled by default until the gate passes.
+
+Qualification note (2026-09-03): the local suite passed with 505 tests and
+3 external-infrastructure skips, including actual Docker isolation, fixture
+and independent baseline/reference checks; all 4 dashboard behavior tests pass.
+The stale-file regression was resolved locally by switching Docker Desktop
+from VirtioFS to gRPC FUSE. See docs/factory-qualification.md for the scope
+and the fail-closed preflight added before paid qualification.
+The operator-approved live pilot completed all five cases after integration
+fixes. Two PRs passed CI, hidden checks and scope verification, below the 4/5
+release threshold. Aggregate recorded cost across attempts was USD 0.0621592;
+this is not a provider-invoice reconciliation. See
+`docs/factory-live-results-2026-09-03.md` for reports and remaining limitations.
+9.7 is complete as an execution/documentation task, not as a release approval.
+Factory mode remains disabled by default; no PR was merged.

@@ -1,0 +1,20 @@
+{
+  "python-fixture": {
+    "name": "python-fixture",
+    "ecosystem": "python",
+    "image": "python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+    "phases": [
+      {"name": "build", "argv": ["/usr/local/bin/python", "-m", "compileall", "-q", "orders.py"]},
+      {"name": "test", "argv": ["/usr/local/bin/python", "-m", "unittest", "discover", "-s", "tests"]}
+    ]
+  },
+  "node-fixture": {
+    "name": "node-fixture",
+    "ecosystem": "node",
+    "image": "node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+    "phases": [
+      {"name": "build", "argv": ["/usr/local/bin/node", "--check", "catalog.cjs"]},
+      {"name": "test", "argv": ["/usr/local/bin/node", "--test", "tests/catalog.test.cjs"]}
+    ]
+  }
+}

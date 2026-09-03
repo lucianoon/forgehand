@@ -144,6 +144,8 @@ class AcceptanceCriterion(BaseModel):
             return self.text
         detail = self.path or (", ".join(self.paths) if self.paths else "")
         suffix = f"{self.kind.value}: {detail}" if detail else self.kind.value
+        if self.kind is CriterionKind.CONTENT_CONTAINS:
+            suffix += f"; pattern={self.pattern!r}"
         return f"{self.text} [{suffix}]"
 
 

@@ -1,9 +1,14 @@
 from pathlib import Path
+import asyncio
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
-from app.graph.state import WorkflowPhase
+from app.graph.state import DeliveryResult, WorkflowBudget, WorkflowPhase
+from app.api.service import WorkflowAlreadyTerminal, WorkflowService
+from app.infrastructure.settings import Settings
+from app.infrastructure.workflow_queue import InMemoryWorkflowQueue
 from app.graph.workflow import build_serde, build_workflow
 from app.factory.build_strategy import BuildProfileRegistry
 from app.models.build import BuildPhase, BuildProfile
@@ -52,7 +57,12 @@ class Executor:
         self.contexts.append(context)
         self.tasks.append(task)
         return {
-            "result": {"ok": True},
+            "result": {
+                "ok": True,
+                "workspace": {
+                    "published_files": [{"path": "widget.py", "content": "ok\n"}],
+                },
+            },
             "agent": "lease-executor",
             "model": "fake",
             "tokens": 1,
@@ -90,7 +100,154 @@ class BuildRunner:
     async def run(self, lease, selection):
         report = self.reports[min(self.calls, len(self.reports) - 1)]
         self.calls += 1
-        return report
+        return report.model_copy(
+            update={
+                "profile_name": selection.selected_profile,
+                "profile_digest": selection.profile_digest,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_cancels_factory_validation_before_terminal_checkpoint(tmp_path):
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    class BlockingBuild(BuildRunner):
+        async def run(self, lease, selection):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    publisher = Delivery()
+    app = graph(
+        WorkspaceManager(lease(tmp_path, "cancel")),
+        FactoryRuntime(tmp_path),
+        RecordingMemory(),
+        delivery=publisher,
+        build_runner=BlockingBuild(),
+    )
+    service = WorkflowService(app, Settings(), InMemoryWorkflowQueue(), False)
+    invocation = asyncio.create_task(
+        app.ainvoke(
+            {
+                "workflow_id": "cancel",
+                "project_id": "p",
+                "owner_client_id": "c",
+                "request": "Corrigir o widget",
+                "work_order": work_order(),
+            },
+            {"configurable": {"thread_id": "cancel"}},
+        )
+    )
+    service._invocations["cancel"] = invocation
+    await asyncio.wait_for(started.wait(), 2)
+    await service.cancel("cancel")
+    assert stopped.is_set()
+    assert not publisher.calls
+    assert (await service.get("cancel"))["phase"] == WorkflowPhase.CANCELLED
+
+
+class Delivery:
+    def __init__(self, ci_state: str = "success") -> None:
+        self.ci_state = ci_state
+        self.calls: list[dict] = []
+
+    async def publish(self, **kwargs):
+        self.calls.append(kwargs)
+        return DeliveryResult(
+            pull_request_number=23,
+            url="https://github.com/acme/widget/pull/23",
+            branch=kwargs["config"].head_branch,
+            commit_sha="c" * 40,
+            ci_state=self.ci_state,
+            files=len(kwargs["files"]),
+            failure_paths=["widget.py"] if self.ci_state == "failure" else [],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhausted", [False, True])
+async def test_factory_red_ci_repairs_or_exhausts_budget(tmp_path, exhausted):
+    class CI(Delivery):
+        async def publish(self, **kwargs):
+            self.ci_state = "failure" if not self.calls or exhausted else "success"
+            return await super().publish(**kwargs)
+
+    runtime, publisher, runner = FactoryRuntime(tmp_path), CI(), BuildRunner()
+    output = await graph(
+        WorkspaceManager(lease(tmp_path, "ci-repair")),
+        runtime,
+        RecordingMemory(),
+        delivery=publisher,
+        build_runner=runner,
+    ).ainvoke(
+        {
+            "workflow_id": "ci-repair",
+            "project_id": "p",
+            "owner_client_id": "c",
+            "request": "Corrigir o widget",
+            "work_order": work_order(),
+            "budget": WorkflowBudget(max_iterations=1 if exhausted else 3),
+        },
+        {"configurable": {"thread_id": "ci-repair"}},
+    )
+    if exhausted:
+        assert "__interrupt__" in output
+        assert len(publisher.calls) == 2  # Initial delivery + one repair.
+        assert output["iteration"] == 1
+    else:
+        assert output["phase"] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+        assert len(publisher.calls) == 2
+        assert runner.calls == 2
+        assert publisher.calls[1]["config"].expected_head_sha == "c" * 40
+
+
+@pytest.mark.asyncio
+async def test_new_graph_instance_resumes_checkpoint_without_executing_agents_again(
+    tmp_path,
+):
+    saver = MemorySaver(serde=build_serde())
+    manager = WorkspaceManager(lease(tmp_path, "resume"))
+    runtime, publisher, runner = (
+        FactoryRuntime(tmp_path),
+        Delivery("pending"),
+        BuildRunner(),
+    )
+    config = {"configurable": {"thread_id": "resume"}}
+    first = graph(
+        manager,
+        runtime,
+        RecordingMemory(),
+        delivery=publisher,
+        build_runner=runner,
+        checkpointer=saver,
+    )
+    paused = await first.ainvoke(
+        {
+            "workflow_id": "resume",
+            "project_id": "p",
+            "owner_client_id": "c",
+            "request": "Corrigir o widget",
+            "work_order": work_order(),
+        },
+        config,
+    )
+    assert "__interrupt__" in paused
+    publisher.ci_state = "success"
+    restarted = graph(
+        manager,
+        runtime,
+        RecordingMemory(),
+        delivery=publisher,
+        build_runner=runner,
+        checkpointer=saver,
+    )
+    finished = await restarted.ainvoke(Command(resume="retry"), config)
+    assert finished["phase"] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+    assert runner.calls == 1
+    assert len(runtime.executor.tasks) == 1
 
 
 def successful_build() -> BuildRunResult:
@@ -180,13 +337,22 @@ def lease(workspace: Path, workflow_id: str) -> WorkspaceLease:
     )
 
 
-def graph(manager, runtime, memory, *, build_runner=None, build_audit_recorder=None):
+def graph(
+    manager,
+    runtime,
+    memory,
+    *,
+    build_runner=None,
+    build_audit_recorder=None,
+    delivery=None,
+    checkpointer=None,
+):
     return build_workflow(
         Planner(),
         Registry(Executor()),
         Judge(),
         memory,
-        MemorySaver(serde=build_serde()),
+        checkpointer or MemorySaver(serde=build_serde()),
         workspace_manager=manager,
         runtime_factory=runtime,
         build_strategy_selector=BuildProfileRegistry(
@@ -206,6 +372,7 @@ def graph(manager, runtime, memory, *, build_runner=None, build_audit_recorder=N
         ),
         build_runner=build_runner or BuildRunner(),
         build_audit_recorder=build_audit_recorder,
+        delivery=delivery or Delivery(),
     )
 
 
@@ -228,9 +395,9 @@ async def test_factory_graph_provisions_and_binds_all_roles_to_lease(tmp_path: P
         {"configurable": {"thread_id": workflow_id}},
     )
 
-    assert output["phase"] == WorkflowPhase.COMPLETED
+    assert output["phase"] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
     assert output["workspace"].local_path == str(tmp_path)
-    assert output["factory_stage"] == FactoryStage.VALIDATION
+    assert output["factory_stage"] == FactoryStage.READY_FOR_HUMAN_REVIEW
     assert output["build_strategy"].selected_profile == "python-tests"
     assert output["build_strategy"].selection_reason == "explicit"
     assert output["build_strategy"].profile_digest is not None
@@ -362,6 +529,7 @@ async def test_strategy_selection_is_audited_before_project_grounding(
         ),
         strategy_audit_recorder=record_strategy,
         build_runner=BuildRunner(),
+        delivery=Delivery(),
     )
 
     output = await app.ainvoke(
@@ -375,7 +543,7 @@ async def test_strategy_selection_is_audited_before_project_grounding(
         {"configurable": {"thread_id": workflow_id}},
     )
 
-    assert output["phase"] == WorkflowPhase.COMPLETED
+    assert output["phase"] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
     assert len(events) == 1
     assert events[0].selected_profile == "python-tests"
 
@@ -416,7 +584,7 @@ async def test_factory_build_evidence_reaches_attempt_judge_and_audit(
     assert task.attempts[0].factory_stage is FactoryStage.VALIDATION
     assert task.result["workspace"]["build_validation"]["outcome"] == "success"
     assert runtime.judge.contexts[0]["build_validation"]["outcome"] == "success"
-    assert output["factory_stage"] is FactoryStage.VALIDATION
+    assert output["factory_stage"] is FactoryStage.READY_FOR_HUMAN_REVIEW
     assert runner.calls == 1
     assert audits[0]["report"].outcome is BuildOutcome.SUCCESS
     assert "## Validação em sandbox" in output["final_output"]
@@ -478,4 +646,84 @@ async def test_failed_phase_vetoes_judge_and_feeds_bounded_retry(
     assert rejected.tests_passed is False
     assert "sandbox" in rejected.validated_by
     assert approved.approved is True
-    assert output["phase"] is WorkflowPhase.COMPLETED
+    assert output["phase"] is WorkflowPhase.READY_FOR_HUMAN_REVIEW
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ci_state", ["pending", "none", "skipped", "error"])
+async def test_factory_unverified_delivery_pauses_and_retries_without_reexecution(
+    tmp_path: Path,
+    ci_state: str,
+) -> None:
+    workflow_id = "factory-ci-gate"
+    runtime = FactoryRuntime(tmp_path)
+    memory = RecordingMemory()
+    publisher = Delivery(ci_state)
+    runner = BuildRunner()
+    app = graph(
+        WorkspaceManager(lease(tmp_path, workflow_id)),
+        runtime,
+        memory,
+        delivery=publisher,
+        build_runner=runner,
+    )
+    config = {"configurable": {"thread_id": workflow_id}}
+    output = await app.ainvoke(
+        {
+            "request": "corrigir o comportamento do widget",
+            "project_id": "p",
+            "workflow_id": workflow_id,
+            "owner_client_id": "c",
+            "work_order": work_order(),
+        },
+        config,
+    )
+    gate = output["__interrupt__"][0].value
+    assert gate["reason"] == f"factory_delivery_{ci_state}"
+    assert gate["options"] == ["retry", "abort"]
+    assert memory.persisted == []
+    first = publisher.calls[0]["config"]
+    assert first.head_branch == f"forgehand/{workflow_id}"
+    assert first.pinned_base_sha == "a" * 40
+    assert first.expected_head_sha is None
+    publisher.ci_state = "success"
+    resumed = await app.ainvoke(Command(resume="retry"), config)
+    assert resumed["phase"] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+    assert resumed["factory_stage"] == FactoryStage.READY_FOR_HUMAN_REVIEW
+    assert memory.persisted[-1].phase == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+    assert publisher.calls[1]["config"].expected_head_sha == "c" * 40
+    assert len(runtime.executor.tasks) == runner.calls == 1
+    service = WorkflowService(
+        app, Settings(), InMemoryWorkflowQueue(), run_workers=False
+    )
+    assert (await service.get(workflow_id))[
+        "phase"
+    ] == WorkflowPhase.READY_FOR_HUMAN_REVIEW
+    with pytest.raises(WorkflowAlreadyTerminal):
+        await service.cancel(workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_factory_partial_decision_cannot_bypass_ci_gate(tmp_path: Path):
+    workflow_id = "factory-no-partial"
+    publisher = Delivery("pending")
+    app = graph(
+        WorkspaceManager(lease(tmp_path, workflow_id)),
+        FactoryRuntime(tmp_path),
+        RecordingMemory(),
+        delivery=publisher,
+    )
+    config = {"configurable": {"thread_id": workflow_id}}
+    await app.ainvoke(
+        {
+            "request": "corrigir o comportamento do widget",
+            "project_id": "p",
+            "workflow_id": workflow_id,
+            "owner_client_id": "c",
+            "work_order": work_order(),
+        },
+        config,
+    )
+    output = await app.ainvoke(Command(resume="accept_partial"), config)
+    assert output["phase"] == WorkflowPhase.FAILED
+    assert len(publisher.calls) == 1

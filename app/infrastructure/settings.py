@@ -25,7 +25,7 @@ from app.providers.registry import ModelTier, TierBinding
 # Defaults de referência (jul/2026). VERIFICAR contra a página de preços
 # oficial antes de produção — valores desatualizados corrompem o budget.
 # Cache (Anthropic): escrita = 1.25x entrada, leitura = 0.10x entrada.
-# OpenAI: leitura cacheada = 0.5x entrada, sem custo extra de escrita.
+# OpenAI: a tarifa de leitura cacheada depende do modelo.
 _DEFAULT_PRICING = {
     "claude-haiku-4-5": {
         "input_per_mtok": 1.0,
@@ -50,6 +50,12 @@ _DEFAULT_PRICING = {
         "output_per_mtok": 0.60,
         "cache_read_per_mtok": 0.075,
     },
+    # Official GPT-4.1 mini pricing checked on 2026-09-03 (standard text).
+    "gpt-4.1-mini-2025-04-14": {
+        "input_per_mtok": 0.40,
+        "output_per_mtok": 1.60,
+        "cache_read_per_mtok": 0.10,
+    },
 }
 
 _DEFAULT_BINDINGS = {
@@ -62,6 +68,12 @@ _DEFAULT_OPENROUTER_BINDINGS = {
     "1": {"provider_name": "openrouter", "model": "openai/gpt-4o-mini"},
     "2": {"provider_name": "openrouter", "model": "openai/gpt-4o-mini"},
     "3": {"provider_name": "openrouter", "model": "openai/gpt-4o-mini"},
+}
+
+# Bounded pilot: no implicit upgrade to a more expensive model.
+_DEFAULT_OPENAI_BINDINGS = {
+    str(tier): {"provider_name": "openai", "model": "gpt-4.1-mini-2025-04-14"}
+    for tier in range(1, 4)
 }
 
 _DEFAULT_API_KEYS = {
@@ -144,7 +156,7 @@ class Settings(BaseSettings):
 
     app_name: str = "forgehand"
     environment: Literal["dev", "staging", "prod"] = "dev"
-    llm_provider_backend: Literal["anthropic", "openrouter"] = "anthropic"
+    llm_provider_backend: Literal["anthropic", "openrouter", "openai"] = "anthropic"
     api_keys_json: str = json.dumps(_DEFAULT_API_KEYS)
     workflow_queue_backend: Literal["memory", "postgres"] = "memory"
     run_embedded_workflow_workers: bool = True
@@ -254,6 +266,15 @@ class Settings(BaseSettings):
         _DEFAULT_FACTORY_APPROVED_SCM_HOSTS
     )
     factory_workspace_root: str = "./data/factory-workspaces"
+    factory_docker_socket: str = "/var/run/docker.sock"
+
+    @field_validator("factory_docker_socket")
+    @classmethod
+    def validate_factory_docker_socket(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("FACTORY_DOCKER_SOCKET must be an absolute local path")
+        return value
+
     factory_success_retention_seconds: int = Field(default=0, ge=0)
     factory_failure_retention_seconds: int = Field(default=86_400, ge=0)
     factory_command_backend: Literal["local", "docker"] = "docker"
@@ -324,6 +345,8 @@ class Settings(BaseSettings):
         raw = json.loads(self.tier_bindings_json)
         if self.llm_provider_backend == "openrouter" and raw == _DEFAULT_BINDINGS:
             raw = _DEFAULT_OPENROUTER_BINDINGS
+        elif self.llm_provider_backend == "openai" and raw == _DEFAULT_BINDINGS:
+            raw = _DEFAULT_OPENAI_BINDINGS
         return {ModelTier(int(k)): TierBinding(**v) for k, v in raw.items()}
 
     @property

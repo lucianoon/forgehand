@@ -66,6 +66,16 @@ executam em paralelo;
 Prefira menos tarefas bem definidas a muitas tarefas vagas. Não crie tarefa \
 de "revisão final" — o judge já existe.
 
+Critérios devem expressar o resultado pedido, não uma implementação inventada:
+- preservar API ou comportamento NÃO significa file_unchanged; uma refatoração
+  altera o arquivo. Use tests_pass e um critério subjective de compatibilidade;
+- file_unchanged exige que o arquivo inteiro permaneça byte a byte igual;
+- content_contains só verifica presença de texto. Não prova comportamento,
+  contagem de ocorrências ou equivalência. Não imponha uma expressão de código
+  específica quando implementações equivalentes satisfazem o pedido;
+- pattern contém somente uma regex Python, nunca JSON de outros critérios;
+- mantenha separados os critérios de testes, escopo e comportamento.
+
 Se o contexto trouxer evidências do repositório:
 - use SOMENTE tecnologias, componentes e afirmações sustentadas por essas evidências;
 - não invente arquivos, frameworks, serviços ou diretórios ausentes;

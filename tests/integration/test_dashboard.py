@@ -27,5 +27,8 @@ async def test_dashboard_and_assets_are_served():
     assert script.status_code == 200
     assert "sessionStorage" in script.text
     assert "refreshHistory" in script.text
+    assert '"ready_for_human_review"' in script.text
+    assert "Pronto para revisão humana" in script.text
+    assert "allowedDecisions.includes(button.dataset.decision)" in script.text
     assert styles.status_code == 200
     assert "--green:" in styles.text
