@@ -170,8 +170,8 @@ async def test_factory_graph_provisions_and_binds_all_roles_to_lease(tmp_path: P
     )
 
     assert output["phase"] == WorkflowPhase.COMPLETED
-    assert output["workspace"]["local_path"] == str(tmp_path)
-    assert output["factory_stage"] == FactoryStage.PROVISIONING
+    assert output["workspace"].local_path == str(tmp_path)
+    assert output["factory_stage"] == FactoryStage.IMPLEMENTATION
     assert manager.provisions == 1
     assert runtime.leases and all(
         item.local_path == str(tmp_path) for item in runtime.leases
