@@ -24,6 +24,12 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 
+from app.models.factory import (
+    BuildProfileSelection,
+    FactoryStage,
+    WorkOrder,
+    WorkspaceLease,
+)
 from app.models.task import AgentTask, EvaluationResult, TaskStatus
 
 
@@ -176,6 +182,7 @@ class WorkflowState(BaseModel):
     budget: WorkflowBudget = Field(default_factory=WorkflowBudget)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     delivery: DeliveryConfig | None = None
+    work_order: WorkOrder | None = None
 
     # Fonte única de verdade das tarefas — reducer de merge por id
     plan: Annotated[list[AgentTask], merge_tasks_by_id] = Field(default_factory=list)
@@ -200,6 +207,9 @@ class WorkflowState(BaseModel):
         None  # preenchido pós-interrupt
     )
     delivery_result: Annotated[DeliveryResult | None, keep_latest] = None
+    workspace: Annotated[WorkspaceLease | None, keep_latest] = None
+    build_strategy: Annotated[BuildProfileSelection | None, keep_latest] = None
+    factory_stage: Annotated[FactoryStage | None, keep_latest] = None
 
     # ----------------------------------------------------------------------
     # Views derivadas — substituem completed_tasks / failed_tasks

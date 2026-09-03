@@ -90,6 +90,39 @@ def initial(workflow_id, budget=None):
     return data
 
 
+@pytest.mark.asyncio
+async def test_legacy_payload_executes_with_factory_mode_disabled():
+    class LegacyPlanner:
+        async def create_plan(self, request, context):
+            return [
+                AgentTask(
+                    title="legada",
+                    description="continua compatível",
+                    capability=Capability.REVIEW,
+                    acceptance_criteria=["ok"],
+                )
+            ]
+
+    assert Settings(_env_file=None).factory_mode_enabled is False
+    app = build_workflow(
+        LegacyPlanner(),
+        Registry(Executor()),
+        ApprovingJudge(),
+        Memory(),
+        MemorySaver(serde=build_serde()),
+    )
+
+    output = await app.ainvoke(
+        initial("legacy-factory-compat"),
+        {"configurable": {"thread_id": "legacy-factory-compat"}},
+    )
+
+    assert output["phase"] == WorkflowPhase.COMPLETED
+    assert output.get("work_order") is None
+    assert output.get("workspace") is None
+    assert output.get("factory_stage") is None
+
+
 class FakeGraphApp:
     def __init__(self, delay=0.05):
         self.delay = delay

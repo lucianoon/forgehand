@@ -91,6 +91,19 @@ class BaseProjectMemory:
         self._recent_limit = settings.memory_recent_workflows_limit
 
     async def load_context(self, project_id: str, request: str = "") -> dict[str, Any]:
+        context = await self.load_project_context(project_id, request)
+        if self._grounding_enabled:
+            context["repository_grounding"] = self._collector.collect(request)
+        return context
+
+    async def load_project_context(
+        self, project_id: str, request: str = ""
+    ) -> dict[str, Any]:
+        """Carrega memória histórica sem tocar em uma raiz de repositório.
+
+        O modo fábrica usa esta variante e injeta grounding somente após a
+        lease exclusiva ter sido provisionada.
+        """
         context: dict[str, Any] = {}
         summaries = await self._recent_summaries(project_id)
         if summaries:
@@ -98,8 +111,6 @@ class BaseProjectMemory:
             context["project_memory"] = {
                 "recent_workflows": [_context_entry(s) for s in summaries]
             }
-        if self._grounding_enabled:
-            context["repository_grounding"] = self._collector.collect(request)
         return context
 
     async def _recent_summaries(self, project_id: str) -> list[dict[str, Any]]:

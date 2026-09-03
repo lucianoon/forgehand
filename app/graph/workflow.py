@@ -44,6 +44,19 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.task", "EvaluationResult"),
     ("app.graph.state", "DeliveryConfig"),
     ("app.graph.state", "DeliveryResult"),
+    ("app.models.factory", "WorkOrderSourceKind"),
+    ("app.models.factory", "DirectWorkOrderSource"),
+    ("app.models.factory", "GitHubIssueSnapshot"),
+    ("app.models.factory", "GitHubIssueWorkOrderSource"),
+    ("app.models.factory", "RepositoryTarget"),
+    ("app.models.factory", "WorkOrderLimits"),
+    ("app.models.factory", "BuildProfileSelection"),
+    ("app.models.factory", "DeliveryPolicy"),
+    ("app.models.factory", "WorkOrder"),
+    ("app.models.factory", "WorkspaceLifecycle"),
+    ("app.models.factory", "WorkspaceRetention"),
+    ("app.models.factory", "WorkspaceLease"),
+    ("app.models.factory", "FactoryStage"),
     ("app.graph.nodes", "ExecutionPayload"),  # viaja nos Send pendentes
 ]
 
@@ -62,11 +75,23 @@ def build_workflow(
     checkpointer: Any,
     advisor: Any = None,
     delivery: Any = None,
+    workspace_manager: Any = None,
+    runtime_factory: Any = None,
 ) -> Any:
-    nodes = build_nodes(planner, registry, judge, memory, advisor, delivery)
+    nodes = build_nodes(
+        planner,
+        registry,
+        judge,
+        memory,
+        advisor,
+        delivery,
+        workspace_manager,
+        runtime_factory,
+    )
 
     graph = StateGraph(WorkflowState)
 
+    graph.add_node("provision_workspace", nodes["provision_workspace"])
     graph.add_node("load_context", nodes["load_context"])
     graph.add_node("create_plan", nodes["create_plan"])
     graph.add_node("execute_task", nodes["execute_task"], input_schema=ExecutionPayload)
@@ -80,7 +105,12 @@ def build_workflow(
     graph.add_node("publish_delivery", nodes["publish_delivery"])
     graph.add_node("persist_memory", nodes["persist_memory"])
 
-    graph.set_entry_point("load_context")
+    graph.set_entry_point("provision_workspace")
+    graph.add_conditional_edges(
+        "provision_workspace",
+        nodes["provision_router"],
+        {"load_context": "load_context", "persist_memory": "persist_memory"},
+    )
     graph.add_edge("load_context", "create_plan")
 
     # Fan-out: create_plan → N workers (ou direto para avaliação/gate)

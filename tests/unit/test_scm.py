@@ -58,6 +58,19 @@ class GitHubMock:
 
         if method == "GET" and path.endswith("/git/ref/heads/main"):
             return httpx.Response(200, json={"object": {"sha": "base-sha"}})
+        if method == "GET" and path.endswith("/issues/7"):
+            return httpx.Response(
+                200,
+                json={
+                    "html_url": "https://github.com/acme/service/issues/7",
+                    "number": 7,
+                    "title": "Corrigir total",
+                    "body": "O desconto é aplicado duas vezes.",
+                    "labels": [{"name": "bug"}],
+                    "user": {"login": "octocat"},
+                    "updated_at": "2026-09-02T12:00:00Z",
+                },
+            )
         if method == "GET" and "/git/ref/heads/" in path:
             if self.head_exists:
                 return httpx.Response(200, json={"object": {"sha": "head-sha"}})
@@ -104,6 +117,49 @@ class GitHubMock:
 
 def _client(mock: GitHubMock) -> GitHubSCMClient:
     return GitHubSCMClient("token", client=mock.client())
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_snapshot_uses_authenticated_installation_client():
+    mock = GitHubMock()
+    snapshot = await _client(mock).fetch_issue_snapshot(
+        repository="acme/service",
+        issue_number=7,
+        source_url="https://github.com/acme/service/issues/7",
+    )
+
+    assert snapshot.repository == "acme/service"
+    assert snapshot.labels == ["bug"]
+    assert snapshot.author == "octocat"
+    assert mock.requests[0][:2] == ("GET", "/repos/acme/service/issues/7")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404])
+async def test_fetch_issue_snapshot_has_no_anonymous_fallback(status: int):
+    requests = []
+
+    def inaccessible(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status, json={"message": "not accessible"})
+
+    client = GitHubSCMClient(
+        "installation-token",
+        client=httpx.AsyncClient(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(inaccessible),
+        ),
+    )
+
+    with pytest.raises(SCMError, match=str(status)):
+        await client.fetch_issue_snapshot(
+            repository="other/private",
+            issue_number=7,
+            source_url="https://github.com/other/private/issues/7",
+        )
+
+    assert len(requests) == 1
+    assert requests[0].headers["Authorization"] == "Bearer installation-token"
 
 
 # --------------------------------------------------------------------------

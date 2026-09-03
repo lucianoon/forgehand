@@ -23,9 +23,11 @@ from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
+from app.factory.workspace import LocalGitWorkspaceManager
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog
 from app.infrastructure.memory import InMemoryProjectMemory
+from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.scm import GitHubDeliveryService
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
@@ -36,6 +38,7 @@ from app.infrastructure.workspace_runtime import (
 )
 from app.infrastructure.webhooks import WebhookDispatcher
 from app.models.task import Capability, TaskBudget
+from app.models.factory import WorkspaceLease
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import LLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -69,6 +72,95 @@ class Container:
         self.audit_log = audit_log
 
 
+class LeaseBoundRuntimeFactory:
+    """Constrói agentes cujas ferramentas apontam somente para uma lease."""
+
+    def __init__(self, settings: Settings, router: ProviderRouter) -> None:
+        self._settings = settings
+        self._router = router
+        self._components: dict[
+            str, tuple[LLMPlanner, CapabilityExecutorRegistry, LLMJudge]
+        ] = {}
+
+    def _bound_settings(self, lease: WorkspaceLease) -> Settings:
+        return self._settings.model_copy(
+            update={
+                "repository_root": lease.local_path,
+                "executor_workspace_root": lease.local_path,
+                "executor_apply_files_enabled": True,
+                "executor_command_backend": self._settings.factory_command_backend,
+                "executor_sandbox_image": self._settings.factory_sandbox_image,
+                "executor_sandbox_network_enabled": (
+                    self._settings.factory_sandbox_network_enabled
+                ),
+            }
+        )
+
+    def _for_lease(
+        self, lease: WorkspaceLease
+    ) -> tuple[LLMPlanner, CapabilityExecutorRegistry, LLMJudge]:
+        cached = self._components.get(lease.local_path)
+        if cached is not None:
+            return cached
+        settings = self._bound_settings(lease)
+        validators = build_objective_validators(settings)
+        pipeline = build_objective_validation_pipeline(settings, validators)
+        strategies = build_execution_strategies(settings)
+        planner = LLMPlanner(
+            self._router,
+            default_task_budget=TaskBudget(
+                max_tokens=settings.default_task_max_tokens,
+                max_cost_usd=settings.default_task_max_cost_usd,
+            ),
+            tools=build_agent_tools(settings, lease.local_path),
+            max_tool_calls=settings.agent_tools_max_calls_planner,
+            non_writing_capabilities={
+                capability
+                for capability, strategy in strategies.items()
+                if not strategy.apply_files
+            },
+            apply_files_enabled=True,
+        )
+        registry = CapabilityExecutorRegistry(
+            self._router,
+            workspace_runtime=build_workspace_runtime(settings, pipeline),
+            max_autocorrect_rounds=settings.executor_max_autocorrect_rounds,
+            execution_strategies=strategies,
+            tools=build_agent_tools(settings, lease.local_path, validators=validators),
+            max_tool_calls=settings.agent_tools_max_calls_executor,
+        )
+        judge = LLMJudge(
+            self._router,
+            validation_pipeline=pipeline,
+            tools=build_agent_tools(settings, lease.local_path),
+            max_tool_calls=settings.agent_tools_max_calls_judge,
+            independence=settings.judge_independence,
+            critical_quorum=settings.judge_critical_quorum,
+        )
+        components = (planner, registry, judge)
+        self._components[lease.local_path] = components
+        return components
+
+    def build_grounding(self, lease: WorkspaceLease, request: str) -> dict[str, Any]:
+        settings = self._bound_settings(lease)
+        return RepositoryGroundingCollector(
+            lease.local_path,
+            max_files=settings.repository_grounding_max_files,
+            max_excerpt_lines=settings.repository_grounding_max_lines_per_file,
+            max_file_bytes=settings.repository_grounding_max_file_bytes,
+            full_file_max_bytes=settings.repository_grounding_full_file_max_bytes,
+        ).collect(request)
+
+    def build_planner(self, lease: WorkspaceLease) -> LLMPlanner:
+        return self._for_lease(lease)[0]
+
+    def build_registry(self, lease: WorkspaceLease) -> CapabilityExecutorRegistry:
+        return self._for_lease(lease)[1]
+
+    def build_judge(self, lease: WorkspaceLease) -> LLMJudge:
+        return self._for_lease(lease)[2]
+
+
 def build_container(
     settings: Settings,
     checkpointer: Any,
@@ -97,6 +189,19 @@ def build_container(
     )
     execution_strategies = build_execution_strategies(settings)
     workspace_runtime = build_workspace_runtime(settings, validation_pipeline)
+    workspace_manager = (
+        LocalGitWorkspaceManager(
+            settings.factory_workspace_root,
+            approved_hosts=settings.factory_approved_scm_hosts,
+        )
+        if settings.factory_mode_enabled
+        else None
+    )
+    runtime_factory = (
+        LeaseBoundRuntimeFactory(settings, router)
+        if settings.factory_mode_enabled
+        else None
+    )
     # Executor e judge exploram o workspace onde os arquivos são aplicados;
     # o planner explora o repositório do grounding. run_check só no executor.
     executor_tools = build_agent_tools(
@@ -143,6 +248,8 @@ def build_container(
             poll_interval_seconds=settings.delivery_checks_poll_interval_seconds,
             grace_seconds=settings.delivery_checks_grace_seconds,
         ),
+        workspace_manager=workspace_manager,
+        runtime_factory=runtime_factory,
     )
     audit_log = audit_log or (
         JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)

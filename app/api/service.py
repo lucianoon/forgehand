@@ -21,6 +21,7 @@ from uuid import uuid4
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
 from app.infrastructure.workflow_queue import WorkflowAccessContext
+from app.models.factory import WorkOrder
 from app.models.task import TaskStatus
 
 logger = logging.getLogger("forgehand")
@@ -298,8 +299,21 @@ class WorkflowService:
         budget: WorkflowBudget | None,
         owner_client_id: str,
         delivery: DeliveryConfig | None = None,
+        work_order: WorkOrder | None = None,
     ) -> str:
         workflow_id = str(uuid4())
+        if work_order is not None and work_order.idempotency_key is not None:
+            workflow_id, claimed = cast(
+                tuple[str, bool],
+                await self._job_queue.claim_idempotency(
+                    owner_client_id=owner_client_id,
+                    repository=work_order.repository.full_name,
+                    idempotency_key=work_order.idempotency_key,
+                    workflow_id=workflow_id,
+                ),
+            )
+            if not claimed:
+                return workflow_id
         initial: dict[str, Any] = {
             "request": request,
             "project_id": project_id,
@@ -315,6 +329,8 @@ class WorkflowService:
         }
         if delivery is not None:
             initial["delivery"] = delivery
+        if work_order is not None:
+            initial["work_order"] = work_order
         self._failures.pop(workflow_id, None)
         self._ensure_workers_started()
         await self._job_queue.enqueue(
@@ -349,7 +365,11 @@ class WorkflowService:
         pending = cast(Any, await self._job_queue.get_state(workflow_id))
         if not snapshot.values:
             if pending is not None:
-                return cast(dict[str, Any], pending.to_pending_response())
+                response = cast(dict[str, Any], pending.to_pending_response())
+                response["work_order"] = await self._job_queue.get_work_order(
+                    workflow_id
+                )
+                return response
             raise WorkflowNotFound(workflow_id)
 
         values = cast(dict[str, Any], snapshot.values)
@@ -384,6 +404,7 @@ class WorkflowService:
             "final_output": values.get("final_output"),
             "error": values.get("error") or self._failures.get(workflow_id),
             "delivery": _dump_model(values.get("delivery_result")),
+            "work_order": _dump_model(values.get("work_order")),
         }
 
     async def get_details(self, workflow_id: str) -> dict[str, Any]:

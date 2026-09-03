@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Literal
+from typing import Any, AsyncGenerator, Literal, cast
 
 from app.graph.state import WorkflowPhase
 from app.infrastructure.settings import Settings
@@ -125,6 +125,24 @@ class InMemoryWorkflowQueue:
         self._done_total = 0
         self._sequence = 0
         self._worker_heartbeats: dict[str, float] = {}
+        self._idempotency: dict[tuple[str, str, str], str] = {}
+        self._work_orders: dict[str, dict[str, Any]] = {}
+
+    async def claim_idempotency(
+        self,
+        *,
+        owner_client_id: str,
+        repository: str,
+        idempotency_key: str,
+        workflow_id: str,
+    ) -> tuple[str, bool]:
+        scope = (owner_client_id, repository.lower(), idempotency_key)
+        async with self._condition:
+            existing = self._idempotency.get(scope)
+            if existing is not None:
+                return existing, False
+            self._idempotency[scope] = workflow_id
+            return workflow_id, True
 
     async def touch_worker(self, worker_id: str) -> None:
         async with self._condition:
@@ -158,6 +176,13 @@ class InMemoryWorkflowQueue:
             self._states[workflow_id] = WorkflowJobState(
                 workflow_id=workflow_id, status="queued"
             )
+            if kind == "start" and isinstance(payload, dict):
+                work_order = payload.get("work_order")
+                model_dump = getattr(work_order, "model_dump", None)
+                if callable(model_dump):
+                    self._work_orders[workflow_id] = model_dump(mode="json")
+                elif isinstance(work_order, dict):
+                    self._work_orders[workflow_id] = work_order
             self._queued.append(job)
             self._condition.notify_all()
         return job
@@ -284,6 +309,9 @@ class InMemoryWorkflowQueue:
     async def get_access(self, workflow_id: str) -> WorkflowAccessContext | None:
         return self._access.get(workflow_id)
 
+    async def get_work_order(self, workflow_id: str) -> dict[str, Any] | None:
+        return self._work_orders.get(workflow_id)
+
     async def ping(self) -> bool:
         return True
 
@@ -384,7 +412,62 @@ class PostgresWorkflowQueue:
                 )
                 """
             )
+            await self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_idempotency (
+                    owner_client_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    workflow_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (owner_client_id, repository, idempotency_key)
+                )
+                """
+            )
             await self._conn.commit()
+
+    async def claim_idempotency(
+        self,
+        *,
+        owner_client_id: str,
+        repository: str,
+        idempotency_key: str,
+        workflow_id: str,
+    ) -> tuple[str, bool]:
+        assert self._conn is not None
+        repository = repository.lower()
+        async with self._lock:
+            cur = await self._conn.execute(
+                """
+                INSERT INTO workflow_idempotency (
+                    owner_client_id, repository, idempotency_key, workflow_id
+                )
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (owner_client_id, repository, idempotency_key)
+                DO NOTHING
+                RETURNING workflow_id
+                """,
+                (owner_client_id, repository, idempotency_key, workflow_id),
+            )
+            inserted = await cur.fetchone()
+            if inserted is not None:
+                await self._conn.commit()
+                return str(inserted[0]), True
+            cur = await self._conn.execute(
+                """
+                SELECT workflow_id
+                FROM workflow_idempotency
+                WHERE owner_client_id = %s
+                  AND repository = %s
+                  AND idempotency_key = %s
+                """,
+                (owner_client_id, repository, idempotency_key),
+            )
+            existing = await cur.fetchone()
+            await self._conn.commit()
+        if existing is None:
+            raise RuntimeError("Falha ao recuperar chave de idempotência.")
+        return str(existing[0]), False
 
     async def touch_worker(self, worker_id: str) -> None:
         assert self._conn is not None
@@ -667,6 +750,25 @@ class PostgresWorkflowQueue:
             project_id=row[0],
             owner_client_id=row[1],
         )
+
+    async def get_work_order(self, workflow_id: str) -> dict[str, Any] | None:
+        assert self._conn is not None
+        async with self._lock:
+            cur = await self._conn.execute(
+                """
+                SELECT payload -> 'work_order'
+                FROM workflow_jobs
+                WHERE workflow_id = %s AND kind = 'start'
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (workflow_id,),
+            )
+            row = await cur.fetchone()
+            await self._conn.commit()
+        if row is None or not isinstance(row[0], dict):
+            return None
+        return cast(dict[str, Any], row[0])
 
     async def ping(self) -> bool:
         assert self._conn is not None
