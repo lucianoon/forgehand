@@ -22,6 +22,7 @@ Decisões estruturais:
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -30,6 +31,7 @@ from langgraph.types import Send, interrupt
 from pydantic import BaseModel, Field
 
 from app.agents.validation import format_validation_feedback
+from app.factory.sandbox import BuildRunCancelled
 from app.graph.state import (
     DeliveryConfig,
     DeliveryResult,
@@ -38,7 +40,14 @@ from app.graph.state import (
 )
 from app.infrastructure.tracing import current_trace_id
 from app.factory.workspace import WorkspaceManager, WorkspaceRuntimeFactory
-from app.models.factory import BuildProfileSelection, FactoryStage, WorkspaceLease
+from app.models.build import BuildProfile
+from app.models.build_execution import BuildOutcome, BuildRunResult
+from app.models.factory import (
+    BuildProfileSelection,
+    FactoryStage,
+    WorkOrder,
+    WorkspaceLease,
+)
 from app.models.task import (
     AdvisorTrigger,
     AgentTask,
@@ -82,6 +91,44 @@ class MemoryStore(Protocol):
     async def persist(self, state: WorkflowState) -> None: ...
 
 
+class BuildStrategySelector(Protocol):
+    def select(
+        self, order: WorkOrder, lease: WorkspaceLease
+    ) -> BuildProfileSelection: ...
+
+    def profile_for(self, selection: BuildProfileSelection) -> BuildProfile: ...
+
+
+class StrategyAuditRecorder(Protocol):
+    async def __call__(
+        self,
+        *,
+        workflow_id: str,
+        project_id: str,
+        client_id: str,
+        repository: str,
+        selection: BuildProfileSelection,
+    ) -> None: ...
+
+
+class BuildRunner(Protocol):
+    async def run(
+        self, lease: WorkspaceLease, selection: BuildProfileSelection
+    ) -> BuildRunResult: ...
+
+
+class BuildAuditRecorder(Protocol):
+    async def __call__(
+        self,
+        *,
+        project_id: str,
+        client_id: str,
+        lease: WorkspaceLease,
+        selection: BuildProfileSelection,
+        report: BuildRunResult,
+    ) -> None: ...
+
+
 class ExecutionPayload(BaseModel):
     """Input schema do worker — o que cada Send() carrega."""
 
@@ -91,6 +138,7 @@ class ExecutionPayload(BaseModel):
     workspace: WorkspaceLease | None = None
     factory_stage: FactoryStage | None = None
     build_strategy: BuildProfileSelection | None = None
+    owner_client_id: str = ""
 
 
 class UsageReport(BaseModel):
@@ -154,6 +202,10 @@ def build_nodes(
     delivery: DeliveryPublisher | None = None,
     workspace_manager: WorkspaceManager | None = None,
     runtime_factory: WorkspaceRuntimeFactory | None = None,
+    build_strategy_selector: BuildStrategySelector | None = None,
+    strategy_audit_recorder: StrategyAuditRecorder | None = None,
+    build_runner: BuildRunner | None = None,
+    build_audit_recorder: BuildAuditRecorder | None = None,
 ) -> dict[str, Any]:
     # import local: scm importa state (modelos de entrega); nodes não deve
     # depender de infraestrutura além desta função pura de coleta.
@@ -205,7 +257,124 @@ def build_nodes(
             else None,
             "strategy": strategy if isinstance(strategy, dict) else None,
             "autocorrect": autocorrect if isinstance(autocorrect, dict) else None,
+            "build_validation": workspace.get("build_validation"),
         }
+
+    def build_report_from_task(task: AgentTask) -> BuildRunResult | None:
+        if task.attempts and task.attempts[-1].build_validation is not None:
+            return task.attempts[-1].build_validation
+        if not isinstance(task.result, dict):
+            return None
+        workspace = task.result.get("workspace")
+        if not isinstance(workspace, dict) or workspace.get("build_validation") is None:
+            return None
+        try:
+            return BuildRunResult.model_validate(workspace["build_validation"])
+        except ValueError:
+            return None
+
+    def build_feedback(report: BuildRunResult) -> list[dict[str, Any]]:
+        feedback = [
+            {
+                "name": f"sandbox:{phase.phase.value}",
+                "passed": phase.outcome == BuildOutcome.SUCCESS,
+                "command": json.dumps(list(phase.command), ensure_ascii=False),
+                "exit_code": phase.exit_code,
+                "details": phase.error_code or phase.outcome.value,
+                "stdout": phase.stdout,
+                "stderr": phase.stderr,
+                "duration_seconds": phase.duration_seconds,
+                "output_truncated": phase.output_truncated,
+            }
+            for phase in report.phases
+        ]
+        if not feedback and report.outcome != BuildOutcome.SUCCESS:
+            feedback.append(
+                {
+                    "name": "sandbox",
+                    "passed": False,
+                    "command": "",
+                    "exit_code": None,
+                    "details": report.error_code or report.outcome.value,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_seconds": 0.0,
+                    "output_truncated": False,
+                }
+            )
+        return feedback
+
+    def attach_build_report(
+        result: dict[str, Any] | None, report: BuildRunResult
+    ) -> dict[str, Any]:
+        attached = dict(result) if isinstance(result, dict) else {}
+        workspace = attached.get("workspace")
+        workspace = dict(workspace) if isinstance(workspace, dict) else {}
+        workspace["build_validation"] = report.model_dump(mode="json")
+        existing = workspace.get("command_feedback")
+        feedback = list(existing) if isinstance(existing, list) else []
+        feedback.extend(build_feedback(report))
+        workspace["command_feedback"] = feedback
+        attached["workspace"] = workspace
+        return attached
+
+    async def record_build_report(
+        payload: ExecutionPayload, report: BuildRunResult
+    ) -> None:
+        if (
+            build_audit_recorder is None
+            or payload.workspace is None
+            or payload.build_strategy is None
+        ):
+            return
+        await build_audit_recorder(
+            project_id=payload.project_id,
+            client_id=payload.owner_client_id,
+            lease=payload.workspace,
+            selection=payload.build_strategy,
+            report=report,
+        )
+
+    def apply_build_veto(
+        evaluation: EvaluationResult, report: BuildRunResult | None
+    ) -> EvaluationResult:
+        if report is None:
+            return evaluation
+        validated_by = list(dict.fromkeys([*evaluation.validated_by, "sandbox"]))
+        phase_by_name = {phase.phase.value: phase for phase in report.phases}
+
+        def signal(name: str, current: bool | None) -> bool | None:
+            phase = phase_by_name.get(name)
+            if phase is None:
+                return current
+            passed = phase.outcome == BuildOutcome.SUCCESS
+            return passed if current is None else current and passed
+
+        updates: dict[str, Any] = {
+            "validated_by": validated_by,
+            "tests_passed": signal("test", evaluation.tests_passed),
+            "lint_passed": signal("lint", evaluation.lint_passed),
+            "type_check_passed": signal("types", evaluation.type_check_passed),
+        }
+        if report.outcome != BuildOutcome.SUCCESS:
+            failures = [
+                f"[sandbox:{phase.phase.value}] "
+                f"{phase.error_code or phase.outcome.value}"
+                for phase in report.phases
+                if phase.outcome != BuildOutcome.SUCCESS
+            ] or [f"[sandbox] {report.error_code or report.outcome.value}"]
+            updates.update(
+                approved=False,
+                score=min(evaluation.score, 0.4),
+                failures=[*evaluation.failures, *failures],
+                required_changes=[
+                    *evaluation.required_changes,
+                    "As fases obrigatórias do perfil de build reprovaram. "
+                    "Corrija a causa usando a evidência sanitizada abaixo:",
+                    *failures,
+                ],
+            )
+        return evaluation.model_copy(update=updates)
 
     def active_planner(state: WorkflowState) -> Planner:
         if state.workspace is not None and runtime_factory is not None:
@@ -255,6 +424,74 @@ def build_nodes(
         return (
             "persist_memory" if state.phase == WorkflowPhase.FAILED else "load_context"
         )
+
+    async def select_build_strategy(state: WorkflowState) -> dict[str, Any]:
+        """Persiste a política selecionada antes de ler ou executar o projeto."""
+        if state.work_order is None:
+            return {"phase": WorkflowPhase.LOADING_CONTEXT}
+        if state.workspace is None:
+            return {
+                "error": "build strategy selection requires a workspace lease",
+                "phase": WorkflowPhase.FAILED,
+                "factory_stage": FactoryStage.STRATEGY_SELECTION,
+            }
+
+        current = state.build_strategy
+        try:
+            if build_strategy_selector is None:
+                raise ValueError("nenhum registro de perfis foi configurado.")
+            if current is not None and current.selection_reason != "unsupported":
+                # Retomadas só reutilizam a seleção se a definição administrada
+                # ainda corresponder ao fingerprint persistido.
+                build_strategy_selector.profile_for(current)
+                selection = current
+            else:
+                selection = build_strategy_selector.select(
+                    state.work_order, state.workspace
+                )
+        except (TypeError, ValueError) as exc:
+            selection = BuildProfileSelection(
+                requested_profile=state.work_order.build_profile.requested_profile,
+                selection_reason="unsupported",
+                unsupported_reason=f"seleção persistida inválida: {exc}",
+            )
+
+        if strategy_audit_recorder is not None:
+            await strategy_audit_recorder(
+                workflow_id=state.workflow_id,
+                project_id=state.project_id,
+                client_id=state.owner_client_id,
+                repository=state.work_order.repository.full_name,
+                selection=selection,
+            )
+
+        unsupported = selection.selection_reason == "unsupported"
+        return {
+            "build_strategy": selection,
+            "factory_stage": FactoryStage.STRATEGY_SELECTION,
+            "phase": (
+                WorkflowPhase.UNSUPPORTED_BUILD_STRATEGY
+                if unsupported
+                else WorkflowPhase.LOADING_CONTEXT
+            ),
+            "error": (
+                f"unsupported_build_strategy: {selection.unsupported_reason}"
+                if unsupported
+                else None
+            ),
+        }
+
+    def strategy_router(state: WorkflowState) -> str:
+        if state.phase == WorkflowPhase.FAILED:
+            return "persist_memory"
+        if state.work_order is None:
+            return "load_context"
+        if (
+            state.build_strategy is None
+            or state.build_strategy.selection_reason == "unsupported"
+        ):
+            return "human_gate"
+        return "load_context"
 
     async def load_context(state: WorkflowState) -> dict[str, Any]:
         if state.workspace is not None and runtime_factory is not None:
@@ -315,7 +552,11 @@ def build_nodes(
         results_by_id = {t.id: t.result for t in state.plan if t.result is not None}
         sends: list[Send] = []
         dispatched_by_agent: dict[str, int] = {}
-        for t in ready:
+        # O perfil valida o workspace inteiro. Em factory mode, executar uma
+        # tarefa por vez evita que duas mutações concorrentes contaminem a
+        # evidência ou disputem o mesmo sandbox do workflow.
+        dispatchable = ready[:1] if state.work_order is not None else ready
+        for t in dispatchable:
             selected_registry = active_registry(state.workspace)
             dispatch_policy = getattr(selected_registry, "dispatch_policy", None)
             if dispatch_policy is not None:
@@ -343,6 +584,7 @@ def build_nodes(
                         workspace=state.workspace,
                         factory_stage=state.factory_stage,
                         build_strategy=state.build_strategy,
+                        owner_client_id=state.owner_client_id,
                     ),
                 )
             )
@@ -386,6 +628,7 @@ def build_nodes(
         else:
             evaluation = raw
             judge_usage = UsageReport()
+        evaluation = apply_build_veto(evaluation, build_report_from_task(task))
         new_status = (
             TaskStatus.COMPLETED
             if evaluation.approved
@@ -434,6 +677,30 @@ def build_nodes(
                 executor.execute(task, payload.context),
                 timeout=task.timeout_seconds,
             )
+            result = outcome.get("result")
+            build_report: BuildRunResult | None = None
+            if payload.workspace is not None and payload.build_strategy is not None:
+                if build_runner is None:
+                    build_report = BuildRunResult(
+                        profile_name=payload.build_strategy.selected_profile,
+                        profile_digest=payload.build_strategy.profile_digest,
+                        outcome=BuildOutcome.INFRASTRUCTURE_ERROR,
+                        error_code="sandbox_runner_unavailable",
+                    )
+                else:
+                    try:
+                        build_report = BuildRunResult.model_validate(
+                            (
+                                await build_runner.run(
+                                    payload.workspace, payload.build_strategy
+                                )
+                            ).model_dump()
+                        )
+                    except BuildRunCancelled as exc:
+                        await record_build_report(payload, exc.report)
+                        raise
+                await record_build_report(payload, build_report)
+                result = attach_build_report(result, build_report)
             tokens = int(outcome.get("tokens", 0))
             cost = float(outcome.get("cost_usd", 0.0))
             charged_budget = task.budget.charge(tokens, cost)
@@ -453,14 +720,19 @@ def build_nodes(
                 tokens_used=tokens,
                 cost_usd=cost,
                 trace_id=current_trace_id(),
-                operational_summary=attempt_operational_summary(outcome.get("result")),
-                factory_stage=payload.factory_stage,
+                operational_summary=attempt_operational_summary(result),
+                factory_stage=(
+                    FactoryStage.VALIDATION
+                    if build_report is not None
+                    else payload.factory_stage
+                ),
                 build_strategy=payload.build_strategy,
+                build_validation=build_report,
             )
             updated = task.model_copy(
                 update={
                     "status": TaskStatus.RUNNING,
-                    "result": outcome.get("result"),
+                    "result": result,
                     "attempts": [*task.attempts, attempt],
                     "budget": charged_budget,
                     "updated_at": datetime.now(timezone.utc),
@@ -479,7 +751,16 @@ def build_nodes(
             # receber veredito. O judge_router segue decidindo no join,
             # sobre o estado consolidado.
             judged, evaluation, judge_usage = await judge_task(
-                updated, payload.context, active_judge(payload.workspace)
+                updated,
+                {
+                    **payload.context,
+                    **(
+                        {"build_validation": build_report.model_dump(mode="json")}
+                        if build_report is not None
+                        else {}
+                    ),
+                },
+                active_judge(payload.workspace),
             )
             update: dict[str, Any] = {
                 "plan": [judged],
@@ -490,6 +771,8 @@ def build_nodes(
             }
             if evaluation is not None:
                 update["evaluations"] = [evaluation]
+            if build_report is not None:
+                update["factory_stage"] = FactoryStage.VALIDATION
             return update
 
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
@@ -646,7 +929,13 @@ def build_nodes(
         ci_failed = (
             state.delivery_result is not None and state.delivery_result.ci_failed
         )
-        if state.budget_exhausted:
+        unsupported_strategy = (
+            state.build_strategy is not None
+            and state.build_strategy.selection_reason == "unsupported"
+        )
+        if unsupported_strategy:
+            reason = "unsupported_build_strategy"
+        elif state.budget_exhausted:
             reason = "budget_exhausted"
         elif state.iterations_exhausted and state.tasks_needing_replan:
             reason = (
@@ -660,9 +949,23 @@ def build_nodes(
             reason = "ci_failed"
         else:
             reason = "dependency_deadlock"
+        options = (
+            ["retry", "abort"]
+            if unsupported_strategy
+            else [
+                "accept_partial",
+                "retry",
+                "abort",
+            ]
+        )
         decision = interrupt(
             {
                 "reason": reason,
+                "build_strategy": (
+                    state.build_strategy.model_dump(mode="json")
+                    if state.build_strategy is not None
+                    else None
+                ),
                 "delivery": (
                     state.delivery_result.model_dump(mode="json")
                     if state.delivery_result is not None
@@ -680,12 +983,19 @@ def build_nodes(
                 ],
                 "usage": state.usage,
                 "iteration": state.iteration,
-                "options": ["accept_partial", "retry", "abort"],
+                "options": options,
             }
         )
         return {"human_decision": decision, "phase": WorkflowPhase.AWAITING_HUMAN}
 
     def human_router(state: WorkflowState) -> str:
+        if (
+            state.build_strategy is not None
+            and state.build_strategy.selection_reason == "unsupported"
+        ):
+            return (
+                "select_build_strategy" if state.human_decision == "retry" else "abort"
+            )
         match state.human_decision:
             case "retry":
                 return "authorize_retry"
@@ -752,6 +1062,16 @@ def build_nodes(
             )
         for t in state.completed_tasks:
             parts.append(f"## {t.title}\n{t.result}")
+        report = next(
+            (
+                candidate
+                for task in reversed(state.plan)
+                if (candidate := build_report_from_task(task)) is not None
+            ),
+            None,
+        )
+        if report is not None:
+            parts.append(_build_validation_section(report))
         return {
             "final_output": "\n".join(parts),
             "phase": WorkflowPhase.SYNTHESIZING,
@@ -809,6 +1129,19 @@ def build_nodes(
         )
         if deletions:
             summary += f", {len(deletions)} remoção(ões)"
+        report = next(
+            (
+                candidate
+                for task in reversed(completed)
+                if (candidate := build_report_from_task(task)) is not None
+            ),
+            None,
+        )
+        if report is not None:
+            phases = ",".join(
+                f"{phase.phase.value}:{phase.outcome.value}" for phase in report.phases
+            )
+            summary += f"; sandbox={report.outcome.value}; phases={phases or '-'}"
         result = await delivery.publish(
             config=state.delivery,
             workflow_id=state.workflow_id,
@@ -895,6 +1228,8 @@ def build_nodes(
     return {
         "provision_workspace": provision_workspace,
         "provision_router": provision_router,
+        "select_build_strategy": select_build_strategy,
+        "strategy_router": strategy_router,
         "load_context": load_context,
         "create_plan": create_plan,
         "route_to_execution": route_to_execution,
@@ -926,3 +1261,16 @@ def _with_delivery_section(final_output: str | None, result: DeliveryResult) -> 
     for line in result.failures[:10]:
         lines.append(f"- {line}")
     return "\n".join(lines).strip()
+
+
+def _build_validation_section(report: BuildRunResult) -> str:
+    lines = ["## Validação em sandbox", f"Resultado: {report.outcome.value}"]
+    for phase in report.phases:
+        detail = phase.error_code or phase.outcome.value
+        lines.append(
+            f"- {phase.phase.value}: {phase.outcome.value} "
+            f"({phase.duration_seconds:.3f}s; {detail})"
+        )
+    if report.error_code and not report.phases:
+        lines.append(f"- erro: {report.error_code}")
+    return "\n".join(lines)

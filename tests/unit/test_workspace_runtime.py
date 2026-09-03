@@ -85,9 +85,14 @@ def test_docker_sandbox_is_hardened_and_networkless(tmp_path: Path):
 
     assert argv[:3] == ["docker", "run", "--rm"]
     assert argv[argv.index("--network") + 1] == "none"
+    assert "--read-only" in argv
+    assert "/tmp:rw,noexec,nosuid,nodev,size=64m" in argv
     assert "no-new-privileges" in argv
     assert "ALL" in argv
     assert f"{tmp_path}:/workspace:rw" in argv
+    assert argv[-2:] == ["pytest", "-q"]
+    assert "sh" not in argv
+    assert "-lc" not in argv
 
 
 @pytest.mark.asyncio

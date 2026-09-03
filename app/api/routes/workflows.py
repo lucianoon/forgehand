@@ -45,6 +45,7 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 _PHASE_STATUS: dict[WorkflowPhase, str] = {
     WorkflowPhase.QUEUED: "running",
     WorkflowPhase.LOADING_CONTEXT: "running",
+    WorkflowPhase.UNSUPPORTED_BUILD_STRATEGY: "awaiting_decision",
     WorkflowPhase.PLANNING: "running",
     WorkflowPhase.EXECUTING: "running",
     WorkflowPhase.EVALUATING: "running",
@@ -130,6 +131,9 @@ class WorkflowStatusResponse(BaseModel):
     error: str | None = None
     delivery: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None
+    build_strategy: dict[str, Any] | None = None
+    factory_stage: str | None = None
+    phase_evidence: dict[str, Any] | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -157,7 +161,12 @@ def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
     # sinal autoritativo de que há decisão aguardando.
     if data["pending_decision"] is not None:
         status_str = "awaiting_decision"
-        stage = WorkflowPhase.AWAITING_HUMAN.value
+        strategy = data.get("build_strategy") or {}
+        stage = (
+            WorkflowPhase.UNSUPPORTED_BUILD_STRATEGY.value
+            if strategy.get("selection_reason") == "unsupported"
+            else WorkflowPhase.AWAITING_HUMAN.value
+        )
     else:
         status_str = _PHASE_STATUS[phase]
         stage = phase.value
@@ -173,6 +182,9 @@ def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
         error=data.get("error"),
         delivery=data.get("delivery"),
         provenance=data.get("work_order"),
+        build_strategy=data.get("build_strategy"),
+        factory_stage=data.get("factory_stage"),
+        phase_evidence=data.get("phase_evidence"),
     )
 
 
@@ -217,9 +229,7 @@ async def create_workflow(
             repository=work_order.repository.full_name,
             base_branch=work_order.repository.base_ref,
             wait_for_checks=work_order.delivery_policy.wait_for_checks,
-            checks_timeout_seconds=(
-                work_order.delivery_policy.checks_timeout_seconds
-            ),
+            checks_timeout_seconds=(work_order.delivery_policy.checks_timeout_seconds),
         )
         await record_audit_event(
             request,

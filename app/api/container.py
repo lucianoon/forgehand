@@ -8,6 +8,7 @@ transporte mockado sem tocar em variáveis de ambiente.
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -23,9 +24,11 @@ from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
+from app.factory.build_strategy import BuildProfileRegistry
+from app.factory.sandbox import DockerBuildRunner, DockerCLI
 from app.factory.workspace import LocalGitWorkspaceManager
 from app.graph.workflow import build_serde, build_workflow
-from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog
+from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audit_event
 from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.scm import GitHubDeliveryService
@@ -37,8 +40,9 @@ from app.infrastructure.workspace_runtime import (
     LocalWorkspaceRuntime,
 )
 from app.infrastructure.webhooks import WebhookDispatcher
+from app.models.factory import BuildProfileSelection, WorkspaceLease
+from app.models.build_execution import BuildRunResult
 from app.models.task import Capability, TaskBudget
-from app.models.factory import WorkspaceLease
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import LLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -93,6 +97,13 @@ class LeaseBoundRuntimeFactory:
                 "executor_sandbox_network_enabled": (
                     self._settings.factory_sandbox_network_enabled
                 ),
+                # O pipeline legado aceita comandos string globais. No modo
+                # fábrica, só as fases tipadas do perfil poderão executar;
+                # até o phase runner ser conectado, não há fallback shell.
+                "pytest_validation_command": None,
+                "ruff_validation_command": None,
+                "mypy_validation_command": None,
+                "agent_tools_allow_checks": False,
             }
         )
 
@@ -171,6 +182,7 @@ def build_container(
     audit_log: Any | None = None,
     memory: Any | None = None,
     tracer: Any | None = None,
+    factory_build_runner: Any | None = None,
 ) -> Container:
     """Checkpointer, memória e tracer vêm de fora (checkpointer_context,
     project_memory_context e tracing_context no lifespan) porque têm
@@ -189,6 +201,74 @@ def build_container(
     )
     execution_strategies = build_execution_strategies(settings)
     workspace_runtime = build_workspace_runtime(settings, validation_pipeline)
+    selected_audit_log = audit_log or (
+        JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)
+        if settings.audit_log_backend == "jsonl"
+        else InMemoryAuditLog(max_events=settings.audit_log_max_events)
+    )
+
+    async def record_strategy_selection(
+        *,
+        workflow_id: str,
+        project_id: str,
+        client_id: str,
+        repository: str,
+        selection: BuildProfileSelection,
+    ) -> None:
+        await selected_audit_log.record(
+            build_audit_event(
+                action="build_strategy_selection",
+                outcome=selection.selection_reason or "invalid",
+                client_id=client_id,
+                project_id=project_id,
+                workflow_id=workflow_id,
+                detail=(
+                    f"repository={repository};"
+                    f"profile={selection.selected_profile or '-'};"
+                    f"profile_digest={selection.profile_digest or '-'};"
+                    f"reason={selection.unsupported_reason or '-'}"
+                ),
+            )
+        )
+
+    async def record_build_evidence(
+        *,
+        project_id: str,
+        client_id: str,
+        lease: WorkspaceLease,
+        selection: BuildProfileSelection,
+        report: BuildRunResult,
+    ) -> None:
+        phases = [
+            {
+                "name": phase.phase.value,
+                "outcome": phase.outcome.value,
+                "duration_seconds": round(phase.duration_seconds, 6),
+                "exit_code": phase.exit_code,
+                "error_code": phase.error_code,
+                "output_truncated": phase.output_truncated,
+            }
+            for phase in report.phases
+        ]
+        await selected_audit_log.record(
+            build_audit_event(
+                action="factory_build_validation",
+                outcome=report.outcome.value,
+                client_id=client_id,
+                project_id=project_id,
+                workflow_id=lease.workflow_id,
+                detail=json.dumps(
+                    {
+                        "profile": selection.selected_profile,
+                        "profile_digest": selection.profile_digest,
+                        "error_code": report.error_code,
+                        "phases": phases,
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
     workspace_manager = (
         LocalGitWorkspaceManager(
             settings.factory_workspace_root,
@@ -202,6 +282,32 @@ def build_container(
         if settings.factory_mode_enabled
         else None
     )
+    build_strategy_selector = (
+        BuildProfileRegistry(
+            settings.factory_build_profiles,
+            settings.factory_repository_profiles,
+        )
+        if settings.factory_mode_enabled
+        else None
+    )
+    if settings.factory_mode_enabled and factory_build_runner is None:
+        assert build_strategy_selector is not None
+        redacted_values = tuple(
+            value
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "GITHUB_TOKEN",
+                "WEBHOOK_SIGNING_SECRET",
+            )
+            if (value := os.getenv(name))
+        )
+        factory_build_runner = DockerBuildRunner(
+            build_strategy_selector,
+            DockerCLI(),
+            allow_dependency_network=settings.factory_sandbox_network_enabled,
+            redacted_values=redacted_values,
+        )
     # Executor e judge exploram o workspace onde os arquivos são aplicados;
     # o planner explora o repositório do grounding. run_check só no executor.
     executor_tools = build_agent_tools(
@@ -250,11 +356,14 @@ def build_container(
         ),
         workspace_manager=workspace_manager,
         runtime_factory=runtime_factory,
-    )
-    audit_log = audit_log or (
-        JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)
-        if settings.audit_log_backend == "jsonl"
-        else InMemoryAuditLog(max_events=settings.audit_log_max_events)
+        build_strategy_selector=build_strategy_selector,
+        strategy_audit_recorder=(
+            record_strategy_selection if settings.factory_mode_enabled else None
+        ),
+        build_runner=factory_build_runner,
+        build_audit_recorder=(
+            record_build_evidence if settings.factory_mode_enabled else None
+        ),
     )
     event_publisher = WebhookDispatcher(
         settings.webhook_urls,
@@ -270,7 +379,7 @@ def build_container(
             tracer=tracer,
         ),
         job_queue,
-        audit_log,
+        selected_audit_log,
     )
 
 

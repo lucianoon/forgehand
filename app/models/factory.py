@@ -12,7 +12,14 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 
 class WorkOrderSourceKind(str, Enum):
@@ -33,15 +40,11 @@ class GitHubIssueSnapshot(BaseModel):
     repository: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
     author: str = Field(min_length=1)
     updated_at: datetime
-    retrieved_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class GitHubIssueWorkOrderSource(BaseModel):
-    kind: Literal[WorkOrderSourceKind.GITHUB_ISSUE] = (
-        WorkOrderSourceKind.GITHUB_ISSUE
-    )
+    kind: Literal[WorkOrderSourceKind.GITHUB_ISSUE] = WorkOrderSourceKind.GITHUB_ISSUE
     snapshot: GitHubIssueSnapshot
 
 
@@ -75,10 +78,12 @@ class WorkOrderLimits(BaseModel):
 class BuildProfileSelection(BaseModel):
     requested_profile: str | None = Field(default=None, min_length=1)
     selected_profile: str | None = Field(default=None, min_length=1)
-    selection_reason: Literal[
-        "explicit", "repository_mapping", "detected", "unsupported"
-    ] | None = None
+    selection_reason: (
+        Literal["explicit", "repository_mapping", "detected", "unsupported"] | None
+    ) = None
     phases: list[str] = Field(default_factory=list)
+    profile_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    unsupported_reason: str | None = None
 
     @model_validator(mode="after")
     def _selection_is_coherent(self) -> "BuildProfileSelection":
@@ -111,9 +116,7 @@ class WorkOrder(BaseModel):
     requested_outcome: str = Field(min_length=10)
     acceptance_criteria: list[str] = Field(min_length=1)
     limits: WorkOrderLimits = Field(default_factory=WorkOrderLimits)
-    build_profile: BuildProfileSelection = Field(
-        default_factory=BuildProfileSelection
-    )
+    build_profile: BuildProfileSelection = Field(default_factory=BuildProfileSelection)
     delivery_policy: DeliveryPolicy = Field(default_factory=DeliveryPolicy)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -123,7 +126,9 @@ class WorkOrder(BaseModel):
         if isinstance(self.source, GitHubIssueWorkOrderSource):
             issue_repository = self.source.snapshot.repository.lower()
             if issue_repository != self.repository.full_name.lower():
-                raise ValueError("issue e work order devem apontar ao mesmo repositório.")
+                raise ValueError(
+                    "issue e work order devem apontar ao mesmo repositório."
+                )
         return self
 
 
@@ -139,7 +144,7 @@ class WorkspaceLifecycle(str, Enum):
 
 
 class WorkspaceRetention(BaseModel):
-    retain_until: datetime | None = None
+    retain_until: AwareDatetime | None = None
     reason: str | None = None
 
 

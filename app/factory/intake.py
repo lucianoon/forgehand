@@ -45,9 +45,7 @@ class GitHubIssueWorkOrderInput(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
-def parse_github_issue_url(
-    url: str, approved_hosts: list[str]
-) -> tuple[str, int, str]:
+def parse_github_issue_url(url: str, approved_hosts: list[str]) -> tuple[str, int, str]:
     """Valida sem rede e devolve repository, número e hostname canônicos."""
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")

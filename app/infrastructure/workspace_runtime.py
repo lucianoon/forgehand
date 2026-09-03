@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import os
 import re
-import shlex
 from pathlib import Path
 from typing import Any, Protocol
 
 from app.agents.executor import ExecutionStrategy
 from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
+from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
 
 
@@ -17,41 +16,6 @@ class CommandRunner(Protocol):
     async def run(
         self, command: str, workspace_root: Path, output_limit: int
     ) -> dict[str, Any]: ...
-
-
-class CommandPolicy:
-    def __init__(self, allowed_executables: set[str] | None = None) -> None:
-        self._allowed = allowed_executables or {
-            "git",
-            "mypy",
-            "pytest",
-            "python",
-            "python3",
-            "ruff",
-            "uv",
-        }
-
-    @staticmethod
-    def _normalize(executable: str) -> str:
-        """Nome comparável ao allowlist.
-
-        No Windows o mesmo binário aparece como ``python.exe`` e os nomes são
-        case-insensitive; sem normalizar, todo comando é rejeitado lá. No POSIX
-        o nome é comparado como está — ``python.exe`` seria outro arquivo.
-        """
-        if os.name != "nt":
-            return executable
-        name = executable.lower()
-        return name[:-4] if name.endswith(".exe") else name
-
-    def parse(self, command: str) -> list[str]:
-        argv = shlex.split(command)
-        if not argv:
-            raise ValueError("Comando vazio.")
-        executable = Path(argv[0]).name
-        if self._normalize(executable) not in self._allowed:
-            raise ValueError(f"Executável não permitido: {executable}")
-        return argv
 
 
 class LocalCommandRunner:
@@ -91,13 +55,17 @@ class DockerSandboxCommandRunner:
         self._policy = policy or CommandPolicy()
 
     def build_argv(self, command: str, workspace_root: Path) -> list[str]:
-        self._policy.parse(command)
+        command_argv = self._policy.parse(command)
         return [
             "docker",
             "run",
             "--rm",
+            "--init",
             "--network",
             "bridge" if self._network_enabled else "none",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "--memory",
             self._memory,
             "--cpus",
@@ -113,9 +81,7 @@ class DockerSandboxCommandRunner:
             "-w",
             "/workspace",
             self._image,
-            "sh",
-            "-lc",
-            command,
+            *command_argv,
         ]
 
     async def run(

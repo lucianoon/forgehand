@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from app.models.build_execution import BuildRunResult
 from app.models.factory import BuildProfileSelection, FactoryStage
 
 
@@ -215,6 +216,7 @@ class TaskAttempt(BaseModel):
     operational_summary: dict[str, Any] | None = None
     factory_stage: FactoryStage | None = None
     build_strategy: BuildProfileSelection | None = None
+    build_validation: BuildRunResult | None = None
 
 
 class AgentTask(BaseModel):
