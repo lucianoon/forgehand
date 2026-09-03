@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, ".")
 import anthropic
@@ -171,6 +172,84 @@ def make_app(run_workers=True, factory_mode_enabled=False):
 
 
 @pytest.mark.asyncio
+async def test_workflow_history_survives_polling_and_preserves_owner_scope():
+    from app.infrastructure.audit import build_audit_event
+
+    app = make_app(run_workers=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        created = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "request": "Crie testes para o projeto de exemplo",
+            },
+        )
+        assert created.status_code == 202
+        wid = created.json()["workflow_id"]
+        await app.state.container.job_queue.enqueue(
+            workflow_id="other-owner",
+            project_id="demo",
+            owner_client_id="someone-else",
+            kind="start",
+            payload={},
+        )
+        for _ in range(600):
+            await app.state.container.audit_log.record(
+                build_audit_event(
+                    action="workflow_get",
+                    outcome="success",
+                    client_id="client-demo",
+                    project_id="demo",
+                    workflow_id=wid,
+                )
+            )
+        assert (await client.get(f"/workflows/{wid}")).status_code == 200
+        response = await client.get("/workflows", params={"project_id": "demo"})
+        assert response.status_code == 200
+        assert [w["workflow_id"] for w in response.json()] == [wid]
+
+
+@pytest.mark.asyncio
+async def test_manual_pr_endpoint_cannot_bypass_factory_delivery(monkeypatch):
+    app = make_app(run_workers=False)
+    service = app.state.container.workflow_service
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers={"X-API-Key": "key-demo"}
+    ) as client:
+        created = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "request": "corrigir o comportamento do widget",
+            },
+        )
+        workflow_id = created.json()["workflow_id"]
+        monkeypatch.setattr(
+            service,
+            "get_details",
+            AsyncMock(
+                return_value={
+                    "work_order": {"id": "factory-order"},
+                }
+            ),
+        )
+        response = await client.post(
+            f"/workflows/{workflow_id}/pull-request",
+            json={
+                "repository": "acme/widget",
+                "head_branch": "main",
+            },
+        )
+    assert response.status_code == 409
+    assert "fluxo validado" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_direct_factory_order_is_normalized_before_queueing():
     app = make_app(run_workers=False, factory_mode_enabled=True)
     transport = httpx.ASGITransport(app=app)
@@ -218,6 +297,65 @@ async def test_direct_factory_order_is_normalized_before_queueing():
 
 
 @pytest.mark.asyncio
+async def test_issue_factory_order_reads_snapshot_before_queueing(monkeypatch):
+    from app.models.factory import GitHubIssueSnapshot
+    from app.api.routes import workflows
+    from datetime import datetime, timezone
+
+    class IssueClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def fetch_issue_snapshot(self, **kwargs):
+            assert kwargs["repository"] == "acme/widgets"
+            return GitHubIssueSnapshot(
+                url=kwargs["source_url"],
+                number=7,
+                title="Fix total calculation",
+                repository="acme/widgets",
+                author="operator",
+                updated_at=datetime.now(timezone.utc),
+            )
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(workflows, "GitHubSCMClient", IssueClient)
+    monkeypatch.setattr(workflows, "build_token_provider_from_env", lambda: object())
+    app = make_app(run_workers=False, factory_mode_enabled=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        created = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "work_order": {
+                    "issue_url": "https://github.com/acme/widgets/issues/7",
+                    "acceptance_criteria": ["Pass regression"],
+                },
+            },
+        )
+        assert created.status_code == 202, created.text
+        state = await client.get(f"/workflows/{created.json()['workflow_id']}")
+        assert state.json()["provenance"]["source"]["snapshot"]["number"] == 7
+        rejected = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "work_order": {
+                    "issue_url": "http://127.0.0.1/secrets",
+                    "acceptance_criteria": ["Pass"],
+                },
+            },
+        )
+        assert rejected.status_code == 422
+    await app.state.container.workflow_service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_factory_order_is_rejected_when_disabled_or_ambiguous():
     app = make_app(run_workers=False)
     transport = httpx.ASGITransport(app=app)
@@ -248,8 +386,7 @@ async def test_factory_order_is_rejected_when_disabled_or_ambiguous():
     assert (await app.state.container.job_queue.get_stats()).queued == 0
     events = await app.state.container.audit_log.list_recent(limit=20)
     assert any(
-        event.action == "work_order_intake"
-        and event.outcome == "factory_disabled"
+        event.action == "work_order_intake" and event.outcome == "factory_disabled"
         for event in events
     )
     await app.state.container.workflow_service.shutdown()

@@ -103,7 +103,10 @@ def test_criterion_parameters_are_required_per_kind():
         path="README.md",
         pattern="## Setup",
     )
-    assert ok.label == "README menciona setup [content_contains: README.md]"
+    assert (
+        ok.label
+        == "README menciona setup [content_contains: README.md; pattern='## Setup']"
+    )
 
 
 def test_format_criteria_marks_objective_kinds_only():
@@ -533,3 +536,15 @@ def test_planner_prompt_declares_non_writing_capabilities():
 
     disabled = LLMPlanner(Router(), apply_files_enabled=False)._system_prompt()
     assert "NENHUMA tarefa grava arquivos" in disabled
+
+
+def test_executor_criteria_include_the_exact_content_pattern():
+    from app.models.task import AcceptanceCriterion, CriterionKind, format_criteria
+
+    criterion = AcceptanceCriterion(
+        text="Output uses EUR",
+        kind=CriterionKind.CONTENT_CONTAINS,
+        path="README.md",
+        pattern=r"EUR\s+12\.00",
+    )
+    assert repr(criterion.pattern) in format_criteria([criterion])

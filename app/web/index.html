@@ -56,6 +56,24 @@
                 <input id="project-id" required value="forgehand" minlength="1" />
               </label>
               <label>
+                Tipo de trabalho
+                <select id="work-kind"><option value="legacy">Workflow analítico</option><option value="direct">Software · solicitação direta</option><option value="issue">Software · issue GitHub</option></select>
+              </label>
+              <fieldset id="factory-fields" class="hidden" disabled>
+                <legend>Ordem de trabalho</legend>
+                <label id="repository-label">Repositório<input id="factory-repository" placeholder="owner/repository" /></label>
+                <label id="issue-label" class="hidden">URL da issue<input id="issue-url" type="url" placeholder="https://github.com/owner/repository/issues/1" /></label>
+                <label>Branch base<input id="base-ref" value="main" required /></label>
+                <label>Perfil aprovado<input id="build-profile" placeholder="Automático, se houver perfil compatível" /></label>
+                <div class="budget-row">
+                  <label>Máx. iterações<input id="max-iterations" type="number" min="1" value="3" required /></label>
+                  <label>Máx. segundos<input id="max-seconds" type="number" min="1" value="1800" required /></label>
+                </div>
+                <label>Espera pelo CI (segundos)<input id="checks-timeout" type="number" min="30" max="7200" value="900" required /></label>
+                <label class="check-label"><input id="wait-checks" type="checkbox" checked /> Acompanhar CI antes de pedir revisão</label>
+                <p class="field-help">Entrega por PR. O merge é sempre uma decisão humana. Desmarcar o CI exige nova verificação antes de liberar a revisão.</p>
+              </fieldset>
+              <label id="request-label">
                 Solicitação
                 <textarea id="request" required minlength="10" rows="7" placeholder="Analise este repositório e entregue…"></textarea>
               </label>
@@ -102,6 +120,14 @@
               <article><span>Custo</span><strong id="cost">US$ 0,00</strong></article>
               <article><span>Iteração</span><strong id="iteration">0</strong></article>
             </div>
+
+            <section id="factory-status" class="factory-status hidden" aria-labelledby="factory-title">
+              <div class="section-title"><h3 id="factory-title">Ficha de produção</h3><span id="factory-phase"></span></div>
+              <dl id="factory-facts" class="factory-facts"></dl>
+              <p id="factory-action" role="status"></p>
+              <div id="phase-evidence" class="operation-list"></div>
+              <p id="factory-pr"></p>
+            </section>
 
             <div class="section-title"><h3>Tarefas</h3><span id="task-count">0 tarefas</span></div>
             <div id="tasks" class="tasks empty-state">

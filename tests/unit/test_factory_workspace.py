@@ -87,6 +87,33 @@ def _order() -> WorkOrder:
 
 
 @pytest.mark.asyncio
+async def test_manager_materializes_blobs_from_legacy_partial_cache(tmp_path):
+    remote, runner = await _seed_remote(tmp_path)
+    await runner.run(
+        ["--git-dir", str(remote), "config", "uploadpack.allowFilter", "true"]
+    )
+    manager = LocalGitWorkspaceManager(
+        tmp_path / "factory",
+        approved_hosts=["github.com"],
+        repository_url_resolver=lambda _: str(remote),
+        allow_local_repositories=True,
+    )
+    cache = manager._cache_path(_order().repository)
+    await runner.run(
+        ["clone", "--bare", "--filter=blob:none", remote.as_uri(), str(cache)]
+    )
+    # Real partial-clone transport, unlike a local path clone which ignores filters.
+    missing = await runner.run(
+        ["--git-dir", str(cache), "rev-list", "--objects", "--all", "--missing=print"]
+    )
+    assert "?" in missing.stdout
+    lease = await manager.provision("partial-cache", _order())
+    assert Path(lease.local_path, "README.md").read_text() == "base\n"
+    result = await runner.run(["fsck", "--no-reflogs"], cwd=lease.local_path)
+    assert result.exit_code == 0
+
+
+@pytest.mark.asyncio
 async def test_manager_pins_sha_and_creates_exclusive_branch(tmp_path: Path) -> None:
     remote, _ = await _seed_remote(tmp_path)
     manager = LocalGitWorkspaceManager(
@@ -101,7 +128,60 @@ async def test_manager_pins_sha_and_creates_exclusive_branch(tmp_path: Path) -> 
     assert Path(lease.local_path, "README.md").read_text() == "base\n"
     assert lease.branch == "forgehand/workflow-1"
     assert len(lease.base_sha) == 40
-    assert await manager.reconstruct(lease) == lease
+    resumed = await manager.reconstruct(lease)
+    assert resumed.id == lease.id
+    assert resumed.base_sha == lease.base_sha
+    assert resumed.state == WorkspaceLifecycle.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_restart_rebuilds_journaled_partial_checkout_at_same_pin(tmp_path):
+    remote, _ = await _seed_remote(tmp_path)
+    root = tmp_path / "factory"
+    manager = LocalGitWorkspaceManager(
+        root,
+        approved_hosts=["github.com"],
+        repository_url_resolver=lambda _: str(remote),
+        allow_local_repositories=True,
+    )
+    lease = await manager.provision("restart", _order())
+    partial = manager.transition(lease, WorkspaceLifecycle.PROVISIONING)
+    restarted = LocalGitWorkspaceManager(
+        root,
+        approved_hosts=["github.com"],
+        repository_url_resolver=lambda _: str(remote),
+        allow_local_repositories=True,
+    )
+    recovered = await restarted.provision("restart", _order())
+    assert recovered.id == partial.id
+    assert recovered.base_sha == partial.base_sha
+    assert Path(recovered.local_path, "README.md").read_text() == "base\n"
+
+
+@pytest.mark.asyncio
+async def test_git_cancellation_terminates_child_before_return(tmp_path):
+    import os
+    import sys
+
+    marker = tmp_path / "pid"
+    runner = SafeGitRunner(tmp_path, git_executable=sys.executable)
+    job = asyncio.create_task(
+        runner.run(
+            [
+                "-c",
+                "import os,time,pathlib;pathlib.Path('pid').write_text(str(os.getpid()));time.sleep(60)",
+            ]
+        )
+    )
+    async with asyncio.timeout(5):
+        while not marker.exists():
+            await asyncio.sleep(0.01)
+    pid = int(marker.read_text())
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 @pytest.mark.asyncio

@@ -183,6 +183,7 @@ def build_container(
     memory: Any | None = None,
     tracer: Any | None = None,
     factory_build_runner: Any | None = None,
+    openai_client: Any | None = None,
 ) -> Container:
     """Checkpointer, memória e tracer vêm de fora (checkpointer_context,
     project_memory_context e tracing_context no lifespan) porque têm
@@ -192,6 +193,7 @@ def build_container(
         settings,
         anthropic_client=anthropic_client,
         openrouter_client=openrouter_client,
+        openai_client=openai_client,
         tracer=tracer,
     )
     objective_validators = build_objective_validators(settings)
@@ -297,6 +299,7 @@ def build_container(
             for name in (
                 "ANTHROPIC_API_KEY",
                 "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY",
                 "GITHUB_TOKEN",
                 "WEBHOOK_SIGNING_SECRET",
             )
@@ -304,9 +307,10 @@ def build_container(
         )
         factory_build_runner = DockerBuildRunner(
             build_strategy_selector,
-            DockerCLI(),
+            DockerCLI(socket_path=settings.factory_docker_socket),
             allow_dependency_network=settings.factory_sandbox_network_enabled,
             redacted_values=redacted_values,
+            journal=workspace_manager.journal if workspace_manager else None,
         )
     # Executor e judge exploram o workspace onde os arquivos são aplicados;
     # o planner explora o repositório do grounding. run_check só no executor.
@@ -377,6 +381,9 @@ def build_container(
             run_workers,
             event_publisher,
             tracer=tracer,
+            workspace_manager=workspace_manager,
+            build_runner=factory_build_runner,
+            audit_log=selected_audit_log,
         ),
         job_queue,
         selected_audit_log,
@@ -506,10 +513,26 @@ def build_provider_router(
     anthropic_client: anthropic.AsyncAnthropic | None = None,
     openrouter_client: Any | None = None,
     tracer: Any | None = None,
+    openai_client: Any | None = None,
 ) -> ProviderRouter:
     provider: LLMProvider
     providers: dict[str, LLMProvider]
-    if settings.llm_provider_backend == "openrouter":
+    if settings.llm_provider_backend == "openai":
+        # Never borrow credentials or endpoint settings from another provider.
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key and openai_client is None:
+            raise ValueError("OPENAI_API_KEY is required for the OpenAI backend")
+        provider = OpenAICompatibleProvider(
+            settings.pricing,
+            base_url="https://api.openai.com",
+            api_key=api_key,
+            provider_name="openai",
+            supports_json_schema=True,
+            supports_prompt_caching=False,  # OpenAI caches prefixes automatically.
+            client=openai_client,
+        )
+        providers = {"openai": provider}
+    elif settings.llm_provider_backend == "openrouter":
         openrouter_api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv(
             "ANTHROPIC_API_KEY"
         )

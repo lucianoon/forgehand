@@ -31,6 +31,7 @@ from langgraph.types import Send, interrupt
 from pydantic import BaseModel, Field
 
 from app.agents.validation import format_validation_feedback
+from app.factory.delivery import factory_delivery_config, factory_ready_for_review
 from app.factory.sandbox import BuildRunCancelled
 from app.graph.state import (
     DeliveryConfig,
@@ -935,6 +936,13 @@ def build_nodes(
         )
         if unsupported_strategy:
             reason = "unsupported_build_strategy"
+        elif (
+            state.work_order is not None
+            and state.all_approved
+            and state.delivery_result is not None
+            and not factory_ready_for_review(state)
+        ):
+            reason = f"factory_delivery_{state.delivery_result.ci_state}"
         elif state.budget_exhausted:
             reason = "budget_exhausted"
         elif state.iterations_exhausted and state.tasks_needing_replan:
@@ -951,7 +959,7 @@ def build_nodes(
             reason = "dependency_deadlock"
         options = (
             ["retry", "abort"]
-            if unsupported_strategy
+            if unsupported_strategy or state.work_order is not None
             else [
                 "accept_partial",
                 "retry",
@@ -996,6 +1004,11 @@ def build_nodes(
             return (
                 "select_build_strategy" if state.human_decision == "retry" else "abort"
             )
+        if state.work_order is not None:
+            if state.human_decision != "retry":
+                return "abort"
+            if state.all_approved and state.delivery_result is not None:
+                return "publish_delivery"
         match state.human_decision:
             case "retry":
                 return "authorize_retry"
@@ -1088,6 +1101,8 @@ def build_nodes(
     # ------------------------------------------------------------------
     def delivery_router(state: WorkflowState) -> str:
         """Após synthesize: publica se o workflow tem destino configurado."""
+        if state.work_order is not None:
+            return "publish_delivery"
         if state.delivery is None or delivery is None:
             return "persist_memory"
         if state.phase == WorkflowPhase.FAILED:
@@ -1095,9 +1110,23 @@ def build_nodes(
         return "publish_delivery"
 
     async def publish_delivery(state: WorkflowState) -> dict[str, Any]:
-        assert state.delivery is not None and delivery is not None
         previous = state.delivery_result
         attempts = (previous.attempts if previous is not None else 0) + 1
+        config = state.delivery
+        if state.work_order is not None:
+            try:
+                config = factory_delivery_config(state)
+                if delivery is None:
+                    raise ValueError("factory_delivery_publisher_unavailable")
+            except ValueError as exc:
+                return {
+                    "delivery_result": DeliveryResult(
+                        ci_state="error", error=str(exc), attempts=attempts
+                    ),
+                    "factory_stage": FactoryStage.DELIVERY,
+                    "phase": WorkflowPhase.DELIVERING,
+                }
+        assert config is not None and delivery is not None
         # Só tarefas APROVADAS publicam — parcial aceito por humano inclusive.
         completed = state.completed_tasks
         files, deletions = collect_publishable_changes(
@@ -1118,17 +1147,22 @@ def build_nodes(
                     note="nenhum arquivo publicável nas tarefas aprovadas",
                     attempts=attempts,
                 )
-            return {
+            skipped_update: dict[str, Any] = {
                 "delivery_result": result,
                 "phase": WorkflowPhase.DELIVERING,
                 "final_output": _with_delivery_section(state.final_output, result),
             }
+            if state.work_order is not None:
+                skipped_update["factory_stage"] = FactoryStage.DELIVERY
+            return skipped_update
 
         summary = (
             f"{state.project_id} — iteração {state.iteration}, {len(files)} arquivo(s)"
         )
         if deletions:
             summary += f", {len(deletions)} remoção(ões)"
+        if config.pinned_base_sha is not None:
+            summary += f"; base={config.pinned_base_sha}; revisão humana obrigatória"
         report = next(
             (
                 candidate
@@ -1143,7 +1177,7 @@ def build_nodes(
             )
             summary += f"; sandbox={report.outcome.value}; phases={phases or '-'}"
         result = await delivery.publish(
-            config=state.delivery,
+            config=config,
             workflow_id=state.workflow_id,
             project_id=state.project_id,
             files=files,
@@ -1157,6 +1191,8 @@ def build_nodes(
             "phase": WorkflowPhase.DELIVERING,
             "final_output": _with_delivery_section(state.final_output, result),
         }
+        if state.work_order is not None:
+            updates["factory_stage"] = FactoryStage.DELIVERY
         if not result.ci_failed or state.human_decision == "accept_partial":
             return updates
 
@@ -1169,8 +1205,26 @@ def build_nodes(
         reopened: list[AgentTask] = []
         evaluations: list[EvaluationResult] = []
         feedback = result.failures[:15] or ["CI reprovou o commit publicado."]
+        responsible: set[UUID] | None = None
+        if state.work_order is not None:
+            # A última tarefa que escreveu o arquivo é responsável pelo seu
+            # conteúdo publicado. Sem atribuição objetiva, pede decisão humana.
+            owners: dict[str, UUID] = {}
+            for owner_task in completed:
+                owned_files, owned_deletions = collect_publishable_changes(
+                    [{"result": owner_task.result}]
+                )
+                for path in [item["path"] for item in owned_files] + owned_deletions:
+                    owners[path] = owner_task.id
+            responsible = {
+                owners[path] for path in result.failure_paths if path in owners
+            }
+            if any(path not in owners for path in result.failure_paths):
+                responsible = set()
         for task in completed:
             if not task_publishes_changes(task.result):
+                continue
+            if responsible is not None and task.id not in responsible:
                 continue
             evaluations.append(
                 EvaluationResult(
@@ -1206,6 +1260,11 @@ def build_nodes(
         replan enquanto houver iteração, senão gate humano. Parcial aceito
         por humano nunca volta ao ciclo."""
         result = state.delivery_result
+        if state.work_order is not None:
+            if factory_ready_for_review(state):
+                return "persist_memory"
+            if result is None or not result.ci_failed:
+                return "human_gate"
         if result is None or not result.ci_failed:
             return "persist_memory"
         if state.human_decision == "accept_partial":
@@ -1214,9 +1273,39 @@ def build_nodes(
             return "human_gate"
         if state.tasks_needing_replan:
             return "human_gate" if state.iterations_exhausted else "replan"
-        return "persist_memory"
+        return "human_gate" if state.work_order is not None else "persist_memory"
 
     async def persist_memory(state: WorkflowState) -> dict[str, Any]:
+        if state.work_order is not None:
+            ready = state.phase != WorkflowPhase.FAILED and factory_ready_for_review(
+                state
+            )
+            terminal_state = state.model_copy(
+                update={
+                    "phase": (
+                        WorkflowPhase.READY_FOR_HUMAN_REVIEW
+                        if ready
+                        else WorkflowPhase.FAILED
+                    ),
+                    "factory_stage": (
+                        FactoryStage.READY_FOR_HUMAN_REVIEW
+                        if ready
+                        else state.factory_stage
+                    ),
+                    "final_output": (
+                        (state.final_output or "")
+                        + "\n\nPronto para revisão humana. O Forgehand não faz merge."
+                        if ready
+                        else state.final_output
+                    ),
+                }
+            )
+            await memory.persist(terminal_state)
+            return {
+                "phase": terminal_state.phase,
+                "factory_stage": terminal_state.factory_stage,
+                "final_output": terminal_state.final_output,
+            }
         await memory.persist(state)
         terminal = (
             WorkflowPhase.FAILED

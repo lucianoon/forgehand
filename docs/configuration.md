@@ -67,7 +67,17 @@ python -m app.worker
 
 ## Provedor de LLM
 
-OpenRouter é o caminho recomendado:
+Para usar OpenAI diretamente com a chave salva em `.env.local`:
+
+```bash
+LLM_PROVIDER_BACKEND=openai uv run uvicorn app.main:app --env-file .env.local --host 127.0.0.1
+```
+
+O piloto usa `gpt-4.1-mini-2025-04-14`, com preços de entrada, cache e saída
+separados. Veja [OpenAI direto](openai.md) para workers, custos e limitações.
+Não há fallback de credenciais entre OpenAI e outros provedores.
+
+OpenRouter continua disponível:
 
 ```bash
 export LLM_PROVIDER_BACKEND=openrouter
@@ -332,4 +342,3 @@ O dashboard permite autenticar com a API key, iniciar workflows, acompanhar
 etapas, tarefas, tokens e custo, responder ao gate humano e copiar a entrega
 final sem depender de `curl`. O histórico recente por projeto permite retomar
 uma execução anterior sem guardar IDs manualmente.
-

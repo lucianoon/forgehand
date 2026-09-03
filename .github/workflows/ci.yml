@@ -47,6 +47,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy app
       - run: node --check app/web/app.js
+      - run: node --test tests/web/*.test.cjs
       - run: docker compose config --quiet
         env:
           API_KEYS_JSON: '{"ci-key":{"client_id":"ci","projects":["*"],"role":"admin"}}'

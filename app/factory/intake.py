@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.factory import (
     BuildProfileSelection,
@@ -24,9 +24,11 @@ _ISSUE_PATH = re.compile(
 
 
 class DirectWorkOrderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     repository: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
     base_ref: str = Field(default="main", min_length=1, max_length=255)
     scm_host: str = Field(default="github.com", min_length=1)
+    expected_base_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     requested_outcome: str = Field(min_length=10)
     acceptance_criteria: list[str] = Field(min_length=1)
     limits: WorkOrderLimits = Field(default_factory=WorkOrderLimits)
@@ -36,6 +38,7 @@ class DirectWorkOrderInput(BaseModel):
 
 
 class GitHubIssueWorkOrderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     issue_url: str = Field(min_length=1)
     base_ref: str = Field(default="main", min_length=1, max_length=255)
     acceptance_criteria: list[str] = Field(min_length=1)
@@ -71,6 +74,7 @@ def normalize_direct_work_order(value: DirectWorkOrderInput) -> WorkOrder:
             full_name=value.repository,
             base_ref=value.base_ref,
             scm_host=value.scm_host,
+            expected_base_sha=value.expected_base_sha,
         ),
         requested_outcome=value.requested_outcome,
         acceptance_criteria=value.acceptance_criteria,

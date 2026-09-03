@@ -12,6 +12,19 @@
 }
 
 * { box-sizing: border-box; }
+select { width: 100%; margin-top: 7px; padding: 12px; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); }
+fieldset { min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--line); display: grid; gap: 14px; }
+legend { font-weight: 700; }
+.field-help { margin: 0; font-size: 12px; color: var(--muted); }
+.check-label { display: flex; gap: 8px; align-items: center; }
+.check-label input { width: auto; margin: 0; }
+.factory-status { border-left: 3px solid var(--green); padding-left: 16px; }
+.factory-facts { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 9px 12px; font-size: 12px; }
+.factory-facts dt { color: var(--muted); }
+.factory-facts dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+#factory-action { font-size: 13px; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 body { margin: 0; color: var(--ink); background: var(--paper); font: 15px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }

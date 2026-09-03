@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
+import shlex
+import os
+import signal as process_signal
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -10,6 +13,7 @@ from app.agents.executor import ExecutionStrategy
 from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
 from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
+from app.factory.lifecycle import inherited_lock_fds
 
 
 class CommandRunner(Protocol):
@@ -413,13 +417,24 @@ class LocalWorkspaceRuntime:
         *,
         output_limit: int,
     ) -> dict[str, Any]:
-        process = await asyncio.create_subprocess_shell(
-            command,
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(command),
             cwd=str(self._root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            pass_fds=inherited_lock_fds(),
+            start_new_session=True,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, process_signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await asyncio.shield(process.wait())
+            raise
         return {
             "command": command,
             "exit_code": process.returncode,

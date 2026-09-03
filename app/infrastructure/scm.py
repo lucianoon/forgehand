@@ -16,6 +16,8 @@ O que muda em relação à versão por Contents API:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import re
 import time
@@ -71,6 +73,7 @@ class CheckRunsResult:
     state: CheckState
     checks: list[CheckRun] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)  # prontas para o agente
+    failure_paths: list[str] = field(default_factory=list)
 
     def as_dicts(self) -> list[dict[str, Any]]:
         return [
@@ -341,6 +344,8 @@ class GitHubSCMClient:
         files: list[dict[str, str]],
         deletions: list[str] | None = None,
         commit_message: str | None = None,
+        pinned_base_sha: str | None = None,
+        expected_head_sha: str | None = None,
     ) -> PullRequestResult:
         if "/" not in repository:
             raise ValueError("Repositório deve usar o formato owner/name.")
@@ -353,20 +358,61 @@ class GitHubSCMClient:
             ):
                 raise ValueError("Artefato SCM exige path e content.")
 
-        base_ref = await self._request(
-            "GET", f"/repos/{repository}/git/ref/heads/{base_branch}"
-        )
-        base_sha = str(base_ref["object"]["sha"])
+        if pinned_base_sha is not None:
+            if not re.fullmatch(r"[0-9a-f]{40}", pinned_base_sha):
+                raise ValueError("factory_base_sha_invalid")
+            if head_branch == base_branch:
+                raise ValueError("factory_head_must_differ_from_base")
+            base_sha = pinned_base_sha
+        else:
+            base_ref = await self._request(
+                "GET", f"/repos/{repository}/git/ref/heads/{base_branch}"
+            )
+            base_sha = str(base_ref["object"]["sha"])
         head_sha = await self._branch_sha(repository, head_branch)
+        publication_message = commit_message or f"forgehand: {title}"
+        recovery_commit: dict[str, Any] | None = None
+        if pinned_base_sha is not None:
+            intent = json.dumps(
+                [
+                    repository,
+                    base_branch,
+                    head_branch,
+                    pinned_base_sha,
+                    expected_head_sha,
+                    sorted(files, key=lambda item: item["path"]),
+                    sorted(deletions),
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            marker = hashlib.sha256(intent.encode()).hexdigest()
+            publication_message += f"\n\nForgehand-Intent: {marker}"
+            if head_sha != expected_head_sha:
+                if head_sha is None:
+                    raise SCMError("factory_head_mismatch")
+                recovery_commit = await self._request(
+                    "GET", f"/repos/{repository}/git/commits/{head_sha}"
+                )
+                if recovery_commit.get("message") != publication_message or [
+                    parent.get("sha") for parent in recovery_commit.get("parents", [])
+                ] != [expected_head_sha or pinned_base_sha]:
+                    raise SCMError("factory_head_mismatch")
         branch_exists = head_sha is not None
         # Branch nova só é criada DEPOIS do commit, já apontando para ele: criar
         # a ref na base e depois movê-la disparava um CI vermelho inútil no
         # commit antigo (visto na primeira rodada real).
         parent_sha = head_sha or base_sha
-        parent_commit = await self._request(
+        parent_commit = recovery_commit or await self._request(
             "GET", f"/repos/{repository}/git/commits/{parent_sha}"
         )
         parent_tree = str(parent_commit["tree"]["sha"])
+        base_tree = parent_tree
+        if pinned_base_sha is not None and parent_sha != pinned_base_sha:
+            pinned_commit = await self._request(
+                "GET", f"/repos/{repository}/git/commits/{pinned_base_sha}"
+            )
+            base_tree = str(pinned_commit["tree"]["sha"])
 
         entries: list[dict[str, Any]] = [
             {
@@ -379,26 +425,30 @@ class GitHubSCMClient:
         ]
         for path in deletions:
             # remover path ausente é erro 422 na API; pular mantém idempotência
-            if await self._path_exists(repository, path, parent_sha):
+            if await self._path_exists(
+                repository, path, base_sha if pinned_base_sha else parent_sha
+            ):
                 entries.append(
                     {"path": path, "mode": "100644", "type": "blob", "sha": None}
                 )
 
         commit_sha = parent_sha
         changed = False
-        if entries:
+        if entries or pinned_base_sha is not None:
             tree = await self._request(
                 "POST",
                 f"/repos/{repository}/git/trees",
-                json={"base_tree": parent_tree, "tree": entries},
+                json={"base_tree": base_tree, "tree": entries},
             )
             new_tree = str(tree["sha"])
+            if recovery_commit is not None and new_tree != parent_tree:
+                raise SCMError("factory_recovery_tree_mismatch")
             if new_tree != parent_tree:
                 commit = await self._request(
                     "POST",
                     f"/repos/{repository}/git/commits",
                     json={
-                        "message": commit_message or f"forgehand: {title}",
+                        "message": publication_message,
                         "tree": new_tree,
                         "parents": [parent_sha],
                     },
@@ -419,7 +469,10 @@ class GitHubSCMClient:
             )
 
         existing_pull = await self._existing_pull_request(
-            repository, base_branch, head_branch
+            repository,
+            base_branch,
+            head_branch,
+            include_closed=pinned_base_sha is not None,
         )
         if existing_pull is not None:
             return PullRequestResult(
@@ -429,16 +482,29 @@ class GitHubSCMClient:
                 commit_sha=commit_sha,
                 changed=changed,
             )
-        pull = await self._request(
-            "POST",
-            f"/repos/{repository}/pulls",
-            json={
-                "title": title,
-                "body": body,
-                "head": head_branch,
-                "base": base_branch,
-            },
-        )
+        try:
+            pull = await self._request(
+                "POST",
+                f"/repos/{repository}/pulls",
+                json={
+                    "title": title,
+                    "body": body,
+                    "head": head_branch,
+                    "base": base_branch,
+                },
+            )
+        except (SCMError, httpx.HTTPError):
+            # A criação pode ter sido aceita antes de perdermos a resposta.
+            # Consulta a identidade exata; nunca abre outro PR como fallback.
+            recovered = await self._existing_pull_request(
+                repository,
+                base_branch,
+                head_branch,
+                include_closed=pinned_base_sha is not None,
+            )
+            if recovered is None:
+                raise
+            pull = recovered
         return PullRequestResult(
             number=int(pull["number"]),
             url=str(pull["html_url"]),
@@ -506,16 +572,20 @@ class GitHubSCMClient:
             if check.summary:
                 line += f" — {check.summary}"
             failures.append(line)
-        failures.extend(await self._annotations(repository, runs_payload, failed))
-        return CheckRunsResult(state="failure", checks=checks, failures=failures)
+        annotations, paths = await self._annotations(repository, runs_payload, failed)
+        failures.extend(annotations)
+        return CheckRunsResult(
+            state="failure", checks=checks, failures=failures, failure_paths=paths
+        )
 
     async def _annotations(
         self, repository: str, runs_payload: dict[str, Any], failed: list[CheckRun]
-    ) -> list[str]:
+    ) -> tuple[list[str], list[str]]:
         """Anotações (path:linha mensagem) dos check runs que falharam —
         o feedback mais acionável que o CI oferece."""
         failed_names = {c.name for c in failed}
         lines: list[str] = []
+        paths: set[str] = set()
         for run in runs_payload.get("check_runs", []) or []:
             if run.get("name") not in failed_names or not run.get("id"):
                 continue
@@ -529,11 +599,14 @@ class GitHubSCMClient:
                 continue
             for annotation in annotations[:20]:
                 path = annotation.get("path", "")
+                if isinstance(path, str) and path and not path.startswith("/"):
+                    if ".." not in path.split("/"):
+                        paths.add(path)
                 start = annotation.get("start_line", "")
                 message = str(annotation.get("message", "")).strip()
                 if message:
                     lines.append(f"{run.get('name')}: {path}:{start} {message[:300]}")
-        return lines
+        return lines, sorted(paths)
 
     async def wait_for_checks(
         self,
@@ -604,18 +677,25 @@ class GitHubSCMClient:
         return True
 
     async def _existing_pull_request(
-        self, repository: str, base_branch: str, head_branch: str
+        self,
+        repository: str,
+        base_branch: str,
+        head_branch: str,
+        *,
+        include_closed: bool = False,
     ) -> dict[str, Any] | None:
         owner = repository.split("/", 1)[0]
         pulls = await self._request_list(
             "GET",
             f"/repos/{repository}/pulls",
             params={
-                "state": "open",
+                "state": "all" if include_closed else "open",
                 "head": f"{owner}:{head_branch}",
                 "base": base_branch,
             },
         )
+        if include_closed and any(pull.get("state") == "closed" for pull in pulls):
+            raise SCMError("factory_pull_already_closed")
         return pulls[0] if pulls else None
 
     async def _raw(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
@@ -705,6 +785,7 @@ class GitHubDeliveryService:
             client=self._client_factory() if self._client_factory else None,
         )
         head = config.head_branch or f"forgehand/{workflow_id[:12]}"
+        result: DeliveryResult | None = None
         try:
             pull = await client.publish_pull_request(
                 repository=config.repository,
@@ -715,6 +796,8 @@ class GitHubDeliveryService:
                 files=files,
                 deletions=deletions,
                 commit_message=f"forgehand: {summary}",
+                pinned_base_sha=config.pinned_base_sha,
+                expected_head_sha=config.expected_head_sha,
             )
             result = DeliveryResult(
                 pull_request_number=pull.number,
@@ -741,13 +824,22 @@ class GitHubDeliveryService:
                     "ci_state": checks.state,
                     "checks": checks.as_dicts(),
                     "failures": checks.failures,
+                    "failure_paths": checks.failure_paths,
                 }
             )
         except (SCMError, ValueError, httpx.HTTPError) as exc:
+            if result is not None:
+                return result.model_copy(
+                    update={
+                        "ci_state": "error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
             return DeliveryResult(
                 ci_state="error",
                 error=f"{type(exc).__name__}: {exc}",
                 branch=head,
+                commit_sha=config.expected_head_sha,
                 files=len(files),
                 deletions=len(deletions),
             )

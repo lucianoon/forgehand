@@ -86,3 +86,6 @@ instaladas e aprovadas. Os testes não baixam imagens e não acessam credenciais
 Sem opt-in ou sem a imagem do ecossistema, os casos são ignorados. Ainda faltam
 qualificação real de timeout/OOM/cancelamento e fixtures versionadas antes de
 considerar o sandbox qualificado para produção.
+
+A publicação e o gate de revisão estão descritos em
+[entrega validada da fábrica](factory-delivery.md).

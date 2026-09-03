@@ -6,18 +6,22 @@ import asyncio
 import hashlib
 import os
 import re
+import signal
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
+
+from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
 
 from app.models.factory import (
     RepositoryTarget,
     WorkOrder,
     WorkspaceLease,
     WorkspaceLifecycle,
+    WorkspaceRetention,
 )
 
 
@@ -114,14 +118,22 @@ class SafeGitRunner:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            pass_fds=inherited_lock_fds(),
+            start_new_session=True,
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(), timeout=self._timeout
             )
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await asyncio.shield(process.wait())
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise TimeoutError(f"git excedeu {self._timeout:g}s") from None
         result = GitCommandResult(
             argv=(self._git, *args),
@@ -172,9 +184,36 @@ class LocalGitWorkspaceManager:
         self._resolve_url = repository_url_resolver or self._default_url
         self._allow_local = allow_local_repositories
         self._locks: dict[str, asyncio.Lock] = {}
+        self.journal = WorkspaceJournal(self._root / "control")
+
+    def transition(
+        self, lease: WorkspaceLease, state: WorkspaceLifecycle, **updates: Any
+    ) -> WorkspaceLease:
+        changed = lease.model_copy(
+            update={"state": state, "updated_at": datetime.now(timezone.utc), **updates}
+        )
+        self.journal.save(changed)
+        return changed
+
+    def retain(
+        self, lease: WorkspaceLease, seconds: int, reason: str
+    ) -> WorkspaceLease:
+        return self.transition(
+            lease,
+            WorkspaceLifecycle.RETAINED,
+            retention=WorkspaceRetention(
+                retain_until=datetime.now(timezone.utc) + timedelta(seconds=seconds),
+                reason=reason,
+            ),
+        )
 
     async def provision(self, workflow_id: str, order: WorkOrder) -> WorkspaceLease:
         self._validate_identifier(workflow_id, "workflow_id")
+        existing = self.journal.get(workflow_id)
+        if existing is not None:
+            if existing.repository != order.repository:
+                raise ValueError("Workspace ownership mismatch")
+            return await self.reconstruct(existing)
         self._validate_ref(order.repository.base_ref)
         source = self._resolve_url(order.repository)
         self._validate_source(source)
@@ -191,12 +230,12 @@ class LocalGitWorkspaceManager:
                     [
                         "clone",
                         "--bare",
-                        "--filter=blob:none",
                         "--no-tags",
                         source,
                         str(cache),
                     ]
                 )
+            await self._materialize_partial_cache(cache)
             remote_ref = f"refs/remotes/origin/{order.repository.base_ref}"
             await self._runner.run(
                 [
@@ -213,28 +252,93 @@ class LocalGitWorkspaceManager:
                 ["--git-dir", str(cache), "rev-parse", "--verify", remote_ref]
             )
             base_sha = resolved.stdout.strip()
+            if (
+                order.repository.expected_base_sha is not None
+                and base_sha != order.repository.expected_base_sha
+            ):
+                raise ValueError("fixture_base_sha_mismatch")
             if not re.fullmatch(r"[0-9a-fA-F]{40,64}", base_sha):
                 raise GitCommandError(resolved)
             if workspace.exists():
                 return await self._lease_for_existing(
                     workflow_id, order, workspace, branch, base_sha
                 )
+            lease = WorkspaceLease(
+                workflow_id=workflow_id,
+                repository=order.repository,
+                local_path=str(workspace),
+                branch=branch,
+                base_sha=base_sha,
+            )
+            self.transition(lease, WorkspaceLifecycle.REQUESTED)
+            self.transition(lease, WorkspaceLifecycle.PROVISIONING)
             await self._runner.run(
                 ["clone", "--no-hardlinks", str(cache), str(workspace)]
             )
             await self._runner.run(["checkout", "-B", branch, base_sha], cwd=workspace)
 
-        return WorkspaceLease(
-            workflow_id=workflow_id,
-            repository=order.repository,
-            local_path=str(workspace),
-            branch=branch,
-            base_sha=base_sha,
-            state=WorkspaceLifecycle.READY,
+        return self.transition(lease, WorkspaceLifecycle.READY)
+
+    async def _materialize_partial_cache(self, cache: Path) -> None:
+        partial = await self._runner.run(
+            ["--git-dir", str(cache), "config", "--get", "remote.origin.promisor"],
+            check=False,
+        )
+        if partial.stdout.strip() != "true":
+            return
+        # Local clones do not inherit the remote's lazy-fetch configuration.
+        # Repair legacy blobless caches before handing objects to a checkout.
+        await self._runner.run(
+            [
+                "--git-dir",
+                str(cache),
+                "fetch",
+                "--refetch",
+                "--no-filter",
+                "--no-tags",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ]
+        )
+        await self._runner.run(
+            [
+                "--git-dir",
+                str(cache),
+                "config",
+                "--unset-all",
+                "remote.origin.partialclonefilter",
+            ],
+            check=False,
+        )
+        await self._runner.run(
+            ["--git-dir", str(cache), "config", "remote.origin.promisor", "false"]
         )
 
     async def reconstruct(self, lease: WorkspaceLease) -> WorkspaceLease:
+        if lease.state in {WorkspaceLifecycle.RELEASED, WorkspaceLifecycle.RELEASING}:
+            raise ValueError("Workspace já liberado; crie outra ordem de trabalho.")
         workspace = self._lease_workspace_path(lease)
+        if lease.state in {
+            WorkspaceLifecycle.REQUESTED,
+            WorkspaceLifecycle.PROVISIONING,
+        }:
+            await self._materialize_partial_cache(self._cache_path(lease.repository))
+            # Only a journaled pre-execution checkout may be rebuilt. Approved
+            # work is never discarded because of a missing directory.
+            if workspace.exists():
+                await asyncio.to_thread(shutil.rmtree, workspace)
+            await self._runner.run(
+                [
+                    "clone",
+                    "--no-hardlinks",
+                    str(self._cache_path(lease.repository)),
+                    str(workspace),
+                ]
+            )
+            await self._runner.run(
+                ["checkout", "-B", lease.branch, lease.base_sha], cwd=workspace
+            )
+            lease = self.transition(lease, WorkspaceLifecycle.READY)
         if not (workspace / ".git").exists():
             raise ValueError("Workspace da lease não existe.")
         head = await self._runner.run(["rev-parse", "HEAD"], cwd=workspace)
@@ -244,31 +348,26 @@ class LocalGitWorkspaceManager:
             WorkspaceLifecycle.READY,
         }:
             raise ValueError("Workspace não corresponde ao SHA base da lease.")
-        return lease
+        return self.transition(lease, WorkspaceLifecycle.ACTIVE)
 
     async def cleanup(self, lease: WorkspaceLease) -> WorkspaceLease:
         """Remove somente o checkout da lease; cache e remotos são preservados."""
+        with self.journal.exclusive(lease.workflow_id, reentrant=True):
+            if lease.workflow_id in self.journal.containers():
+                raise ValueError("sandbox_cleanup_pending")
+            return await self._cleanup_locked(lease)
+
+    async def _cleanup_locked(self, lease: WorkspaceLease) -> WorkspaceLease:
         workspace = self._lease_workspace_path(lease)
         now = datetime.now(timezone.utc)
         retain_until = lease.retention.retain_until
         if retain_until is not None and retain_until > now:
-            return lease.model_copy(
-                update={"state": WorkspaceLifecycle.RETAINED, "updated_at": now}
-            )
+            return self.transition(lease, WorkspaceLifecycle.RETAINED)
         if not workspace.exists():
-            return lease.model_copy(
-                update={"state": WorkspaceLifecycle.RELEASED, "updated_at": now}
-            )
-        releasing = lease.model_copy(
-            update={"state": WorkspaceLifecycle.RELEASING, "updated_at": now}
-        )
+            return self.transition(lease, WorkspaceLifecycle.RELEASED)
+        releasing = self.transition(lease, WorkspaceLifecycle.RELEASING)
         await asyncio.to_thread(shutil.rmtree, workspace)
-        return releasing.model_copy(
-            update={
-                "state": WorkspaceLifecycle.RELEASED,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        )
+        return self.transition(releasing, WorkspaceLifecycle.RELEASED)
 
     def _default_url(self, repository: RepositoryTarget) -> str:
         return f"https://{repository.scm_host}/{repository.full_name}.git"
@@ -307,7 +406,7 @@ class LocalGitWorkspaceManager:
         )
         if head.stdout.strip() != base_sha or current_branch.stdout.strip() != branch:
             raise ValueError("Workspace existente diverge da lease solicitada.")
-        return WorkspaceLease(
+        lease = WorkspaceLease(
             workflow_id=workflow_id,
             repository=order.repository,
             local_path=str(workspace),
@@ -315,6 +414,7 @@ class LocalGitWorkspaceManager:
             base_sha=base_sha,
             state=WorkspaceLifecycle.READY,
         )
+        return self.transition(lease, WorkspaceLifecycle.READY)
 
     def _ensure_workspace_path(self, path: Path) -> None:
         if path.parent != self._workspace_root:

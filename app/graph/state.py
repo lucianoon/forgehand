@@ -123,6 +123,7 @@ class WorkflowPhase(str, Enum):
     DELIVERING = "delivering"  # publicando PR e aguardando CI
     PERSISTING = "persisting"
     COMPLETED = "completed"
+    READY_FOR_HUMAN_REVIEW = "ready_for_human_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -138,6 +139,8 @@ class DeliveryConfig(BaseModel):
     repository: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
     base_branch: str = Field(default="main", min_length=1)
     head_branch: str | None = Field(default=None, min_length=1)
+    pinned_base_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    expected_head_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     title: str | None = None
     wait_for_checks: bool = True
     checks_timeout_seconds: int = Field(default=900, ge=30, le=7200)
@@ -155,6 +158,7 @@ class DeliveryResult(BaseModel):
     ci_state: str = "skipped"
     checks: list[dict[str, Any]] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
+    failure_paths: list[str] = Field(default_factory=list)
     files: int = 0
     deletions: int = 0
     attempts: int = 0

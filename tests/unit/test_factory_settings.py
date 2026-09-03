@@ -29,7 +29,8 @@ def _python_profile() -> dict[str, object]:
     }
 
 
-def test_factory_defaults_are_safe_and_disabled() -> None:
+def test_factory_defaults_are_safe_and_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("FACTORY_DOCKER_SOCKET", raising=False)
     settings = Settings(_env_file=None)
 
     assert settings.factory_mode_enabled is False
@@ -38,6 +39,18 @@ def test_factory_defaults_are_safe_and_disabled() -> None:
     assert settings.factory_approved_scm_hosts == ["github.com"]
     assert settings.factory_build_profiles == {}
     assert settings.factory_repository_profiles == {}
+    assert settings.factory_docker_socket == "/var/run/docker.sock"
+
+
+def test_factory_accepts_explicit_desktop_socket() -> None:
+    settings = Settings(_env_file=None, factory_docker_socket="/tmp/docker.sock")
+    assert settings.factory_docker_socket == "/tmp/docker.sock"
+
+
+@pytest.mark.parametrize("socket", ["docker.sock", "tcp://localhost:2375", ""])
+def test_factory_rejects_nonlocal_or_relative_socket(socket: str) -> None:
+    with pytest.raises(ValidationError, match="absolute local path"):
+        Settings(_env_file=None, factory_docker_socket=socket)
 
 
 @pytest.mark.parametrize(
