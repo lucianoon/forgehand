@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.graph.state import WorkflowState
+from app.models.build_execution import BuildOutcome, BuildRunResult
 from app.models.factory import (
     BuildProfileSelection,
     DirectWorkOrderSource,
@@ -70,9 +71,7 @@ def test_workspace_lease_requires_absolute_path_and_serializes() -> None:
 
     with pytest.raises(ValidationError, match="absoluto"):
         lease.model_copy(update={"local_path": "relative"}).model_dump()
-        WorkspaceLease.model_validate(
-            {**lease.model_dump(), "local_path": "relative"}
-        )
+        WorkspaceLease.model_validate({**lease.model_dump(), "local_path": "relative"})
 
 
 def test_legacy_workflow_state_gets_factory_defaults() -> None:
@@ -124,6 +123,11 @@ def test_factory_state_and_attempt_round_trip() -> None:
         started_at=datetime.now(timezone.utc),
         factory_stage=FactoryStage.VALIDATION,
         build_strategy=strategy,
+        build_validation=BuildRunResult(
+            profile_name="python",
+            profile_digest=None,
+            outcome=BuildOutcome.SUCCESS,
+        ),
     )
 
     restored = WorkflowState.model_validate_json(state.model_dump_json())
@@ -133,3 +137,5 @@ def test_factory_state_and_attempt_round_trip() -> None:
     assert restored.workspace == lease
     assert restored_attempt.build_strategy == strategy
     assert restored_attempt.factory_stage is FactoryStage.VALIDATION
+    assert restored_attempt.build_validation is not None
+    assert restored_attempt.build_validation.outcome is BuildOutcome.SUCCESS

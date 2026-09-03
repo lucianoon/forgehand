@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.agents.executor import ExecutionStrategy
+from app.factory.build_strategy import BuildProfileRegistry
+from app.models.build import BuildProfile
 from app.providers.base import ModelPricing
 from app.providers.registry import ModelTier, TierBinding
 
@@ -296,6 +298,9 @@ class Settings(BaseSettings):
         ):
             raise ValueError("Workers externos exigem WORKFLOW_QUEUE_BACKEND=postgres.")
         if self.factory_mode_enabled:
+            BuildProfileRegistry(
+                self.factory_build_profiles, self.factory_repository_profiles
+            )
             if not self.factory_approved_scm_hosts:
                 raise ValueError("Factory mode exige ao menos um host SCM aprovado.")
             root = Path(self.factory_workspace_root).expanduser()
@@ -303,8 +308,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "FACTORY_WORKSPACE_ROOT deve ser um diretório dedicado."
                 )
-            if self.environment == "prod" and self.factory_command_backend != "docker":
-                raise ValueError("Factory mode em produção exige backend docker.")
+            if self.factory_command_backend != "docker":
+                raise ValueError(
+                    "Factory mode exige backend docker; execução local é apenas legada."
+                )
         return self
 
     @property
@@ -371,11 +378,18 @@ class Settings(BaseSettings):
         return hosts
 
     @property
-    def factory_build_profiles(self) -> dict[str, dict[str, object]]:
+    def factory_build_profiles(self) -> dict[str, BuildProfile]:
         raw = json.loads(self.factory_build_profiles_json)
         if not isinstance(raw, dict):
             raise ValueError("FACTORY_BUILD_PROFILES_JSON deve ser um objeto.")
-        return {str(name): dict(value) for name, value in raw.items()}
+        profiles: dict[str, BuildProfile] = {}
+        for name, value in raw.items():
+            if not isinstance(value, dict):
+                raise ValueError("Cada perfil de build deve ser um objeto.")
+            if "name" in value and value["name"] != name:
+                raise ValueError("Nome do perfil diverge da chave administrada.")
+            profiles[name] = BuildProfile.model_validate({"name": name, **value})
+        return profiles
 
     @property
     def factory_repository_profiles(self) -> dict[str, str]:

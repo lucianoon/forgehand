@@ -21,8 +21,8 @@
 - [x] 3.2 Implement a safe Git command runner that uses argument arrays, redacts credentials, bounds output and time, and rejects repositories outside configured hosts.
 - [x] 3.3 Implement a read-only repository cache with per-repository locking and deterministic fetch of an authorized base ref.
 - [x] 3.4 Implement creation of a workflow-exclusive checkout and `forgehand/<workflow-id>` branch pinned to the resolved base SHA.
-- [ ] 3.5 Bind repository grounding, planner tools, executor tools, judge tools, Git snapshots, and workspace runtime to the active lease instead of global roots.
-- [ ] 3.6 Add `provision_workspace` and failure routing to the graph before repository grounding and planning.
+- [x] 3.5 Bind repository grounding, planner tools, executor tools, judge tools, Git snapshots, and workspace runtime to the active lease instead of global roots.
+- [x] 3.6 Add `provision_workspace` and failure routing to the graph before repository grounding and planning.
 - [x] 3.7 Implement idempotent lease reconstruction or deterministic reprovisioning after worker restart.
 - [x] 3.8 Add concurrency tests proving two workflows on one repository cannot observe or modify each other's writable workspace.
 
@@ -35,22 +35,36 @@
 
 ## 5. Project build strategies
 
-- [ ] 5.1 Define typed build profiles and named `prepare`, `build`, `test`, `lint`, and `types` phases backed only by operator-approved commands.
-- [ ] 5.2 Implement strategy selection precedence for explicit profile, managed repository mapping, safe Python/Node detection, and `unsupported_build_strategy`.
-- [ ] 5.3 Extend `CommandPolicy` to validate the complete executable, argument, environment, and working-directory contract of a selected phase.
+- [x] 5.1 Define typed build profiles and named `prepare`, `build`, `test`, `lint`, and `types` phases backed only by operator-approved commands.
+- [x] 5.2 Implement strategy selection precedence for explicit profile, managed repository mapping, safe Python/Node detection, and `unsupported_build_strategy`.
+- [x] 5.3 Extend `CommandPolicy` to validate the complete executable, argument, environment, and working-directory contract of a selected phase.
 - [ ] 5.4 Add Python and Node fixture profiles with deterministic images or dependency caches and document how operators add profiles safely.
-- [ ] 5.5 Persist the chosen strategy and selection reason before executing repository code and expose both in API and audit output.
-- [ ] 5.6 Add policy tests proving agent output and repository files cannot introduce commands, shell metacharacters, environment secrets, or paths outside the lease.
+- [x] 5.5 Persist the chosen strategy and selection reason before executing repository code and expose both in API and audit output.
+- [x] 5.6 Add policy tests proving agent output and repository files cannot introduce commands, shell metacharacters, environment secrets, or paths outside the lease.
+
+Progress note: profile configuration documentation is available in
+`docs/factory-build-profiles.md`; 5.4 still requires executable,
+digest-pinned Python/Node fixtures. Selection is checkpointed and exposed.
+The DockerBuildRunner executes selected profiles and its reports now flow
+through task attempts, the judge, workflow status, audit, and final summaries.
 
 ## 6. Sandboxed build and validation
 
-- [ ] 6.1 Make Docker sandbox execution the required default for factory workflows while preserving explicit local execution for legacy development.
-- [ ] 6.2 Enforce network-off, read-only root filesystem, writable leased workspace, dropped capabilities, no-new-privileges, process, CPU, memory, and timeout limits.
-- [ ] 6.3 Separate dependency preparation from validation and require an explicit network policy without mounting SCM or LLM credentials.
-- [ ] 6.4 Execute selected build phases in order and return typed success, command failure, policy rejection, timeout, resource-limit, cancellation, and infrastructure outcomes.
-- [ ] 6.5 Sanitize and attach phase evidence to task attempts, judge input, workflow status, audit events, and delivery summaries.
-- [ ] 6.6 Feed failed phase evidence into the bounded executor autocorrection loop and prevent judge approval while required phases fail.
+- [x] 6.1 Make Docker sandbox execution the required default for factory workflows while preserving explicit local execution for legacy development.
+- [x] 6.2 Enforce network-off, read-only root filesystem, writable leased workspace, dropped capabilities, no-new-privileges, process, CPU, memory, and timeout limits.
+- [x] 6.3 Separate dependency preparation from validation and require an explicit network policy without mounting SCM or LLM credentials.
+- [x] 6.4 Execute selected build phases in order and return typed success, command failure, policy rejection, timeout, resource-limit, cancellation, and infrastructure outcomes.
+- [x] 6.5 Sanitize and attach phase evidence to task attempts, judge input, workflow status, audit events, and delivery summaries.
+- [x] 6.6 Feed failed phase evidence into the bounded executor autocorrection loop and prevent judge approval while required phases fail.
 - [ ] 6.7 Add integration tests for network denial, resource termination, credential absence, output truncation, phase ordering, and successful Python and Node builds.
+
+Validation note: unit tests cover the runner with a controlled Docker client.
+Graph tests prove successful evidence propagation, audit callbacks, structural
+judge veto, and a failed-test correction followed by a successful bounded retry.
+Real Python/Node container tests are opt-in and require preloaded digest-pinned
+images; none were available locally during implementation. Real isolation and
+resource/cancellation qualification remains pending in 6.7. Runner quarantine
+is process-local; durable lifecycle/reconciliation is still open in section 4.
 
 ## 7. Verified delivery workflow
 

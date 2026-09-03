@@ -13,6 +13,7 @@ from app.models.factory import (
     DirectWorkOrderSource,
     RepositoryTarget,
     WorkOrder,
+    WorkspaceLease,
     WorkspaceLifecycle,
     WorkspaceRetention,
 )
@@ -192,3 +193,126 @@ async def test_cleanup_honors_retention_and_rejects_foreign_path(
     foreign = active.model_copy(update={"local_path": str(tmp_path / "outside")})
     with pytest.raises(ValueError, match="fora da raiz"):
         await manager.cleanup(foreign)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_releases_workspace_after_retention_expires(
+    tmp_path: Path,
+) -> None:
+    remote, runner = await _seed_remote(tmp_path)
+    manager = LocalGitWorkspaceManager(
+        tmp_path / "factory",
+        approved_hosts=["github.com"],
+        repository_url_resolver=lambda _: str(remote),
+        allow_local_repositories=True,
+    )
+    active = await manager.provision("cleanup-expired", _order())
+    retained = active.model_copy(
+        update={
+            "state": WorkspaceLifecycle.RETAINED,
+            "retention": WorkspaceRetention(
+                retain_until=datetime.now(timezone.utc) - timedelta(hours=1),
+                reason="diagnóstico concluído",
+            ),
+        }
+    )
+
+    released = await manager.cleanup(retained)
+    remote_head = await runner.run(
+        ["--git-dir", str(remote), "rev-parse", "refs/heads/main"]
+    )
+
+    assert released.state == WorkspaceLifecycle.RELEASED
+    assert not Path(active.local_path).exists()
+    assert released.id == retained.id
+    assert released.retention == retained.retention
+    assert remote_head.stdout.strip() == active.base_sha
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state", [WorkspaceLifecycle.PROVISIONING, WorkspaceLifecycle.FAILED]
+)
+async def test_cleanup_removes_partially_provisioned_checkout(
+    tmp_path: Path, state: WorkspaceLifecycle
+) -> None:
+    root = tmp_path / "factory"
+    manager = LocalGitWorkspaceManager(root, approved_hosts=["github.com"])
+    workspace = root / "workspaces" / "cleanup-partial"
+    incomplete = workspace / "incomplete"
+    incomplete.mkdir(parents=True)
+    (incomplete / "download.tmp").write_text("partial clone", encoding="utf-8")
+    lease = WorkspaceLease(
+        workflow_id="cleanup-partial",
+        repository=_order().repository,
+        local_path=str(workspace),
+        branch="forgehand/cleanup-partial",
+        base_sha="a" * 40,
+        state=state,
+        failure_reason="clone interrompido",
+    )
+    assert not (workspace / ".git").exists()
+
+    released = await manager.cleanup(lease)
+    released_again = await manager.cleanup(released)
+
+    assert released.state == WorkspaceLifecycle.RELEASED
+    assert released_again.state == WorkspaceLifecycle.RELEASED
+    assert not workspace.exists()
+    assert released.id == lease.id
+    assert released.failure_reason == lease.failure_reason
+    assert (root / "cache").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rejects_symlink_without_removing_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "factory"
+    manager = LocalGitWorkspaceManager(root, approved_hosts=["github.com"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    workspace = root / "workspaces" / "cleanup-symlink"
+    workspace.symlink_to(outside, target_is_directory=True)
+    lease = WorkspaceLease(
+        workflow_id="cleanup-symlink",
+        repository=_order().repository,
+        local_path=str(workspace),
+        branch="forgehand/cleanup-symlink",
+        base_sha="a" * 40,
+    )
+
+    with pytest.raises(ValueError, match="link simbólico"):
+        await manager.cleanup(lease)
+
+    assert workspace.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rejects_workspace_owned_by_another_workflow(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "factory"
+    manager = LocalGitWorkspaceManager(root, approved_hosts=["github.com"])
+    own_workspace = root / "workspaces" / "workflow-a"
+    other_workspace = root / "workspaces" / "workflow-b"
+    own_workspace.mkdir()
+    other_workspace.mkdir()
+    sentinel = other_workspace / "keep.txt"
+    sentinel.write_text("other workflow", encoding="utf-8")
+    foreign_lease = WorkspaceLease(
+        workflow_id="workflow-a",
+        repository=_order().repository,
+        local_path=str(other_workspace),
+        branch="forgehand/workflow-a",
+        base_sha="a" * 40,
+    )
+
+    with pytest.raises(ValueError, match="ownership da lease inválido"):
+        await manager.cleanup(foreign_lease)
+
+    assert own_workspace.is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "other workflow"

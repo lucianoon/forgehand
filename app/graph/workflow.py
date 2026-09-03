@@ -2,7 +2,9 @@
 
 Topologia:
 
-  load_context → create_plan → [route_to_execution]
+  provision_workspace → select_build_strategy → load_context → create_plan
+                                                        │
+                                             [route_to_execution]
                                      │
                      ┌───────────────┼─────────────────┐
                      ▼ Send×N        ▼                 ▼
@@ -42,6 +44,10 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.task", "TaskAttempt"),
     ("app.models.task", "TaskBudget"),
     ("app.models.task", "EvaluationResult"),
+    ("app.models.build", "BuildPhaseName"),
+    ("app.models.build_execution", "BuildOutcome"),
+    ("app.models.build_execution", "BuildPhaseResult"),
+    ("app.models.build_execution", "BuildRunResult"),
     ("app.graph.state", "DeliveryConfig"),
     ("app.graph.state", "DeliveryResult"),
     ("app.models.factory", "WorkOrderSourceKind"),
@@ -77,6 +83,10 @@ def build_workflow(
     delivery: Any = None,
     workspace_manager: Any = None,
     runtime_factory: Any = None,
+    build_strategy_selector: Any = None,
+    strategy_audit_recorder: Any = None,
+    build_runner: Any = None,
+    build_audit_recorder: Any = None,
 ) -> Any:
     nodes = build_nodes(
         planner,
@@ -87,11 +97,16 @@ def build_workflow(
         delivery,
         workspace_manager,
         runtime_factory,
+        build_strategy_selector,
+        strategy_audit_recorder,
+        build_runner,
+        build_audit_recorder,
     )
 
     graph = StateGraph(WorkflowState)
 
     graph.add_node("provision_workspace", nodes["provision_workspace"])
+    graph.add_node("select_build_strategy", nodes["select_build_strategy"])
     graph.add_node("load_context", nodes["load_context"])
     graph.add_node("create_plan", nodes["create_plan"])
     graph.add_node("execute_task", nodes["execute_task"], input_schema=ExecutionPayload)
@@ -109,7 +124,19 @@ def build_workflow(
     graph.add_conditional_edges(
         "provision_workspace",
         nodes["provision_router"],
-        {"load_context": "load_context", "persist_memory": "persist_memory"},
+        {
+            "load_context": "select_build_strategy",
+            "persist_memory": "persist_memory",
+        },
+    )
+    graph.add_conditional_edges(
+        "select_build_strategy",
+        nodes["strategy_router"],
+        {
+            "load_context": "load_context",
+            "human_gate": "human_gate",
+            "persist_memory": "persist_memory",
+        },
     )
     graph.add_edge("load_context", "create_plan")
 
@@ -154,6 +181,7 @@ def build_workflow(
         nodes["human_router"],
         {
             "authorize_retry": "authorize_retry",
+            "select_build_strategy": "select_build_strategy",
             "synthesize": "synthesize",
             "abort": "abort",
         },

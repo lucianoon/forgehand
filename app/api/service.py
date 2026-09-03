@@ -37,6 +37,26 @@ def _dump_model(value: Any) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
+def _dump_enum(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def _latest_build_validation(plan: list[Any]) -> dict[str, Any] | None:
+    """Obtém a evidência mais recente sem depender do formato do checkpoint."""
+    for task in reversed(plan):
+        attempts = getattr(task, "attempts", None)
+        if not isinstance(attempts, list):
+            continue
+        for attempt in reversed(attempts):
+            report = getattr(attempt, "build_validation", None)
+            dumped = _dump_model(report)
+            if dumped is not None:
+                return dumped
+    return None
+
+
 class WorkflowNotFound(LookupError):
     pass
 
@@ -405,6 +425,9 @@ class WorkflowService:
             "error": values.get("error") or self._failures.get(workflow_id),
             "delivery": _dump_model(values.get("delivery_result")),
             "work_order": _dump_model(values.get("work_order")),
+            "build_strategy": _dump_model(values.get("build_strategy")),
+            "factory_stage": _dump_enum(values.get("factory_stage")),
+            "phase_evidence": _latest_build_validation(plan),
         }
 
     async def get_details(self, workflow_id: str) -> dict[str, Any]:
@@ -421,6 +444,9 @@ class WorkflowService:
                 for evaluation in values.get("evaluations", [])
             ],
             "delivery": _dump_model(values.get("delivery_result")),
+            "build_strategy": _dump_model(values.get("build_strategy")),
+            "factory_stage": _dump_enum(values.get("factory_stage")),
+            "phase_evidence": _latest_build_validation(values.get("plan", [])),
         }
 
     # ------------------------------------------------------------------

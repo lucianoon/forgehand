@@ -113,6 +113,7 @@ def add_usage(
 class WorkflowPhase(str, Enum):
     QUEUED = "queued"
     LOADING_CONTEXT = "loading_context"
+    UNSUPPORTED_BUILD_STRATEGY = "unsupported_build_strategy"
     PLANNING = "planning"
     EXECUTING = "executing"
     EVALUATING = "evaluating"
