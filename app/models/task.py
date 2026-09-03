@@ -17,6 +17,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from app.models.factory import BuildProfileSelection, FactoryStage
+
 
 class Capability(str, Enum):
     BACKEND = "backend"
@@ -211,6 +213,8 @@ class TaskAttempt(BaseModel):
     cost_usd: float = 0.0
     trace_id: str | None = None  # correlação com Langfuse
     operational_summary: dict[str, Any] | None = None
+    factory_stage: FactoryStage | None = None
+    build_strategy: BuildProfileSelection | None = None
 
 
 class AgentTask(BaseModel):

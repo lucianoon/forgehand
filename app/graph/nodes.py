@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from langgraph.types import Send, interrupt
@@ -37,6 +37,8 @@ from app.graph.state import (
     WorkflowState,
 )
 from app.infrastructure.tracing import current_trace_id
+from app.factory.workspace import WorkspaceManager, WorkspaceRuntimeFactory
+from app.models.factory import BuildProfileSelection, FactoryStage, WorkspaceLease
 from app.models.task import (
     AdvisorTrigger,
     AgentTask,
@@ -86,6 +88,9 @@ class ExecutionPayload(BaseModel):
     task: AgentTask
     project_id: str
     context: dict[str, Any]
+    workspace: WorkspaceLease | None = None
+    factory_stage: FactoryStage | None = None
+    build_strategy: BuildProfileSelection | None = None
 
 
 class UsageReport(BaseModel):
@@ -147,6 +152,8 @@ def build_nodes(
     memory: MemoryStore,
     advisor: Advisor | None = None,
     delivery: DeliveryPublisher | None = None,
+    workspace_manager: WorkspaceManager | None = None,
+    runtime_factory: WorkspaceRuntimeFactory | None = None,
 ) -> dict[str, Any]:
     # import local: scm importa state (modelos de entrega); nodes não deve
     # depender de infraestrutura além desta função pura de coleta.
@@ -200,8 +207,70 @@ def build_nodes(
             "autocorrect": autocorrect if isinstance(autocorrect, dict) else None,
         }
 
+    def active_planner(state: WorkflowState) -> Planner:
+        if state.workspace is not None and runtime_factory is not None:
+            return cast(Planner, runtime_factory.build_planner(state.workspace))
+        return planner
+
+    def active_registry(lease: WorkspaceLease | None) -> ExecutorRegistry:
+        if lease is not None and runtime_factory is not None:
+            return cast(ExecutorRegistry, runtime_factory.build_registry(lease))
+        return registry
+
+    def active_judge(lease: WorkspaceLease | None) -> Judge:
+        if lease is not None and runtime_factory is not None:
+            return cast(Judge, runtime_factory.build_judge(lease))
+        return judge
+
+    async def provision_workspace(state: WorkflowState) -> dict[str, Any]:
+        if state.work_order is None:
+            return {"phase": WorkflowPhase.LOADING_CONTEXT}
+        if workspace_manager is None or runtime_factory is None:
+            return {
+                "error": "factory runtime não configurado",
+                "phase": WorkflowPhase.FAILED,
+                "factory_stage": FactoryStage.PROVISIONING,
+            }
+        try:
+            lease = (
+                await workspace_manager.reconstruct(state.workspace)
+                if state.workspace is not None
+                else await workspace_manager.provision(
+                    state.workflow_id, state.work_order
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"workspace provisioning failed: {type(exc).__name__}: {exc}",
+                "phase": WorkflowPhase.FAILED,
+                "factory_stage": FactoryStage.PROVISIONING,
+            }
+        return {
+            "workspace": lease,
+            "phase": WorkflowPhase.LOADING_CONTEXT,
+            "factory_stage": FactoryStage.PROVISIONING,
+        }
+
+    def provision_router(state: WorkflowState) -> str:
+        return (
+            "persist_memory" if state.phase == WorkflowPhase.FAILED else "load_context"
+        )
+
     async def load_context(state: WorkflowState) -> dict[str, Any]:
-        ctx = await memory.load_context(state.project_id, state.request)
+        if state.workspace is not None and runtime_factory is not None:
+            project_context_loader = getattr(memory, "load_project_context", None)
+            ctx = (
+                await project_context_loader(state.project_id, state.request)
+                if callable(project_context_loader)
+                else await memory.load_context(state.project_id, state.request)
+            )
+            ctx = dict(ctx)
+            ctx.pop("repository_grounding", None)
+            ctx["repository_grounding"] = runtime_factory.build_grounding(
+                state.workspace, state.request
+            )
+        else:
+            ctx = await memory.load_context(state.project_id, state.request)
         return {"context": ctx, "phase": WorkflowPhase.PLANNING}
 
     async def create_plan(state: WorkflowState) -> dict[str, Any]:
@@ -213,7 +282,7 @@ def build_nodes(
                 "usage": {"tokens": 0, "cost_usd": 0.0},
                 "phase": WorkflowPhase.EXECUTING,
             }
-        raw = await planner.create_plan(state.request, state.context)
+        raw = await active_planner(state).create_plan(state.request, state.context)
         if isinstance(raw, PlanningOutcome):
             plan = raw.plan
             usage = raw.usage.model_dump()
@@ -222,7 +291,14 @@ def build_nodes(
             usage = {"tokens": 0, "cost_usd": 0.0}
         if not plan:
             raise ValueError("Planner retornou plano vazio.")
-        return {"plan": plan, "usage": usage, "phase": WorkflowPhase.EXECUTING}
+        update: dict[str, Any] = {
+            "plan": plan,
+            "usage": usage,
+            "phase": WorkflowPhase.EXECUTING,
+        }
+        if state.work_order is not None:
+            update["factory_stage"] = FactoryStage.IMPLEMENTATION
+        return update
 
     # ------------------------------------------------------------------
     # Fan-out: função de aresta condicional, não nó. Emite um Send por
@@ -240,7 +316,8 @@ def build_nodes(
         sends: list[Send] = []
         dispatched_by_agent: dict[str, int] = {}
         for t in ready:
-            dispatch_policy = getattr(registry, "dispatch_policy", None)
+            selected_registry = active_registry(state.workspace)
+            dispatch_policy = getattr(selected_registry, "dispatch_policy", None)
             if dispatch_policy is not None:
                 agent_name, limit = dispatch_policy(t)
                 current = dispatched_by_agent.get(agent_name, 0)
@@ -259,7 +336,14 @@ def build_nodes(
             sends.append(
                 Send(
                     "execute_task",
-                    ExecutionPayload(task=t, project_id=state.project_id, context=ctx),
+                    ExecutionPayload(
+                        task=t,
+                        project_id=state.project_id,
+                        context=ctx,
+                        workspace=state.workspace,
+                        factory_stage=state.factory_stage,
+                        build_strategy=state.build_strategy,
+                    ),
                 )
             )
         if not sends:
@@ -269,14 +353,14 @@ def build_nodes(
         return sends
 
     async def judge_task(
-        task: AgentTask, context: dict[str, Any]
+        task: AgentTask, context: dict[str, Any], selected_judge: Judge
     ) -> tuple[AgentTask, EvaluationResult | None, UsageReport]:
         """Julga uma tarefa executada e devolve a cópia com status final.
 
         Falha do judge escala a tarefa (nunca fica presa em RUNNING);
         sinais objetivos têm veto (validator do EvaluationResult)."""
         try:
-            raw = await judge.evaluate(task, context)
+            raw = await selected_judge.evaluate(task, context)
         except Exception as exc:  # noqa: BLE001
             reason = f"judge {type(exc).__name__}: {exc}"
             attempts = list(task.attempts)
@@ -314,7 +398,7 @@ def build_nodes(
 
     async def execute_task(payload: ExecutionPayload) -> dict[str, Any]:
         task = payload.task
-        executor = registry.select(task)
+        executor = active_registry(payload.workspace).select(task)
         started = datetime.now(timezone.utc)
         attempt_number = task.attempt_count + 1
 
@@ -328,6 +412,8 @@ def build_nodes(
                 outcome=TaskStatus.FAILED,
                 failure_reason="budget da tarefa esgotado antes da execução",
                 trace_id=current_trace_id(),
+                factory_stage=payload.factory_stage,
+                build_strategy=payload.build_strategy,
             )
             failed = task.model_copy(
                 update={
@@ -368,6 +454,8 @@ def build_nodes(
                 cost_usd=cost,
                 trace_id=current_trace_id(),
                 operational_summary=attempt_operational_summary(outcome.get("result")),
+                factory_stage=payload.factory_stage,
+                build_strategy=payload.build_strategy,
             )
             updated = task.model_copy(
                 update={
@@ -390,7 +478,9 @@ def build_nodes(
             # em paralelo com as demais — a rápida não espera a lenta para
             # receber veredito. O judge_router segue decidindo no join,
             # sobre o estado consolidado.
-            judged, evaluation, judge_usage = await judge_task(updated, payload.context)
+            judged, evaluation, judge_usage = await judge_task(
+                updated, payload.context, active_judge(payload.workspace)
+            )
             update: dict[str, Any] = {
                 "plan": [judged],
                 "usage": {
@@ -417,6 +507,8 @@ def build_nodes(
                 outcome=TaskStatus.FAILED,
                 failure_reason=reason,
                 trace_id=current_trace_id(),
+                factory_stage=payload.factory_stage,
+                build_strategy=payload.build_strategy,
             )
             failed = task.model_copy(
                 update={
@@ -442,7 +534,9 @@ def build_nodes(
         for task in state.plan:
             if task.status != TaskStatus.RUNNING:
                 continue
-            judged, evaluation, judge_usage = await judge_task(task, state.context)
+            judged, evaluation, judge_usage = await judge_task(
+                task, state.context, active_judge(state.workspace)
+            )
             updates.append(judged)
             if evaluation is not None:
                 evaluations.append(evaluation)
@@ -799,6 +893,8 @@ def build_nodes(
         return {"phase": terminal}
 
     return {
+        "provision_workspace": provision_workspace,
+        "provision_router": provision_router,
         "load_context": load_context,
         "create_plan": create_plan,
         "route_to_execution": route_to_execution,

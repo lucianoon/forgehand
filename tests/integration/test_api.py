@@ -136,7 +136,7 @@ def handler(request):
     raise AssertionError(f"schema inesperado: {list(props)}")
 
 
-def make_app(run_workers=True):
+def make_app(run_workers=True, factory_mode_enabled=False):
     REJECT_BACKEND_ALWAYS["on"] = False
     settings = Settings(
         checkpointer_backend="memory",
@@ -145,6 +145,7 @@ def make_app(run_workers=True):
         repository_grounding_enabled=False,
         executor_apply_files_enabled=False,
         api_keys_json=API_KEYS_JSON,
+        factory_mode_enabled=factory_mode_enabled,
     )
     client = anthropic.AsyncAnthropic(
         api_key="test",
@@ -167,6 +168,118 @@ def make_app(run_workers=True):
     if run_workers:
         container.workflow_service.start_workers()
     return app
+
+
+@pytest.mark.asyncio
+async def test_direct_factory_order_is_normalized_before_queueing():
+    app = make_app(run_workers=False, factory_mode_enabled=True)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        response = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "work_order": {
+                    "repository": "acme/widgets",
+                    "base_ref": "develop",
+                    "requested_outcome": "Corrigir o cálculo do total do pedido.",
+                    "acceptance_criteria": ["Teste de regressão passa"],
+                    "build_profile": "python",
+                    "idempotency_key": "issue-7",
+                },
+            },
+        )
+        status_response = await client.get(
+            f"/workflows/{response.json()['workflow_id']}"
+        )
+
+    assert response.status_code == 202, response.text
+    assert status_response.json()["provenance"]["repository"]["full_name"] == (
+        "acme/widgets"
+    )
+    job = await app.state.container.job_queue.dequeue("test-worker", 0.01)
+    assert job is not None
+    order = job.payload["work_order"]
+    assert order.repository.full_name == "acme/widgets"
+    assert order.repository.base_ref == "develop"
+    assert order.source.kind == "direct"
+    assert job.payload["delivery"].repository == "acme/widgets"
+    assert job.payload["budget"].max_tokens == 500_000
+    events = await app.state.container.audit_log.list_recent(limit=20)
+    assert any(
+        event.action == "work_order_intake" and event.outcome == "accepted"
+        for event in events
+    )
+    await app.state.container.workflow_service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_factory_order_is_rejected_when_disabled_or_ambiguous():
+    app = make_app(run_workers=False)
+    transport = httpx.ASGITransport(app=app)
+    work_order = {
+        "repository": "acme/widgets",
+        "requested_outcome": "Corrigir o cálculo do total do pedido.",
+        "acceptance_criteria": ["Teste de regressão passa"],
+    }
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        disabled = await client.post(
+            "/workflows", json={"project_id": "demo", "work_order": work_order}
+        )
+        ambiguous = await client.post(
+            "/workflows",
+            json={
+                "project_id": "demo",
+                "request": "Uma solicitação legada válida",
+                "work_order": work_order,
+            },
+        )
+
+    assert disabled.status_code == 409
+    assert ambiguous.status_code == 422
+    assert (await app.state.container.job_queue.get_stats()).queued == 0
+    events = await app.state.container.audit_log.list_recent(limit=20)
+    assert any(
+        event.action == "work_order_intake"
+        and event.outcome == "factory_disabled"
+        for event in events
+    )
+    await app.state.container.workflow_service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_factory_order_idempotency_is_scoped_and_deduplicates_queue():
+    app = make_app(run_workers=False, factory_mode_enabled=True)
+    transport = httpx.ASGITransport(app=app)
+    payload = {
+        "project_id": "demo",
+        "work_order": {
+            "repository": "acme/widgets",
+            "requested_outcome": "Corrigir o cálculo do total do pedido.",
+            "acceptance_criteria": ["Teste de regressão passa"],
+            "idempotency_key": "customer-request-42",
+        },
+    }
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        first = await client.post("/workflows", json=payload)
+        second = await client.post("/workflows", json=payload)
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["workflow_id"] == second.json()["workflow_id"]
+    assert (await app.state.container.job_queue.get_stats()).queued == 1
+    await app.state.container.workflow_service.shutdown()
 
 
 @pytest.mark.asyncio

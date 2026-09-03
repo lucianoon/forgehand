@@ -8,7 +8,9 @@ budgets default e backend de checkpoint. Trocar de modelo ou atualizar preço
 from __future__ import annotations
 
 import json
+import ipaddress
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -123,6 +125,8 @@ _DEFAULT_EXECUTION_STRATEGIES = {
         "allow_autocorrect": True,
     },
 }
+
+_DEFAULT_FACTORY_APPROVED_SCM_HOSTS = ["github.com"]
 
 
 class ApiKeySettings(BaseModel):
@@ -241,6 +245,21 @@ class Settings(BaseSettings):
     )
     executor_strategies_json: str = json.dumps(_DEFAULT_EXECUTION_STRATEGIES)
 
+    # Software factory: opt-in e isolada do caminho legado. Perfis e
+    # associações são administrados; conteúdo do repositório não injeta shell.
+    factory_mode_enabled: bool = False
+    factory_approved_scm_hosts_json: str = json.dumps(
+        _DEFAULT_FACTORY_APPROVED_SCM_HOSTS
+    )
+    factory_workspace_root: str = "./data/factory-workspaces"
+    factory_success_retention_seconds: int = Field(default=0, ge=0)
+    factory_failure_retention_seconds: int = Field(default=86_400, ge=0)
+    factory_command_backend: Literal["local", "docker"] = "docker"
+    factory_sandbox_image: str = "python:3.12-slim"
+    factory_sandbox_network_enabled: bool = False
+    factory_build_profiles_json: str = "{}"
+    factory_repository_profiles_json: str = "{}"
+
     @field_validator(
         "pricing_json",
         "tier_bindings_json",
@@ -249,6 +268,9 @@ class Settings(BaseSettings):
         "objective_validation_pipelines_json",
         "executor_strategies_json",
         "webhook_urls_json",
+        "factory_approved_scm_hosts_json",
+        "factory_build_profiles_json",
+        "factory_repository_profiles_json",
     )
     @classmethod
     def _must_be_json(cls, v: str) -> str:
@@ -273,6 +295,16 @@ class Settings(BaseSettings):
             and self.workflow_queue_backend != "postgres"
         ):
             raise ValueError("Workers externos exigem WORKFLOW_QUEUE_BACKEND=postgres.")
+        if self.factory_mode_enabled:
+            if not self.factory_approved_scm_hosts:
+                raise ValueError("Factory mode exige ao menos um host SCM aprovado.")
+            root = Path(self.factory_workspace_root).expanduser()
+            if str(root) in {".", "/"}:
+                raise ValueError(
+                    "FACTORY_WORKSPACE_ROOT deve ser um diretório dedicado."
+                )
+            if self.environment == "prod" and self.factory_command_backend != "docker":
+                raise ValueError("Factory mode em produção exige backend docker.")
         return self
 
     @property
@@ -316,6 +348,41 @@ class Settings(BaseSettings):
     @property
     def webhook_urls(self) -> list[str]:
         return [str(url) for url in json.loads(self.webhook_urls_json)]
+
+    @property
+    def factory_approved_scm_hosts(self) -> list[str]:
+        raw = json.loads(self.factory_approved_scm_hosts_json)
+        if not isinstance(raw, list):
+            raise ValueError("FACTORY_APPROVED_SCM_HOSTS_JSON deve ser uma lista.")
+        hosts: list[str] = []
+        for item in raw:
+            host = str(item).strip().lower().rstrip(".")
+            if not host or "*" in host or "://" in host or "/" in host:
+                raise ValueError(f"Host SCM inválido: {item!r}.")
+            if host == "localhost":
+                raise ValueError("localhost não pode ser host SCM aprovado.")
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("Endereços IP não podem ser hosts SCM aprovados.")
+            hosts.append(host)
+        return hosts
+
+    @property
+    def factory_build_profiles(self) -> dict[str, dict[str, object]]:
+        raw = json.loads(self.factory_build_profiles_json)
+        if not isinstance(raw, dict):
+            raise ValueError("FACTORY_BUILD_PROFILES_JSON deve ser um objeto.")
+        return {str(name): dict(value) for name, value in raw.items()}
+
+    @property
+    def factory_repository_profiles(self) -> dict[str, str]:
+        raw = json.loads(self.factory_repository_profiles_json)
+        if not isinstance(raw, dict):
+            raise ValueError("FACTORY_REPOSITORY_PROFILES_JSON deve ser um objeto.")
+        return {str(repository): str(profile) for repository, profile in raw.items()}
 
 
 @lru_cache

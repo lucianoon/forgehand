@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.auth import (
     AuthenticatedClient,
@@ -27,6 +27,11 @@ from app.api.service import (
     WorkflowNotFound,
 )
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
+from app.factory.intake import (
+    DirectWorkOrderInput,
+    normalize_direct_work_order,
+    planner_request,
+)
 from app.infrastructure.scm import (
     GitHubSCMClient,
     SCMError,
@@ -75,12 +80,28 @@ class DeliveryIn(BaseModel):
 
 class CreateWorkflowRequest(BaseModel):
     project_id: str = Field(min_length=1)
-    request: str = Field(min_length=10)
+    request: str | None = Field(default=None, min_length=10)
+    work_order: DirectWorkOrderInput | None = None
     budget: BudgetIn | None = None
     # acceptance_criteria do payload original: anexados à requisição para o
     # planner distribuí-los entre as tarefas
     acceptance_criteria: list[str] = Field(default_factory=list)
     delivery: DeliveryIn | None = None
+
+    @model_validator(mode="after")
+    def _one_request_shape(self) -> "CreateWorkflowRequest":
+        if (self.request is None) == (self.work_order is None):
+            raise ValueError("informe exatamente um de request ou work_order.")
+        if self.work_order is not None and (
+            self.budget is not None
+            or self.acceptance_criteria
+            or self.delivery is not None
+        ):
+            raise ValueError(
+                "budget, acceptance_criteria e delivery devem ficar dentro de "
+                "work_order no modo fábrica."
+            )
+        return self
 
 
 class CreateWorkflowResponse(BaseModel):
@@ -108,6 +129,7 @@ class WorkflowStatusResponse(BaseModel):
     final_output: str | None = None
     error: str | None = None
     delivery: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -150,6 +172,7 @@ def _to_response(data: dict[str, Any]) -> WorkflowStatusResponse:
         final_output=data["final_output"],
         error=data.get("error"),
         delivery=data.get("delivery"),
+        provenance=data.get("work_order"),
     )
 
 
@@ -162,27 +185,76 @@ async def create_workflow(
     client: AuthenticatedClient = Depends(require_api_client),
 ) -> CreateWorkflowResponse:
     # Publicar PR é ação de approver; só operator basta sem entrega.
-    require_role(client, "approver" if body.delivery is not None else "operator")
+    require_role(
+        client,
+        "approver"
+        if body.delivery is not None or body.work_order is not None
+        else "operator",
+    )
     service = _container(request).workflow_service
     await ensure_project_access(request, client, body.project_id)
 
-    full_request = body.request
-    if body.acceptance_criteria:
-        criteria = "\n".join(f"- {c}" for c in body.acceptance_criteria)
-        full_request += f"\n\nCritérios de aceitação do solicitante:\n{criteria}"
+    work_order = None
+    budget: WorkflowBudget | None
+    delivery: DeliveryConfig | None
+    if body.work_order is not None:
+        if not request.app.state.settings.factory_mode_enabled:
+            await record_audit_event(
+                request,
+                action="work_order_intake",
+                outcome="factory_disabled",
+                client_id=client.client_id,
+                project_id=body.project_id,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+            raise HTTPException(
+                status_code=409, detail="Factory mode não está habilitado."
+            )
+        work_order = normalize_direct_work_order(body.work_order)
+        full_request = planner_request(work_order)
+        budget = WorkflowBudget(**work_order.limits.model_dump())
+        delivery = DeliveryConfig(
+            repository=work_order.repository.full_name,
+            base_branch=work_order.repository.base_ref,
+            wait_for_checks=work_order.delivery_policy.wait_for_checks,
+            checks_timeout_seconds=(
+                work_order.delivery_policy.checks_timeout_seconds
+            ),
+        )
+        await record_audit_event(
+            request,
+            action="work_order_intake",
+            outcome="accepted",
+            client_id=client.client_id,
+            project_id=body.project_id,
+            status_code=status.HTTP_202_ACCEPTED,
+            detail=(
+                f"source={work_order.source.kind.value};"
+                f"repository={work_order.repository.full_name}"
+            ),
+        )
+    else:
+        assert body.request is not None
+        full_request = body.request
+        if body.acceptance_criteria:
+            criteria = "\n".join(f"- {c}" for c in body.acceptance_criteria)
+            full_request += f"\n\nCritérios de aceitação do solicitante:\n{criteria}"
 
-    budget = None
-    if body.budget is not None:
-        overrides = body.budget.model_dump(exclude_none=True)
-        budget = WorkflowBudget(**overrides) if overrides else None
+        budget = None
+        if body.budget is not None:
+            overrides = body.budget.model_dump(exclude_none=True)
+            budget = WorkflowBudget(**overrides) if overrides else None
 
-    delivery = DeliveryConfig(**body.delivery.model_dump()) if body.delivery else None
+        delivery = (
+            DeliveryConfig(**body.delivery.model_dump()) if body.delivery else None
+        )
     workflow_id = await service.start(
         body.project_id,
         full_request,
         budget,
         owner_client_id=client.client_id,
         delivery=delivery,
+        work_order=work_order,
     )
     await record_audit_event(
         request,

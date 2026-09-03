@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from app.graph.state import DeliveryConfig, DeliveryResult
+from app.models.factory import GitHubIssueSnapshot
 
 CheckState = Literal["success", "failure", "pending", "none"]
 _SUCCESS_CONCLUSIONS = {"success", "neutral", "skipped"}
@@ -281,6 +283,51 @@ class GitHubSCMClient:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
+
+    async def fetch_issue_snapshot(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        source_url: str,
+    ) -> GitHubIssueSnapshot:
+        """Lê uma issue usando apenas a credencial da instalação ativa."""
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+            raise ValueError("Repositório deve usar o formato owner/name.")
+        if issue_number <= 0:
+            raise ValueError("Número da issue deve ser positivo.")
+        payload = await self._request(
+            "GET", f"/repos/{repository}/issues/{issue_number}"
+        )
+        if "pull_request" in payload:
+            raise SCMError("A URL informada aponta para um pull request, não issue.")
+        user = payload.get("user")
+        author = user.get("login") if isinstance(user, dict) else None
+        labels = payload.get("labels", [])
+        if not isinstance(labels, list):
+            labels = []
+        label_names = [
+            str(item["name"])
+            for item in labels
+            if isinstance(item, dict) and item.get("name")
+        ]
+        try:
+            return GitHubIssueSnapshot.model_validate(
+                {
+                    "url": str(payload.get("html_url") or source_url),
+                    "number": int(payload["number"]),
+                    "title": str(payload["title"]),
+                    "body": str(payload.get("body") or ""),
+                    "labels": label_names,
+                    "repository": repository,
+                    "author": str(author or "unknown"),
+                    "updated_at": datetime.fromisoformat(
+                        str(payload["updated_at"]).replace("Z", "+00:00")
+                    ),
+                }
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SCMError("Resposta da issue está incompleta ou inválida.") from exc
 
     # ------------------------------------------------------------ publicação
     async def publish_pull_request(
