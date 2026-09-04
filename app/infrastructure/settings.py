@@ -265,6 +265,11 @@ class Settings(BaseSettings):
     agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
     agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     agent_tools_allow_checks: bool = True
+    # fetch_url: o agente busca uma página no meio da tarefa, com as mesmas
+    # guardas e limites WEB_REFERENCES_* (allowlist, SSRF, bytes, chars, CA).
+    # Opt-in por papel; o judge fica fora por padrão — ele confere o workspace.
+    agent_web_fetch_enabled: bool = False
+    agent_web_fetch_roles: str = "planner,executor"
     tool_hooks_json: str = "[]"
     tool_hooks_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 

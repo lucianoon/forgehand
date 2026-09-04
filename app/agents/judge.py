@@ -29,6 +29,7 @@ from app.agents.grounding import (
     validate_citations,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import (
     ObjectiveValidationPipeline,
@@ -360,6 +361,8 @@ class LLMJudge:
         system_prompt = SYSTEM_PROMPT + (
             TOOLS_GUIDANCE if self._tool_loop.has_tools else ""
         )
+        if self._tool_loop.has_tool("fetch_url"):
+            system_prompt += WEB_TOOL_GUIDANCE
         return CompletionRequest(
             model="",
             cache_prefix=cache_prefix,

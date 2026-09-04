@@ -213,6 +213,7 @@ auditáveis:
 | `list_directory` | todos | lista um diretório |
 | `search_repository` | todos | regex sobre arquivos de texto, devolve `path:linha: texto` |
 | `run_check` | executor | roda uma verificação já configurada (`pytest`, `ruff`, `mypy`) pelo nome |
+| `fetch_url` | planner e executor (opt-in) | busca uma página web e devolve o texto legível, com as guardas de [referências web](#referências-web-na-solicitação) |
 
 Toda leitura fica dentro do root (executor e judge usam
 `EXECUTOR_WORKSPACE_ROOT`; o planner usa `REPOSITORY_ROOT`), diretórios
@@ -234,7 +235,17 @@ AGENT_TOOLS_MAX_CALLS_PLANNER=4
 AGENT_TOOLS_MAX_CALLS_JUDGE=4
 AGENT_TOOLS_MAX_OUTPUT_CHARS=12000      # corte por resultado de ferramenta
 AGENT_TOOLS_ALLOW_CHECKS=true           # oferece run_check ao executor
+AGENT_WEB_FETCH_ENABLED=false           # oferece fetch_url (usa WEB_REFERENCES_* como guarda)
+AGENT_WEB_FETCH_ROLES=planner,executor  # papéis que recebem a ferramenta
 ```
+
+`fetch_url` compartilha o coletor das referências web: mesma allowlist, mesma
+resolução prévia contra SSRF, mesmos limites de bytes/caracteres e o mesmo
+`WEB_REFERENCES_CA_BUNDLE`. Uma URL recusada volta ao modelo como erro de
+ferramenta explicando o motivo; o texto de uma página lida chega marcado como
+externo e não confiável. Cada chamada conta no teto do papel e passa pelos
+[hooks](tool-hooks.md), então `{"event":"pre_tool","tool":"fetch_url","action":"deny"}`
+bloqueia a ferramenta sem desligar a configuração.
 
 Nos providers, a resposta final continua sendo a ferramenta de saída
 estruturada (`emit_structured_output`, sempre a primeira da lista). Na

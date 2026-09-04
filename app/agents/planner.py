@@ -24,6 +24,7 @@ from app.agents.grounding import (
     grounding_required,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
 from app.models.task import (
     AcceptanceCriterion,
@@ -259,6 +260,8 @@ class LLMPlanner:
             )
         if self._tool_loop.has_tools:
             prompt += TOOLS_GUIDANCE
+            if self._tool_loop.has_tool("fetch_url"):
+                prompt += WEB_TOOL_GUIDANCE
         return prompt
 
     @staticmethod

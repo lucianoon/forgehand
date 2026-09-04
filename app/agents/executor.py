@@ -17,6 +17,7 @@ from app.agents.grounding import (
     grounding_required,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import format_validation_feedback
 
@@ -278,6 +279,8 @@ class LLMExecutor:
         prompt = SYSTEM_PROMPT.format(capability=task.capability.value)
         if self._tool_loop.has_tools:
             prompt += TOOLS_GUIDANCE
+            if self._tool_loop.has_tool("fetch_url"):
+                prompt += WEB_TOOL_GUIDANCE
         return prompt
 
     def _build_user_content(
