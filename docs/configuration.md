@@ -422,3 +422,54 @@ O dashboard permite autenticar com a API key, iniciar workflows, acompanhar
 etapas, tarefas, tokens e custo, responder ao gate humano e copiar a entrega
 final sem depender de `curl`. O histórico recente por projeto permite retomar
 uma execução anterior sem guardar IDs manualmente.
+
+## Arquivo de configuração (forgehand.toml)
+
+`Settings` lê um `forgehand.toml` na raiz (ou o caminho em `FORGEHAND_CONFIG`)
+com as mesmas chaves das variáveis de ambiente, em minúsculas. Precedência:
+argumentos > variáveis de ambiente > `.env` > TOML > defaults. Segredos ficam
+fora do arquivo. Veja um exemplo completo em [quickstart.md](quickstart.md).
+
+## Roteamento por papel
+
+`PLANNER_TIER` e `JUDGE_TIER` (1=FAST, 2=STANDARD, 3=STRONG; default 2) escolhem
+o tier de cada papel. Com `PLANNER_ESCALATE_ON_RETRY=true` (default), um plano
+rejeitado pela validação estrutural é refeito um tier acima, sem passar de
+STRONG: caro só por escalonamento. As lições de workflows anteriores (reprovações
+do judge por capability) entram no contexto do planner em `project_memory.lessons`.
+
+## Ferramentas MCP
+
+`MCP_SERVERS_JSON` declara servidores MCP por stdio; cada ferramenta vira
+`mcp_<servidor>_<ferramenta>` para os papéis em `MCP_TOOLS_ROLES`
+(default `planner,executor`), com os mesmos hooks e tetos das demais.
+
+```bash
+MCP_SERVERS_JSON='[{"name":"docs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/srv/docs"],"allowed_tools":["read_file","search_files"]}]'
+MCP_TIMEOUT_SECONDS=30
+```
+
+Cada chamada abre uma sessão própria (initialize → tools/call → encerra); o
+servidor recebe um ambiente sem segredos do controlador mais o `env` da
+configuração. `allowed_tools` vazio expõe todas as ferramentas do servidor.
+
+## Eventos por SSE
+
+`GET /workflows/{id}/events` emite um evento por mudança de estado e encerra em
+estado terminal; `?interval=` (0,2 a 5 s) controla a amostragem. O dashboard usa
+esse fluxo via `fetch` com stream (EventSource não envia `X-API-Key`) e cai para
+polling se o stream falhar.
+
+## Produção
+
+Com `ENVIRONMENT=prod`, qualquer execução de comando pelo executor (aplicação de
+arquivos, `run_command`, validadores pytest/ruff/mypy) exige
+`EXECUTOR_COMMAND_BACKEND=docker`; o backend local é recusado na inicialização.
+
+## Avaliação contínua
+
+`uv run python -m app.evaluation.evals --budget-usd 1.5` roda `evals/cases.json`
+em sequência com o orçamento como teto duro, escreve `reports/evals-latest.md` e
+sai com código 1 se os limites de `evals/gates.json` reprovarem. O workflow
+`Evals` do GitHub roda manualmente e toda segunda-feira quando o segredo
+`ANTHROPIC_API_KEY` existe; a linha de base publicada fica em `evals/baseline/`.

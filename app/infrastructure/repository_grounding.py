@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import unicodedata
 from typing import Any
 
 
@@ -58,9 +59,35 @@ def _is_probably_text(path: Path) -> bool:
     return path.suffix.lower() in _TEXT_EXTENSIONS or path.name in _ALWAYS_INCLUDE
 
 
+def _fold(text: str) -> str:
+    """Sem acentos: 'função' casa com 'funcao' no código e vice-versa."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
+_SUFFIXES = (("coes", "cao"), ("oes", "ao"), ("amente", ""), ("mente", ""), ("es", ""), ("s", ""))
+
+
+def _stem(word: str) -> str:
+    """Radical aproximado PT/EN: 'testes'→'test', 'funcoes'→'funcao', 'arquivos'→'arquivo'.
+    Só corta quando sobra um radical com pelo menos 4 caracteres."""
+    for suffix, replacement in _SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) + len(replacement) >= 4:
+            return word[: -len(suffix)] + replacement
+    return word
+
+
 def _keywordize(text: str) -> list[str]:
-    words = re.findall(r"[a-z0-9_./-]+", text.lower())
-    return [word for word in words if len(word) >= 3]
+    words = re.findall(r"[a-z0-9_./-]+", _fold(text.lower()))
+    seen: list[str] = []
+    for word in words:
+        if len(word) < 3:
+            continue
+        stem = _stem(word)
+        if stem not in seen:
+            seen.append(stem)
+    return seen
 
 
 def _safe_read(path: Path, max_file_bytes: int) -> str:
@@ -221,7 +248,7 @@ class RepositoryGroundingCollector:
                 continue
 
             score = self._score_candidate(relative_path, text, keywords)
-            lower_path, lower_text = relative_path.lower(), text.lower()
+            lower_path, lower_text = _fold(relative_path.lower()), _fold(text.lower())
             hits = sum(1 for kw in keywords if kw in lower_path or kw in lower_text)
             candidates.append(
                 _Candidate(
@@ -244,8 +271,8 @@ class RepositoryGroundingCollector:
 
     @staticmethod
     def _score_candidate(relative_path: str, text: str, keywords: list[str]) -> int:
-        lower_path = relative_path.lower()
-        lower_text = text.lower()
+        lower_path = _fold(relative_path.lower())
+        lower_text = _fold(text.lower())
         score = 0
 
         if relative_path in _ALWAYS_INCLUDE:

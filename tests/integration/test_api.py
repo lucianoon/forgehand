@@ -763,3 +763,29 @@ async def test_details_of_workflow_cancelled_in_queue_is_404_not_500():
         assert "estado" in details.json()["detail"]
         missing = await client.get("/workflows/00000000-0000-0000-0000-000000000000/details")
         assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_events_stream_emits_state_and_ends_on_terminal():
+    app = make_app(run_workers=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+        timeout=10,
+    ) as client:
+        created = await client.post(
+            "/workflows", json={"project_id": "demo", "request": "Crie testes para o projeto"}
+        )
+        wid = created.json()["workflow_id"]
+        assert (await client.post(f"/workflows/{wid}/cancel")).status_code == 202
+        events = []
+        async with client.stream("GET", f"/workflows/{wid}/events?interval=0.2") as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+        assert events and events[-1]["status"] == "cancelled"
+        missing = await client.get("/workflows/00000000-0000-0000-0000-000000000000/events")
+        assert missing.status_code == 404

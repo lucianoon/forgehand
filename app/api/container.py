@@ -28,6 +28,7 @@ from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.web_tools import FetchUrlTool
 from app.agents.command_tool import RunCommandTool
+from app.agents.mcp_tools import discover_mcp_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.factory.build_strategy import BuildProfileRegistry
@@ -54,7 +55,7 @@ from app.models.task import Capability, TaskBudget
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import LLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
-from app.providers.registry import ProviderRouter
+from app.providers.registry import ModelTier, ProviderRouter
 
 
 @asynccontextmanager
@@ -142,6 +143,8 @@ class LeaseBoundRuntimeFactory:
             tools=build_agent_tools(settings, lease.local_path, role="planner"),
             max_tool_calls=settings.agent_tools_max_calls_planner,
             hooks=self._hooks,
+            tier=ModelTier(settings.planner_tier),
+            escalate_on_retry=settings.planner_escalate_on_retry,
             non_writing_capabilities={
                 capability
                 for capability, strategy in strategies.items()
@@ -167,6 +170,7 @@ class LeaseBoundRuntimeFactory:
             tools=build_agent_tools(settings, lease.local_path, role="judge"),
             max_tool_calls=settings.agent_tools_max_calls_judge,
             hooks=self._hooks,
+            tier=ModelTier(settings.judge_tier),
             independence=settings.judge_independence,
             critical_quorum=settings.judge_critical_quorum,
         )
@@ -368,6 +372,8 @@ def build_container(
             tools=planner_tools,
             max_tool_calls=settings.agent_tools_max_calls_planner,
             hooks=tool_hooks,
+            tier=ModelTier(settings.planner_tier),
+            escalate_on_retry=settings.planner_escalate_on_retry,
             non_writing_capabilities={
                 capability
                 for capability, strategy in execution_strategies.items()
@@ -390,6 +396,7 @@ def build_container(
             tools=judge_tools,
             max_tool_calls=settings.agent_tools_max_calls_judge,
             hooks=tool_hooks,
+            tier=ModelTier(settings.judge_tier),
             independence=settings.judge_independence,
             critical_quorum=settings.judge_critical_quorum,
         ),
@@ -475,6 +482,15 @@ def build_agent_tools(
         tools.append(
             RunCommandTool(
                 runner, root, max_output_chars=settings.agent_tools_max_output_chars
+            )
+        )
+    mcp_roles = {r.strip() for r in settings.mcp_tools_roles.split(",") if r.strip()}
+    if settings.mcp_servers_json.strip() not in ("", "[]") and role in mcp_roles:
+        tools.extend(
+            discover_mcp_tools(
+                settings.mcp_servers_json,
+                timeout_seconds=settings.mcp_timeout_seconds,
+                max_output_chars=settings.agent_tools_max_output_chars,
             )
         )
     if settings.agent_web_fetch_enabled and role in web_fetch_roles(settings):

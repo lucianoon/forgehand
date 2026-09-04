@@ -120,12 +120,53 @@ async function pollWorkflow() {
   }
 }
 
+let eventsAbort = null;
 function startPolling() {
   stopPolling();
   pollWorkflow();
-  pollTimer = window.setInterval(pollWorkflow, 1000);
+  if (typeof window.ReadableStream !== "undefined" && typeof AbortController !== "undefined") {
+    streamEvents();
+  } else {
+    pollTimer = window.setInterval(pollWorkflow, 1000);
+  }
 }
-function stopPolling() { if (pollTimer) window.clearInterval(pollTimer); pollTimer = null; }
+function stopPolling() {
+  if (pollTimer) window.clearInterval(pollTimer);
+  pollTimer = null;
+  if (eventsAbort) eventsAbort.abort();
+  eventsAbort = null;
+}
+// SSE via fetch (EventSource não envia X-API-Key). Cai para polling em erro.
+async function streamEvents() {
+  const controller = new AbortController();
+  eventsAbort = controller;
+  try {
+    const response = await fetch(`/workflows/${workflowId}/events`, { headers: apiHeaders(), signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error("stream indisponível");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separator;
+      while ((separator = buffer.indexOf("\n\n")) >= 0) {
+        const chunk = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+        if (!line) continue;
+        renderState(JSON.parse(line.slice(6)));
+        await refreshDetails();
+      }
+    }
+    if (eventsAbort === controller) { eventsAbort = null; await pollWorkflow(); }
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    eventsAbort = null;
+    pollTimer = window.setInterval(pollWorkflow, 1000);
+  }
+}
 
 async function refreshHistory() {
   if (!$('api-key').value.trim()) return;

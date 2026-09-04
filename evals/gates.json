@@ -1,0 +1,6 @@
+{
+  "min_completion_rate": 0.75,
+  "min_first_pass_rate": 0.5,
+  "max_average_cost_usd": 0.5,
+  "max_p95_elapsed_seconds": 240
+}

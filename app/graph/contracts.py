@@ -155,6 +155,7 @@ class DeliveryPublisher(Protocol):
         files: list[dict[str, str]],
         deletions: list[str],
         summary: str,
+        details: str = "",
     ) -> DeliveryResult: ...
 
 

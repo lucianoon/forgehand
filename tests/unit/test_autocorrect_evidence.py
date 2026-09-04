@@ -141,3 +141,42 @@ async def test_pytest_real_failure_is_still_a_failure(tmp_path) -> None:
         command_runner=_Runner(1, "1 failed"),
     )
     assert (await validator.execute()).passed is False
+
+
+def test_net_change_type_is_relative_to_task_start() -> None:
+    """Achado dos evals (04/09/2026): criado na rodada 1 e editado na rodada 2
+    aparecia como 'modified' e reprovava file_created."""
+    round_one = {
+        "applied_files": ["tests/test_core.py", "old.py"],
+        "published_files": [{"path": "tests/test_core.py", "content": "v1"}],
+        "file_diffs": [
+            {"path": "tests/test_core.py", "change_type": "created", "changed": True},
+            {"path": "old.py", "change_type": "deleted", "changed": True},
+        ],
+        "deleted_paths": ["old.py"],
+    }
+    round_two = {
+        "applied_files": ["tests/test_core.py", "old.py"],
+        "published_files": [
+            {"path": "tests/test_core.py", "content": "v2"},
+            {"path": "old.py", "content": "de volta"},
+        ],
+        "file_diffs": [
+            {"path": "tests/test_core.py", "change_type": "modified", "changed": True},
+            {"path": "old.py", "change_type": "created", "changed": True},
+        ],
+        "deleted_paths": [],
+    }
+    merged = LLMExecutor._merge_workspace_evidence(round_one, round_two)
+    kinds = {d["path"]: d["change_type"] for d in merged["file_diffs"]}
+    assert kinds == {"tests/test_core.py": "created", "old.py": "modified"}
+    assert {p["path"]: p["content"] for p in merged["published_files"]} == {"tests/test_core.py": "v2", "old.py": "de volta"}
+    assert merged["deleted_paths"] == []
+
+    # criado e removido na tarefa: nunca existiu — sai de tudo
+    round_three = {"applied_files": ["tests/test_core.py"], "published_files": [], "file_diffs": [], "deleted_paths": ["tests/test_core.py"]}
+    gone = LLMExecutor._merge_workspace_evidence(
+        {"published_files": [{"path": "tests/test_core.py", "content": "v1"}], "file_diffs": [{"path": "tests/test_core.py", "change_type": "created", "changed": True}], "deleted_paths": []},
+        round_three,
+    )
+    assert gone["file_diffs"] == [] and gone["published_files"] == [] and gone["deleted_paths"] == []

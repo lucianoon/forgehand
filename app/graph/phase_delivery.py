@@ -20,6 +20,34 @@ from app.models.factory import FactoryStage
 from app.models.task import AgentTask, EvaluationResult
 
 
+def criteria_details(state: WorkflowState, completed: list[AgentTask]) -> str:
+    """Tabela Markdown com o veredito por critério das tarefas publicadas,
+    para o corpo do PR: o revisor vê o que foi provado por código e o que
+    ficou com o judge LLM."""
+    latest: dict[UUID, EvaluationResult] = {}
+    for evaluation in state.evaluations:
+        latest[evaluation.task_id] = evaluation
+    lines = [
+        "## Critérios verificados",
+        "",
+        "| Tarefa | Critério | Nota | Validado por |",
+        "|---|---|---:|---|",
+    ]
+    rows = 0
+    for task in completed:
+        verdict = latest.get(task.id)
+        if verdict is None:
+            continue
+        validated = ", ".join(verdict.validated_by) or "llm"
+        for text, score in verdict.criteria_scores.items():
+            lines.append(
+                f"| {task.title[:60].replace('|', '/')} | {text[:80].replace('|', '/')} "
+                f"| {score:.2f} | {validated} |"
+            )
+            rows += 1
+    return "\n".join(lines) if rows else ""
+
+
 def build_delivery_nodes(deps: NodeDependencies) -> dict[str, Any]:
     # import local: scm importa state (modelos de entrega); o grafo não deve
     # depender de infraestrutura além destas funções puras de coleta.
@@ -170,6 +198,7 @@ def build_delivery_nodes(deps: NodeDependencies) -> dict[str, Any]:
             files=files,
             deletions=deletions,
             summary=summary,
+            details=criteria_details(state, completed),
         )
         result = result.model_copy(update={"attempts": attempts})
 
