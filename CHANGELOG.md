@@ -5,6 +5,27 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Corrigido
+
+- O aplicativo volta a importar e servir o mission control no Windows: `fcntl`,
+  `os.killpg`, `os.getuid` e as flags `O_NOFOLLOW`/`O_DIRECTORY` ficaram
+  confinados em `app/infrastructure/posix.py`. O factory mode continua
+  exigindo POSIX e falha fechado com `PosixRequired`; a lógica de matar o
+  grupo de processos deixou de estar duplicada entre workspace e runtime.
+- A suíte de testes não lê mais o `.env` do operador: `FORGEHAND_ENV_FILE`
+  escolhe o arquivo lido pelas `Settings` e vazio desliga a leitura, o que o
+  `conftest` faz. Um `AUDIT_LOG_PATH` real fora da CI derrubava dez testes.
+- Testes de API que constroem o factory mode passam a ser pulados quando o
+  binário `docker` não está no PATH, em vez de falhar na inicialização.
+
+### Alterado
+
+- `app/graph/nodes.py` (uma função de ~1.200 linhas) foi dividido por fase do
+  grafo: `contracts` (protocolos e `NodeDependencies`), `build_evidence`
+  (veto e relatórios), `phase_setup`, `phase_execution`, `phase_review` e
+  `phase_delivery`. `build_nodes(...)` e os tipos re-exportados mantêm a API;
+  o allowlist do checkpoint aceita `ExecutionPayload` nos dois caminhos.
+
 ## [0.4.1] — 2026-09-02
 
 Primeira rodada com LLM real (Claude Sonnet 5) contra um projeto-alvo com CI:
