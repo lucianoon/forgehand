@@ -287,7 +287,9 @@ prompt (o grounding é cacheado, então o custo recorrente é baixo).
 Executor operacional (opt-in):
 
 ```bash
-export EXECUTOR_WORKSPACE_ROOT=.
+# checkout do projeto-alvo; o default ./data/executor-workspace é um diretório
+# dedicado e vazio — nunca aponte para o diretório do servidor Forgehand
+export EXECUTOR_WORKSPACE_ROOT=/srv/projetos/alvo
 export EXECUTOR_APPLY_FILES_ENABLED=true
 export EXECUTOR_MAX_AUTOCORRECT_ROUNDS=1
 export PYTEST_VALIDATION_COMMAND="uv run pytest"

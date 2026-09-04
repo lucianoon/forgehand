@@ -175,6 +175,7 @@ class LLMExecutor:
         total_cost = 0.0
         last_model = "unknown"
         payload: dict[str, Any] = {}
+        cumulative_workspace: dict[str, Any] | None = None
         autocorrect_iterations: list[dict[str, Any]] = []
         stopped_reason = "completed_without_runtime"
         max_rounds = self._max_autocorrect_rounds if strategy.allow_autocorrect else 0
@@ -223,6 +224,13 @@ class LLMExecutor:
                 payload.update(
                     await self._workspace_runtime.apply(task, payload, strategy)
                 )
+                # Uma rodada de autocorreção sem operações devolvia um workspace
+                # vazio e apagava os arquivos aplicados na rodada anterior — a
+                # entrega (PR) publicaria nada. A evidência é cumulativa.
+                cumulative_workspace = self._merge_workspace_evidence(
+                    cumulative_workspace, payload.get("workspace")
+                )
+                payload["workspace"] = cumulative_workspace
 
             iteration_record = self._build_autocorrect_iteration(
                 iteration_number=iteration_index + 1,
@@ -348,6 +356,58 @@ class LLMExecutor:
         if not isinstance(workspace, dict):
             return ""
         return LLMExecutor._workspace_feedback_block(workspace)
+
+    @staticmethod
+    def _merge_workspace_evidence(
+        previous: dict[str, Any] | None, current: Any
+    ) -> dict[str, Any]:
+        """Une o workspace de rodadas sucessivas de autocorreção.
+
+        Arquivos aplicados/publicados/diffs acumulam por path (a rodada mais
+        recente vence); remoções posteriores retiram o path dos publicados;
+        o histórico de operações concatena. Checks (command_feedback),
+        estratégia e demais chaves vêm sempre da rodada atual.
+        """
+        current_ws = dict(current) if isinstance(current, dict) else {}
+        if not previous:
+            return current_ws
+        merged = {**previous, **current_ws}
+
+        def str_list(source: dict[str, Any], key: str) -> list[str]:
+            value = source.get(key)
+            return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+        def path_items(source: dict[str, Any], key: str) -> list[dict[str, Any]]:
+            value = source.get(key)
+            return [
+                v for v in value if isinstance(v, dict) and isinstance(v.get("path"), str)
+            ] if isinstance(value, list) else []
+
+        deleted_now = set(str_list(current_ws, "deleted_paths"))
+        merged["applied_files"] = list(
+            dict.fromkeys([*str_list(previous, "applied_files"), *str_list(current_ws, "applied_files")])
+        )
+        for key in ("published_files", "file_diffs"):
+            by_path = {item["path"]: item for item in path_items(previous, key)}
+            for path in deleted_now:
+                by_path.pop(path, None)
+            by_path.update({item["path"]: item for item in path_items(current_ws, key)})
+            if by_path or key in previous or key in current_ws:
+                merged[key] = list(by_path.values())
+        republished = {item["path"] for item in path_items(current_ws, "published_files")}
+        deleted = [
+            p for p in dict.fromkeys([*str_list(previous, "deleted_paths"), *deleted_now])
+            if p not in republished
+        ]
+        if deleted or "deleted_paths" in previous or "deleted_paths" in current_ws:
+            merged["deleted_paths"] = deleted
+        history = [
+            *(previous.get("operation_history") or []),
+            *(current_ws.get("operation_history") or []),
+        ]
+        if history:
+            merged["operation_history"] = history
+        return merged
 
     @staticmethod
     def _failed_command_feedback(payload: dict[str, Any]) -> list[dict[str, Any]]:

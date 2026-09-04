@@ -739,3 +739,27 @@ async def test_audit_events_are_recorded_and_filtered_by_client():
         )
 
     await app.state.container.workflow_service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_details_of_workflow_cancelled_in_queue_is_404_not_500():
+    """Cancelado antes de rodar: consta no inventário, mas nunca teve estado no
+    grafo. get_details levantava WorkflowNotFound sem tratamento -> 500."""
+    app = make_app(run_workers=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "key-demo"},
+    ) as client:
+        created = await client.post(
+            "/workflows",
+            json={"project_id": "demo", "request": "Crie testes para o projeto"},
+        )
+        wid = created.json()["workflow_id"]
+        cancelled = await client.post(f"/workflows/{wid}/cancel")
+        assert cancelled.status_code == 202
+        details = await client.get(f"/workflows/{wid}/details")
+        assert details.status_code == 404
+        assert "estado" in details.json()["detail"]
+        missing = await client.get("/workflows/00000000-0000-0000-0000-000000000000/details")
+        assert missing.status_code == 404

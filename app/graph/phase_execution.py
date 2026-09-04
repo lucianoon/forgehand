@@ -154,8 +154,26 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
             if evaluation.approved
             else task.next_status_after_failure()
         )
+        # A tentativa julgada recebe o veredito: sem isto ficava RUNNING para
+        # sempre no histórico, mesmo com a tarefa COMPLETED ou REJECTED.
+        attempts = list(task.attempts)
+        if attempts and attempts[-1].outcome == TaskStatus.RUNNING:
+            attempts[-1] = attempts[-1].model_copy(
+                update={
+                    "outcome": new_status,
+                    "failure_reason": (
+                        None
+                        if evaluation.approved
+                        else "; ".join(evaluation.failures[:3]) or "reprovado pelo judge"
+                    ),
+                }
+            )
         judged = task.model_copy(
-            update={"status": new_status, "updated_at": datetime.now(timezone.utc)}
+            update={
+                "status": new_status,
+                "attempts": attempts,
+                "updated_at": datetime.now(timezone.utc),
+            }
         )
         return judged, evaluation, judge_usage
 

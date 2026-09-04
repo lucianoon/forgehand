@@ -205,8 +205,17 @@ class AnthropicProvider(LLMProvider):
                     )
 
         if request.response_schema is not None and parsed is None and not tool_calls:
+            stop_reason = getattr(response, "stop_reason", None)
+            preview = " ".join(text_parts).strip()[:200]
+            detail = (
+                f"resposta truncada em max_tokens={request.max_tokens}; "
+                "aumente o limite ou reduza o conteúdo pedido"
+                if stop_reason == "max_tokens"
+                else f"stop_reason={stop_reason}"
+            )
             raise StructuredOutputError(
-                "Schema exigido mas o modelo não emitiu tool_use.",
+                "Schema exigido mas o modelo não emitiu tool_use "
+                f"({detail}; texto={preview!r}).",
                 provider=self.name,
             )
 

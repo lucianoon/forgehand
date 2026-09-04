@@ -14,7 +14,11 @@ from uuid import UUID
 from langgraph.types import interrupt
 
 from app.factory.delivery import factory_ready_for_review
-from app.graph.build_evidence import build_validation_section, latest_build_report
+from app.graph.build_evidence import (
+    build_validation_section,
+    latest_build_report,
+    render_task_result,
+)
 from app.graph.contracts import AdvisingOutcome, NodeDependencies
 from app.graph.state import WorkflowPhase, WorkflowState
 from app.models.task import AdvisorTrigger, AgentTask, TaskAttempt, TaskStatus
@@ -262,7 +266,7 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
                 f"{[(t.title, t.status.value) for t in state.incomplete_tasks]}\n"
             )
         for t in state.completed_tasks:
-            parts.append(f"## {t.title}\n{t.result}")
+            parts.append(f"## {t.title}\n{render_task_result(t.result)}")
         report = latest_build_report(state.plan)
         if report is not None:
             parts.append(build_validation_section(report))
