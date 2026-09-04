@@ -5,6 +5,19 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- Referências web na solicitação (`WEB_REFERENCES_ENABLED`, opt-in): URLs do
+  pedido são buscadas uma vez pelo controlador e viram evidências `[W1]`,
+  `[W2]`... no mesmo circuito de citações do grounding do repositório, com
+  guarda anti-SSRF (resolução prévia, endereços não públicos recusados a cada
+  redirecionamento), allowlist por sufixo de host, limites de bytes e
+  caracteres e só content-type textual. HTML vira texto preferindo
+  `<main>`/`<article>` e descartando `nav`/`footer`. `WEB_REFERENCES_CA_BUNDLE`
+  soma um PEM corporativo ao certifi. O sandbox continua sem rede. Validado ao
+  vivo: guia gerado a partir da documentação do uv, citando `[W1]`, aprovado
+  na primeira tentativa.
+
 ### Corrigido
 
 - Rodadas reais com Claude (03 e 04/09/2026) expuseram e corrigiram:

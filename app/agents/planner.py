@@ -266,7 +266,7 @@ class LLMPlanner:
         return {
             key: value
             for key, value in context.items()
-            if key != "repository_grounding"
+            if key not in ("repository_grounding", "web_references")
         }
 
     @staticmethod

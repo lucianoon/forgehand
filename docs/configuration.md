@@ -166,6 +166,41 @@ aceitos: viram `subjective`, exceto as formulações "alteração mínima /
 restrita ao arquivo novo" e "citações válidas", inferidas como
 `no_existing_file_modified` e `citations_valid`.
 
+## Referências web na solicitação
+
+Opt-in. Com `WEB_REFERENCES_ENABLED=true`, as URLs http(s) presentes no texto
+do pedido são buscadas **uma vez pelo controlador** ao carregar o contexto e
+viram evidências `[W1]`, `[W2]`... no mesmo circuito de citações do grounding
+do repositório: planner, executor e judge as recebem no prefixo cacheável, e
+`citations_valid` aceita esses ids. O sandbox continua sem rede.
+
+```bash
+export WEB_REFERENCES_ENABLED=true
+# opcional: sufixos de host permitidos (vazio = qualquer host público em 80/443)
+export WEB_REFERENCES_ALLOWED_HOSTS=docs.python.org,fastapi.tiangolo.com
+export WEB_REFERENCES_MAX_URLS=5            # URLs além disso são listadas, não buscadas
+export WEB_REFERENCES_MAX_BYTES=512000      # bytes lidos por página
+export WEB_REFERENCES_MAX_CHARS=12000       # caracteres por página no prompt
+export WEB_REFERENCES_TIMEOUT_SECONDS=10
+# atrás de proxy com CA corporativo: PEM somado ao bundle do certifi
+export WEB_REFERENCES_CA_BUNDLE=/etc/ssl/certs/empresa-root.pem
+```
+
+Sem o bundle, uma busca atrás de interceptação TLS falha com
+`CERTIFICATE_VERIFY_FAILED` e a evidência fica com `status: error` apontando
+para esta variável. No Windows, o PEM pode ser exportado do repositório de
+certificados com PowerShell (`Get-ChildItem Cert:\LocalMachine\Root`).
+
+Guardas, sempre ativas: só `http`/`https`; o host é resolvido antes da conexão
+e endereços privados, loopback, link-local, reservados ou multicast são
+recusados (inclusive a cada salto de redirecionamento, máximo três); porta fora
+de 80/443 só para host da allowlist; só content-type textual; HTML vira texto
+sem `script`/`style`. Uma URL recusada ou inacessível entra como evidência com
+`status: error`, para o agente saber que não pôde lê-la. O conteúdo baixado é
+apresentado aos agentes como externo e não confiável, nunca como instrução.
+DNS rebinding entre a resolução e a conexão não é coberto; use a allowlist em
+ambientes sensíveis.
+
 ## Tool-use dos agentes
 
 Planner, executor e judge podem explorar o workspace antes de responder, em
