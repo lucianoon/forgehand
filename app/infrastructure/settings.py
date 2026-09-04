@@ -271,7 +271,9 @@ class Settings(BaseSettings):
     # Credenciais (GITHUB_TOKEN ou GITHUB_APP_*) vêm do ambiente, não daqui.
     delivery_checks_poll_interval_seconds: float = Field(default=15.0, gt=0)
     delivery_checks_grace_seconds: float = Field(default=90.0, ge=0)
-    executor_workspace_root: str = "."
+    # Diretório dedicado, criado sob demanda. "." exporia o cwd do servidor
+    # (o próprio Forgehand) à exploração e escrita dos agentes.
+    executor_workspace_root: str = "./data/executor-workspace"
     executor_apply_files_enabled: bool = False
     executor_command_backend: Literal["local", "docker"] = "local"
     executor_sandbox_image: str = "python:3.12-slim"

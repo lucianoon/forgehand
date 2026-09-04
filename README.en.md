@@ -190,6 +190,11 @@ curl localhost:8000/metrics/prometheus
 curl localhost:8000/audit/events -H 'X-API-Key: dev-key'
 ```
 
+The `POST /workflows` body must be UTF-8. On Windows terminals (Git Bash,
+PowerShell) accented text typed inline arrives mangled and the API answers
+`There was an error parsing the body`; save the JSON to a file and send it with
+`curl --data-binary @req.json -H 'content-type: application/json; charset=utf-8'`.
+
 ### Mission control
 
 ```text

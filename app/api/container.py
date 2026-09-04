@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 from typing import Any
 
@@ -338,6 +339,7 @@ def build_container(
         )
     # Executor e judge exploram o workspace onde os arquivos são aplicados;
     # o planner explora o repositório do grounding. run_check só no executor.
+    ensure_executor_workspace(settings)
     executor_tools = build_agent_tools(
         settings, settings.executor_workspace_root, validators=objective_validators
     )
@@ -417,6 +419,14 @@ def build_container(
         ProductStudio(router, ProductStore(settings.product_studio_database))
         if settings.product_studio_enabled else None,
     )
+
+
+def ensure_executor_workspace(settings: Settings) -> Path:
+    """Garante o diretório que executor e judge exploram (e onde o executor
+    escreve, se habilitado). Sem isso, list_directory no default falharia."""
+    root = Path(settings.executor_workspace_root).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 def build_agent_tools(

@@ -7,6 +7,27 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Rodadas reais com Claude (03 e 04/09/2026) expuseram e corrigiram:
+  - executor e judge exploravam o diretório do próprio servidor: o default de
+    `EXECUTOR_WORKSPACE_ROOT` passa a ser `./data/executor-workspace`, criado
+    sob demanda, e o `.env.demo` aponta planner e executor para um workspace
+    dedicado;
+  - a entrega final embutia o conteúdo num repr de dict Python: `synthesize`
+    renderiza resumo, notas e arquivos aplicados (`render_task_result`);
+  - `GET /workflows/{id}/details` devolvia 500 para workflow cancelado na fila
+    ou inexistente; agora 404;
+  - no Windows, `python -m pytest` disparado pelo servidor sob `uv run` caía
+    no interpretador base sem pytest (CreateProcess procura primeiro no
+    diretório do executável pai): o runner local resolve argv[0] pelo PATH;
+  - a segunda rodada de autocorreção sem operações apagava
+    `applied_files`/`published_files` da rodada anterior — um PR publicaria
+    nada. A evidência de workspace é cumulativa entre rodadas;
+  - pytest com exit 5 (nenhum teste coletado) contava como reprovação e
+    disparava rodada de autocorreção inútil; vira sinal ausente (`None`);
+  - a tentativa julgada ficava com `outcome=running` para sempre; recebe o
+    veredito e o motivo;
+  - `StructuredOutputError` passa a informar `stop_reason` (em especial
+    truncamento por `max_tokens`) e um trecho do texto emitido.
 - O aplicativo volta a importar e servir o mission control no Windows: `fcntl`,
   `os.killpg`, `os.getuid` e as flags `O_NOFOLLOW`/`O_DIRECTORY` ficaram
   confinados em `app/infrastructure/posix.py`. O factory mode continua

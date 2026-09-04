@@ -14,7 +14,7 @@ e observabilidade OTel.
 
 ## Em 30 segundos
 
-- **198 funções de teste** entre cenários unitários e de integração.
+- **472 funções de teste** entre cenários unitários e de integração.
 - CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
 - `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
 - Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
@@ -107,6 +107,11 @@ curl localhost:8000/readyz
 curl localhost:8000/metrics/prometheus
 curl localhost:8000/audit/events -H 'X-API-Key: dev-key'
 ```
+
+O corpo do `POST /workflows` deve ir em UTF-8. Em terminais Windows (Git Bash,
+PowerShell) o texto com acentos digitado inline chega corrompido e a API
+responde `There was an error parsing the body`; salve o JSON em arquivo e envie
+com `curl --data-binary @req.json -H 'content-type: application/json; charset=utf-8'`.
 
 Provedor de LLM (OpenAI direto, OpenRouter ou Anthropic), execução sem Docker, worker dedicado
 com Postgres, memória persistente em Neo4j, tracing OTel/Langfuse, tuning de

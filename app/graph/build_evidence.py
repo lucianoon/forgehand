@@ -203,6 +203,56 @@ def apply_build_veto(
     return evaluation.model_copy(update=updates)
 
 
+def render_task_result(result: Any) -> str:
+    """Texto legível do resultado de uma tarefa para a entrega final.
+
+    O executor devolve {"summary", "operations", "notes", "citations",
+    "exploration", "workspace"}; despejar o dict cru embutia o conteúdo
+    entregue dentro de um repr Python. Aqui: resumo, conteúdo das notas e a
+    lista de arquivos aplicados/publicados. Resultados que não seguem o
+    contrato caem em str().
+    """
+    if not isinstance(result, dict):
+        return str(result) if result is not None else ""
+    parts: list[str] = []
+    summary = result.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        parts.append(summary.strip())
+    notes = result.get("notes")
+    if isinstance(notes, list):
+        for note in notes:
+            if isinstance(note, str) and note.strip():
+                parts.append(note.strip())
+    workspace = result.get("workspace")
+    paths: list[str] = []
+    if isinstance(workspace, dict):
+        applied = workspace.get("applied_files")
+        if isinstance(applied, list):
+            paths.extend(str(item) for item in applied if isinstance(item, str))
+        published = workspace.get("published_files")
+        if isinstance(published, list):
+            paths.extend(
+                item["path"]
+                for item in published
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            )
+    lines = [f"- `{path}`" for path in dict.fromkeys(paths)]
+    if isinstance(workspace, dict):
+        deleted = workspace.get("deleted_paths")
+        if isinstance(deleted, list):
+            lines.extend(
+                f"- `{item}` (removido)"
+                for item in dict.fromkeys(item for item in deleted if isinstance(item, str))
+            )
+    if lines:
+        parts.append("Arquivos:\n" + "\n".join(lines))
+    if not parts:
+        # Sem summary/notes: mostra o que houver, menos ruído de exploração.
+        visible = {k: v for k, v in result.items() if k not in {"exploration", "citations"}}
+        return json.dumps(visible, ensure_ascii=False, indent=2, default=str) if visible else ""
+    return "\n\n".join(parts)
+
+
 def with_delivery_section(final_output: str | None, result: DeliveryResult) -> str:
     lines = [final_output or "", "", "## Entrega"]
     if result.url:

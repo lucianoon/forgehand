@@ -4,6 +4,7 @@ import asyncio
 import difflib
 import re
 import shlex
+import shutil
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,6 +22,24 @@ class CommandRunner(Protocol):
     ) -> dict[str, Any]: ...
 
 
+def resolve_argv(argv: list[str]) -> list[str]:
+    """Troca argv[0] pelo caminho absoluto encontrado no PATH.
+
+    No Windows, CreateProcess procura primeiro no diretório do executável do
+    processo pai: um servidor rodando sob `uv run` que chama `python -m pytest`
+    cai no interpretador base (sem pytest) em vez do da venv que está no PATH.
+    Resolver antes garante o mesmo binário que `shutil.which` (e o operador)
+    enxergam. Sem correspondência, mantém o nome e deixa o SO falhar.
+    """
+    if not argv:
+        return argv
+    located = shutil.which(argv[0])
+    return [located, *argv[1:]] if located else list(argv)
+
+
+PYTEST_NO_TESTS_COLLECTED = 5
+
+
 class LocalCommandRunner:
     def __init__(self, policy: CommandPolicy | None = None) -> None:
         self._policy = policy or CommandPolicy()
@@ -28,7 +47,7 @@ class LocalCommandRunner:
     async def run(
         self, command: str, workspace_root: Path, output_limit: int
     ) -> dict[str, Any]:
-        argv = self._policy.parse(command)
+        argv = resolve_argv(self._policy.parse(command))
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(workspace_root),
@@ -417,7 +436,7 @@ class LocalWorkspaceRuntime:
         output_limit: int,
     ) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(command),
+            *resolve_argv(shlex.split(command)),
             cwd=str(self._root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -579,10 +598,18 @@ class CommandObjectiveValidator:
         combined = "\n".join(
             part.strip() for part in (stdout_text, stderr_text) if part.strip()
         )
+        exit_code = execution["exit_code"]
+        passed: bool | None = exit_code == 0
+        if self.name == "pytest" and exit_code == PYTEST_NO_TESTS_COLLECTED:
+            # Nenhum teste coletado não é código quebrado: sinal ausente, não
+            # reprovação. Evita uma rodada de autocorreção inútil e deixa o
+            # critério tests_pass sem evidência (fail-closed no judge).
+            passed = None
+            combined = f"nenhum teste coletado (exit_code={exit_code}). {combined}".strip()
         return ValidationSignal(
             name=self.name,
-            passed=execution["exit_code"] == 0,
-            details=combined or f"exit_code={execution['exit_code']}",
+            passed=passed,
+            details=combined or f"exit_code={exit_code}",
             command=self._command,
             exit_code=execution["exit_code"],
             stdout=stdout_text,

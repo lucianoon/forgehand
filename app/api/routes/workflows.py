@@ -499,9 +499,17 @@ async def workflow_details(
     client: AuthenticatedClient = Depends(require_api_client),
 ) -> dict[str, Any]:
     service = _container(request).workflow_service
-    access = await service.get_access_context(workflow_id)
-    await ensure_workflow_access(request, client, access)
-    return await service.get_details(workflow_id)
+    try:
+        access = await service.get_access_context(workflow_id)
+        await ensure_workflow_access(request, client, access)
+        return await service.get_details(workflow_id)
+    except WorkflowNotFound:
+        # Cancelado ainda na fila: existe no inventário, mas nunca teve estado
+        # no grafo. Antes vazava como 500.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow sem estado de execução para detalhar.",
+        ) from None
 
 
 @router.post("/{workflow_id}/pull-request", status_code=status.HTTP_201_CREATED)
