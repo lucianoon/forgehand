@@ -152,6 +152,8 @@ Cada tarefa do plano carrega `acceptance_criteria` como objetos
 | `changes_limited_to` | `paths` (globs) | todos os arquivos alterados casam com algum glob |
 | `content_contains` | `path`, `pattern` (regex) | conteúdo final publicado de `path` casa com `pattern` |
 | `citations_valid` | — | `citations` existem no grounding e estão no escopo da tarefa |
+| `output_contains` | `pattern` (regex) | o texto entregue (`summary` + `notes`) casa com `pattern`; para tarefas que não gravam arquivo |
+| `output_min_chars` | `min_chars` | o texto entregue tem pelo menos `min_chars` caracteres |
 
 Os objetivos entram em `criteria_scores` como 1.0 ou 0.0 sem passar pelo
 LLM, e uma falha vira `required_changes` acionável (ex.: "Crie o arquivo X
@@ -214,6 +216,7 @@ auditáveis:
 | `search_repository` | todos | regex sobre arquivos de texto, devolve `path:linha: texto` |
 | `run_check` | executor | roda uma verificação já configurada (`pytest`, `ruff`, `mypy`) pelo nome |
 | `fetch_url` | planner e executor (opt-in) | busca uma página web e devolve o texto legível, com as guardas de [referências web](#referências-web-na-solicitação) |
+| `run_command` | executor (opt-in) | executa um comando da allowlist (`git`, `python`, `pytest`, `ruff`, `mypy`, `uv`) no workspace, sem shell, sem rede, com timeout e sem segredos no ambiente |
 
 Toda leitura fica dentro do root (executor e judge usam
 `EXECUTOR_WORKSPACE_ROOT`; o planner usa `REPOSITORY_ROOT`), diretórios
@@ -237,7 +240,17 @@ AGENT_TOOLS_MAX_OUTPUT_CHARS=12000      # corte por resultado de ferramenta
 AGENT_TOOLS_ALLOW_CHECKS=true           # oferece run_check ao executor
 AGENT_WEB_FETCH_ENABLED=false           # oferece fetch_url (usa WEB_REFERENCES_* como guarda)
 AGENT_WEB_FETCH_ROLES=planner,executor  # papéis que recebem a ferramenta
+AGENT_TOOLS_ALLOW_COMMANDS=false        # oferece run_command ao executor
+AGENT_TOOLS_COMMAND_TIMEOUT_SECONDS=120 # mata o processo (e o grupo) ao estourar
 ```
+
+`run_command` difere de `run_check`: o modelo escolhe o comando, mas só dentro
+da allowlist de executáveis do `CommandPolicy`, sem shell. Subcomandos que
+tocam a rede ou instalam dependências são negados (`git push/pull/fetch/clone/
+remote/submodule`, `uv add/sync/pip/publish/tool`, `python -m pip`, `python -c`).
+No backend local, o processo recebe um ambiente sem variáveis cujo nome sugira
+chave, token, senha ou credencial; com `EXECUTOR_COMMAND_BACKEND=docker` roda no
+sandbox sem rede. Cada chamada conta no teto do executor e passa pelos hooks.
 
 `fetch_url` compartilha o coletor das referências web: mesma allowlist, mesma
 resolução prévia contra SSRF, mesmos limites de bytes/caracteres e o mesmo
@@ -322,6 +335,15 @@ O runtime também grava `workspace.published_files` (conteúdo final de cada
 arquivo tocado) e `workspace.deleted_paths`; é isso que
 `POST /workflows/{id}/pull-request` publica. Payloads antigos com `files`
 (arquivo inteiro) continuam aceitos e são tratados como `create`.
+
+Para que o executor consiga editar qualquer ponto de um arquivo, ele precisa
+O grounding é por relevância: um arquivo só entra se alguma palavra do pedido
+aparece no caminho ou no texto, salvo referências do projeto (README,
+pyproject, docker-compose...). `REPOSITORY_GROUNDING_MAX_TOTAL_CHARS` (default
+`40000`) limita o total do prefixo enviado, e cacheado, para planner, executor
+e judge; `REPOSITORY_GROUNDING_REQUIRE_KEYWORD_MATCH=false` volta a incluir
+arquivos por posição no ranking. A resposta traz `omitted_candidates` e
+`total_chars` para auditoria.
 
 Para que o executor consiga editar qualquer ponto de um arquivo, ele precisa
 ter visto o texto. `REPOSITORY_GROUNDING_FULL_FILE_MAX_BYTES` (default `0`,

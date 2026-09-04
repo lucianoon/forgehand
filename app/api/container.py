@@ -27,6 +27,7 @@ from app.infrastructure.product_store import ProductStore
 from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.web_tools import FetchUrlTool
+from app.agents.command_tool import RunCommandTool
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.factory.build_strategy import BuildProfileRegistry
@@ -41,6 +42,7 @@ from app.infrastructure.scm import GitHubDeliveryService
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
+    CommandRunner,
     DockerSandboxCommandRunner,
     LocalCommandRunner,
     LocalWorkspaceRuntime,
@@ -180,6 +182,8 @@ class LeaseBoundRuntimeFactory:
             max_excerpt_lines=settings.repository_grounding_max_lines_per_file,
             max_file_bytes=settings.repository_grounding_max_file_bytes,
             full_file_max_bytes=settings.repository_grounding_full_file_max_bytes,
+            max_total_chars=settings.repository_grounding_max_total_chars,
+            require_keyword_match=settings.repository_grounding_require_keyword_match,
         ).collect(request)
 
     def build_planner(self, lease: WorkspaceLease) -> LLMPlanner:
@@ -454,6 +458,25 @@ def build_agent_tools(
         if validators and settings.agent_tools_allow_checks
         else None,
     )
+    if role == "executor" and settings.agent_tools_allow_commands:
+        runner: CommandRunner = (
+            DockerSandboxCommandRunner(
+                image=settings.executor_sandbox_image,
+                memory=settings.executor_sandbox_memory,
+                cpus=settings.executor_sandbox_cpus,
+                network_enabled=False,
+            )
+            if settings.executor_command_backend == "docker"
+            else LocalCommandRunner(
+                timeout_seconds=settings.agent_tools_command_timeout_seconds,
+                sanitize_env=True,
+            )
+        )
+        tools.append(
+            RunCommandTool(
+                runner, root, max_output_chars=settings.agent_tools_max_output_chars
+            )
+        )
     if settings.agent_web_fetch_enabled and role in web_fetch_roles(settings):
         tools.append(
             FetchUrlTool(

@@ -4,6 +4,7 @@ import asyncio
 import signal
 
 from app.api.container import build_container, checkpointer_context
+from app.infrastructure.logging_setup import configure_logging
 from app.infrastructure.memory import project_memory_context
 from app.infrastructure.settings import get_settings
 from app.infrastructure.tracing import tracing_context
@@ -44,6 +45,7 @@ async def run_worker() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(run_worker())
 
 

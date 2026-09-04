@@ -109,6 +109,8 @@ def _evaluate(
         return _signal_verdict(criterion, signals.get(_SIGNAL_BY_KIND[kind]))
     if kind is CriterionKind.CITATIONS_VALID:
         return _citations_verdict(criterion, task, context)
+    if kind in (CriterionKind.OUTPUT_CONTAINS, CriterionKind.OUTPUT_MIN_CHARS):
+        return _output_verdict(criterion, task)
 
     workspace = _workspace(task)
     if workspace is None or "file_diffs" not in workspace:
@@ -284,6 +286,58 @@ def _changes_limited_to(
         )
     return ObjectiveVerdict(
         criterion, True, f"mudanças restritas a {', '.join(allowed)}."
+    )
+
+
+def task_output_text(task: AgentTask) -> str:
+    """Texto entregue por uma tarefa que não grava arquivo: summary + notes.
+    Ignora exploração, citações e workspace — só o que o executor afirmou."""
+    result = task.result
+    if not isinstance(result, dict):
+        return str(result or "")
+    parts: list[str] = []
+    summary = result.get("summary")
+    if isinstance(summary, str):
+        parts.append(summary)
+    notes = result.get("notes")
+    if isinstance(notes, list):
+        parts.extend(note for note in notes if isinstance(note, str))
+    return "\n".join(parts)
+
+
+def _output_verdict(criterion: AcceptanceCriterion, task: AgentTask) -> ObjectiveVerdict:
+    """Critérios sobre o texto entregue (tarefas sem arquivo): presença de
+    conteúdo por regex e tamanho mínimo. Decididos por código, sem LLM."""
+    text = task_output_text(task)
+    if criterion.kind is CriterionKind.OUTPUT_MIN_CHARS:
+        minimum = criterion.min_chars or 1
+        length = len(text.strip())
+        if length >= minimum:
+            return ObjectiveVerdict(
+                criterion, True, f"texto entregue com {length} caracteres (mínimo {minimum})."
+            )
+        return ObjectiveVerdict(
+            criterion,
+            False,
+            f"texto entregue com {length} caracteres; mínimo exigido {minimum}.",
+            required_change=(
+                f"Entregue em summary/notes um texto com pelo menos {minimum} caracteres."
+            ),
+        )
+    pattern = criterion.pattern or ""
+    try:
+        found = re.search(pattern, text, re.MULTILINE | re.IGNORECASE) is not None
+    except re.error as exc:
+        return ObjectiveVerdict(criterion, False, f"regex inválida no critério: {exc}")
+    if found:
+        return ObjectiveVerdict(criterion, True, f"texto entregue contém /{pattern}/.")
+    return ObjectiveVerdict(
+        criterion,
+        False,
+        f"texto entregue (summary/notes) não contém /{pattern}/.",
+        required_change=(
+            f"Inclua no texto entregue (summary/notes) o conteúdo exigido: /{pattern}/."
+        ),
     )
 
 

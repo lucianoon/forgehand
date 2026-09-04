@@ -7,6 +7,17 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Critérios objetivos para tarefas que não gravam arquivo: `output_contains`
+  (regex sobre summary/notes) e `output_min_chars` (tamanho mínimo do texto
+  entregue). Análise, pesquisa e síntese deixam de depender só do judge LLM;
+  o planner é instruído a usá-los em capabilities sem escrita.
+- Ferramenta `run_command` para o executor (`AGENT_TOOLS_ALLOW_COMMANDS`,
+  opt-in): comandos da allowlist do `CommandPolicy` sem shell, com subcomandos
+  de rede e instalação negados, timeout configurável e ambiente sem segredos
+  no backend local; passa pelos hooks e tetos como as demais ferramentas.
+- O runner local de comandos aceita timeout (mata o grupo de processos) e
+  ambiente saneado; cada chamada de LLM registra em log tokens de entrada,
+  cache (escrita/leitura), saída, custo e latência.
 - Ferramenta `fetch_url` para planner e executor (`AGENT_WEB_FETCH_ENABLED`,
   `AGENT_WEB_FETCH_ROLES`; opt-in): o agente busca uma página no meio da
   tarefa com as mesmas guardas e limites das referências web, o texto volta
@@ -23,8 +34,24 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   vivo: guia gerado a partir da documentação do uv, citando `[W1]`, aprovado
   na primeira tentativa.
 
+### Alterado
+
+- Grounding do repositório por relevância: arquivos sem nenhuma palavra do
+  pedido no caminho ou no texto ficam de fora, salvo referências do projeto
+  (README, pyproject...), e `REPOSITORY_GROUNDING_MAX_TOTAL_CHARS` (40 mil)
+  limita o prefixo cacheado enviado a planner, executor e judge. Na primeira
+  rodada real o planner recebia 16 arquivos irrelevantes (~9 mil tokens) para
+  um pedido sem relação com o repositório. `REPOSITORY_GROUNDING_REQUIRE_KEYWORD_MATCH=false`
+  restaura o comportamento anterior.
+
 ### Corrigido
 
+- O allowlist do checkpoint não declarava `AcceptanceCriterion` nem
+  `CriterionKind`: cada retomada de estado registrava "Blocked deserialization
+  of app.models.task.CriterionKind". Teste de ida e volta incluído.
+- Sob o uvicorn nenhum log do aplicativo abaixo de WARNING aparecia (o raiz
+  não tinha handler): `configure_logging()` na API e no worker, nível por
+  `LOG_LEVEL`, sem sobrescrever configuração existente.
 - Rodadas reais com Claude (03 e 04/09/2026) expuseram e corrigiram:
   - executor e judge exploravam o diretório do próprio servidor: o default de
     `EXECUTOR_WORKSPACE_ROOT` passa a ser `./data/executor-workspace`, criado

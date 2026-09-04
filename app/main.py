@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 
 from app.api.container import build_container, checkpointer_context
+from app.infrastructure.logging_setup import configure_logging
 from app.api.routes.operations import router as operations_router
 from app.api.routes.workflows import router as workflows_router
 from app.api.routes.products import router as products_router
@@ -24,6 +25,7 @@ from app.infrastructure.telemetry import HttpMetrics
 from app.infrastructure.tracing import tracing_context
 from app.infrastructure.workflow_queue import WorkflowDispatchConflict, workflow_queue_context
 
+configure_logging()
 WEB_ROOT = Path(__file__).with_name("web")
 
 

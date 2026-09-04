@@ -36,7 +36,7 @@ quiser que o executor possa explorar executando seus validadores configurados.
 Os agentes usam nomes `planner`, `judge`, `backend_executor`, `quality_executor`,
 `docs_executor` e `architecture_executor`. Escalados conservam o nome do perfil.
 As ferramentas atuais são `read_file`, `list_directory`, `search_repository`,
-`run_check` (quando habilitada) e `fetch_url` (quando habilitada por papel). Não há matcher por conteúdo de argumentos ou por
+`run_check`, `run_command` e `fetch_url` (as três quando habilitadas). Não há matcher por conteúdo de argumentos ou por
 paths; `tool` identifica a ferramenta, não o arquivo acessado.
 
 Configuração inválida impede a inicialização: campos desconhecidos, eventos e

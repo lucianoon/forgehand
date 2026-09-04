@@ -77,11 +77,15 @@ class CriterionKind(str, Enum):
     CHANGES_LIMITED_TO = "changes_limited_to"  # mudanças só em `paths` (globs)
     CONTENT_CONTAINS = "content_contains"  # `pattern` (regex) em `path` final
     CITATIONS_VALID = "citations_valid"  # citations existem e estão no escopo
+    OUTPUT_CONTAINS = "output_contains"  # `pattern` (regex) no texto entregue (summary+notes)
+    OUTPUT_MIN_CHARS = "output_min_chars"  # texto entregue com pelo menos `min_chars`
 
     @property
     def is_objective(self) -> bool:
         return self is not CriterionKind.SUBJECTIVE
 
+
+_KINDS_NEEDING_PATTERN = {CriterionKind.CONTENT_CONTAINS, CriterionKind.OUTPUT_CONTAINS}
 
 _KINDS_NEEDING_PATH = {
     CriterionKind.FILE_CREATED,
@@ -124,15 +128,20 @@ class AcceptanceCriterion(BaseModel):
         default_factory=list, description="changes_limited_to: paths ou globs"
     )
     pattern: str | None = Field(
-        default=None, description="content_contains: regex Python"
+        default=None, description="content_contains / output_contains: regex Python"
+    )
+    min_chars: int | None = Field(
+        default=None, ge=1, description="output_min_chars: tamanho mínimo do texto entregue"
     )
 
     @model_validator(mode="after")
     def _parameters_match_kind(self) -> "AcceptanceCriterion":
         if self.kind in _KINDS_NEEDING_PATH and not self.path:
             raise ValueError(f"critério {self.kind.value} exige `path`.")
-        if self.kind is CriterionKind.CONTENT_CONTAINS and not self.pattern:
-            raise ValueError("critério content_contains exige `pattern`.")
+        if self.kind in _KINDS_NEEDING_PATTERN and not self.pattern:
+            raise ValueError(f"critério {self.kind.value} exige `pattern`.")
+        if self.kind is CriterionKind.OUTPUT_MIN_CHARS and not self.min_chars:
+            raise ValueError("critério output_min_chars exige `min_chars`.")
         if self.kind is CriterionKind.CHANGES_LIMITED_TO and not self.paths:
             raise ValueError("critério changes_limited_to exige `paths`.")
         return self
@@ -144,8 +153,10 @@ class AcceptanceCriterion(BaseModel):
             return self.text
         detail = self.path or (", ".join(self.paths) if self.paths else "")
         suffix = f"{self.kind.value}: {detail}" if detail else self.kind.value
-        if self.kind is CriterionKind.CONTENT_CONTAINS:
+        if self.kind in _KINDS_NEEDING_PATTERN:
             suffix += f"; pattern={self.pattern!r}"
+        if self.kind is CriterionKind.OUTPUT_MIN_CHARS:
+            suffix += f"; min_chars={self.min_chars}"
         return f"{self.text} [{suffix}]"
 
 
