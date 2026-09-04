@@ -1,3 +1,4 @@
+import os
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,10 @@ from app.models.factory import (
     WorkspaceLifecycle,
     WorkspaceRetention,
 )
+
+# Factory mode é POSIX por design (lock fcntl, dir_fd/O_NOFOLLOW, grupo de
+# processos, caminhos de lease em /): no Windows só o mission control roda.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 
 
 @pytest.mark.asyncio

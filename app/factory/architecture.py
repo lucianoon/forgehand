@@ -9,6 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.posix import (
+    O_DIRECTORY,
+    O_NOFOLLOW,
+    O_NONBLOCK,
+    require_posix,
+)
+
 from app.models.architecture import (
     ArchitectureFinding,
     ArchitecturePolicy,
@@ -196,7 +203,7 @@ class _Scan:
                 continue
             if stat.S_ISDIR(mode):
                 child = os.open(
-                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+                    name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=fd
                 )
                 try:
                     self.walk(child, item_path, item_relative, depth + 1)
@@ -213,7 +220,7 @@ class _Scan:
                 self.files += 1
                 self.budget()
                 source = os.open(
-                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd
+                    name, os.O_RDONLY | O_NOFOLLOW | O_NONBLOCK, dir_fd=fd
                 )
                 with os.fdopen(source, "rb") as handle:
                     info = os.fstat(handle.fileno())
@@ -230,10 +237,12 @@ class _Scan:
 
 
 def check_architecture(root: Path, policy: ArchitecturePolicy) -> ArchitectureReport:
+    # dir_fd + O_NOFOLLOW são a garantia contra links trocados: sem POSIX, recusa.
+    require_posix("architecture_scan")
     policy = ArchitecturePolicy.model_validate(policy.model_dump())
     scan = _Scan(policy)
     try:
-        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        root_fd = os.open(root, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         try:
             for source_root in policy.source_roots:
                 fd = os.dup(root_fd)
@@ -241,7 +250,7 @@ def check_architecture(root: Path, policy: ArchitecturePolicy) -> ArchitectureRe
                     for part in Path(source_root).parts:
                         child = os.open(
                             part,
-                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW,
                             dir_fd=fd,
                         )
                         os.close(fd)

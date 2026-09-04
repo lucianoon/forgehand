@@ -1,0 +1,4 @@
+# Fixtures do benchmark da factory: o SHA base fixado em cases.json depende
+# dos bytes exatos dos arquivos. Sem isto, um checkout com autocrlf=true no
+# Windows muda os blobs e o SHA.
+benchmarks/factory/** text eol=lf

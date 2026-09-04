@@ -1,3 +1,4 @@
+import os
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,10 @@ from pydantic import ValidationError
 from app.infrastructure.command_policy import CommandPolicy
 from app.models.build import BuildPhase, BuildPhaseName, BuildProfile
 from app.models.factory import WorkspaceRetention
+
+# Factory mode é POSIX por design (lock fcntl, dir_fd/O_NOFOLLOW, grupo de
+# processos, caminhos de lease em /): no Windows só o mission control roda.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 
 
 def profile(*phases: BuildPhase) -> BuildProfile:

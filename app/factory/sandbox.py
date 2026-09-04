@@ -22,6 +22,7 @@ from app.factory.build_strategy import BuildProfileRegistry
 from app.factory.architecture import check_architecture
 from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
 from app.infrastructure.command_policy import AuthorizedBuildCommand, CommandPolicy
+from app.infrastructure.posix import container_user
 from app.models.build import BuildPhase, BuildProfile
 from app.models.architecture import ArchitectureReport
 from app.models.build_execution import (
@@ -347,7 +348,7 @@ class DockerBuildRunner:
             "--log-driver",
             "none",
             "--user",
-            f"{os.getuid() or 65534}:{os.getgid() or 65534}",
+            container_user(),
             "--mount",
             f"type=bind,src={root},dst=/workspace" + (",readonly" if readonly_workspace else ""),
             "--workdir",

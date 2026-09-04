@@ -11,7 +11,12 @@ import os
 
 
 _TEST_ENV = {
+    # Sem isso, Settings() lê o .env do diretório atual e um AUDIT_LOG_PATH
+    # ou backend real do operador derruba testes de API.
+    "FORGEHAND_ENV_FILE": "",
     "LLM_PROVIDER_BACKEND": "anthropic",
+    "AUDIT_LOG_BACKEND": "memory",
+    "TRACING_BACKEND": "none",
     "CHECKPOINTER_BACKEND": "memory",
     "WORKFLOW_QUEUE_BACKEND": "memory",
     "RUN_EMBEDDED_WORKFLOW_WORKERS": "true",

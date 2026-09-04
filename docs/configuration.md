@@ -28,6 +28,16 @@ Cada chamada de LLM vira um span `gen_ai` (modelo, tier, tokens, custo,
 latência, erro) aninhado no span do job; o `trace_id` fica gravado em cada
 `TaskAttempt` para correlação.
 
+## Arquivo .env lido pelas Settings
+
+Por padrão `Settings()` lê o `.env` do diretório atual. `FORGEHAND_ENV_FILE`
+aponta para outro arquivo; vazio desliga a leitura (é o que `tests/conftest.py`
+faz, para que a suíte não herde backends, caminhos e chaves do operador).
+
+```bash
+FORGEHAND_ENV_FILE=/etc/forgehand/.env.prod uv run uvicorn app.main:app
+```
+
 ## Porta alternativa
 
 Se a porta 8000 já estiver ocupada, escolha outra porta sem alterar o

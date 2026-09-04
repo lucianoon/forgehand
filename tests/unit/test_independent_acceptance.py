@@ -1,3 +1,4 @@
+import os
 import asyncio
 import hashlib
 import json
@@ -13,6 +14,10 @@ from app.models.build_execution import BuildOutcome, BuildRunResult
 from app.models.factory import BuildProfileSelection, DirectWorkOrderSource, WorkOrder
 from tests.unit.test_factory_sandbox import FakeDocker, make_lease, make_profile
 from tests.unit.test_factory_delivery import approved_state
+
+# Factory mode é POSIX por design (lock fcntl, dir_fd/O_NOFOLLOW, grupo de
+# processos, caminhos de lease em /): no Windows só o mission control roda.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 
 CRITERION = "Somar inteiros corretamente"
 

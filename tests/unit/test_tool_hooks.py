@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -33,6 +34,10 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.registry import ProviderRouter
+
+_posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="limite de 32 KiB por variável de ambiente no Windows"
+)
 
 
 class CountingTool:
@@ -121,8 +126,14 @@ async def run(loop, **kwargs):
         '[{"id":"x","event":"pre_tool","output_exceeds_chars":3}]',
         '[{"id":"x","event":"post_tool","output_exceeds_chars":true}]',
         '[{"id":"x","event":"pre_tool"},{"id":"x","event":"pre_tool"}]',
-        " " * 65_537,
-        json.dumps([{"id": f"x{i}", "event": "pre_tool"} for i in range(65)]),
+        # Windows limita cada variável de ambiente a 32 KiB: só POSIX exercita
+        # o limite superior de tamanho do TOOL_HOOKS_JSON.
+        pytest.param(" " * 65_537, marks=_posix_only, id="oversized-blank"),
+        pytest.param(
+            json.dumps([{"id": f"x{i}", "event": "pre_tool"} for i in range(65)]),
+            marks=_posix_only,
+            id="too-many-rules",
+        ),
     ],
 )
 def test_invalid_operator_config_rejected_at_settings_boundary(value):
@@ -317,6 +328,7 @@ async def test_exhausted_token_budget_does_not_execute_batch():
     assert router.requests[-1].force_final
 
 
+@pytest.mark.skipif(os.name != "posix", reason="lease da factory usa caminho POSIX")
 def test_container_and_lease_agents_share_dispatcher(monkeypatch, tmp_path):
     import app.api.container as composition
 

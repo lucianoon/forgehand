@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from app.agents.planner import LLMPlanner, PlanOutput, PlanValidationError
@@ -66,6 +67,7 @@ def test_factory_requires_edit_declaration_but_keeps_read_only_and_legacy_plans(
     LLMPlanner(None)._validate_plan_consistency(consistency_plan(None))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="lease da factory usa caminho POSIX")
 def test_factory_runtime_enables_required_edit_declarations(tmp_path):
     from unittest.mock import Mock
     from app.api.container import LeaseBoundRuntimeFactory

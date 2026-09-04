@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 import sys
 from unittest.mock import AsyncMock
 
@@ -20,6 +21,12 @@ from app.infrastructure.telemetry import HttpMetrics
 from app.infrastructure.workflow_queue import InMemoryWorkflowQueue
 
 REJECT_BACKEND_ALWAYS = {"on": False}
+# factory_mode_enabled=True constrói o DockerCLI na inicialização (fail-closed):
+# sem o binário docker no PATH o teste não mede nada — pula em vez de falhar.
+requires_docker_cli = pytest.mark.skipif(
+    shutil.which("docker") is None,
+    reason="factory mode exige o binário docker no PATH",
+)
 API_KEYS_JSON = json.dumps(
     {
         "key-demo": {"client_id": "client-demo", "projects": ["demo"]},
@@ -249,6 +256,7 @@ async def test_manual_pr_endpoint_cannot_bypass_factory_delivery(monkeypatch):
     assert "fluxo validado" in response.json()["detail"]
 
 
+@requires_docker_cli
 @pytest.mark.asyncio
 async def test_direct_factory_order_is_normalized_before_queueing():
     app = make_app(run_workers=False, factory_mode_enabled=True)
@@ -296,6 +304,7 @@ async def test_direct_factory_order_is_normalized_before_queueing():
     await app.state.container.workflow_service.shutdown()
 
 
+@requires_docker_cli
 @pytest.mark.asyncio
 async def test_issue_factory_order_reads_snapshot_before_queueing(monkeypatch):
     from app.models.factory import GitHubIssueSnapshot
@@ -392,6 +401,7 @@ async def test_factory_order_is_rejected_when_disabled_or_ambiguous():
     await app.state.container.workflow_service.shutdown()
 
 
+@requires_docker_cli
 @pytest.mark.asyncio
 async def test_factory_order_idempotency_is_scoped_and_deduplicates_queue():
     app = make_app(run_workers=False, factory_mode_enabled=True)

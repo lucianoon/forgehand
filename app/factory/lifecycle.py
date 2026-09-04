@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fcntl
 import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Iterator
 
+from app.infrastructure.posix import flock_exclusive_nonblocking
 from app.models.factory import WorkspaceLease
 
 _lock_fd: ContextVar[int | None] = ContextVar("factory_lock_fd", default=None)
@@ -125,7 +125,7 @@ class WorkspaceJournal:
         name = hashlib.sha256(workflow_id.encode()).hexdigest()
         with (self.root / f"{name}.lock").open("a") as handle:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive_nonblocking(handle.fileno())
             except BlockingIOError:
                 raise WorkspaceBusy(workflow_id) from None
             token = _lock_fd.set(handle.fileno())
