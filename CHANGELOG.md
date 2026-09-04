@@ -7,6 +7,28 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Avaliação contínua (`app/evaluation/evals.py`, `evals/cases.json`,
+  `evals/gates.json`, workflow `Evals`): casos reais com LLM, orçamento total
+  em dólares como teto duro, relatório JSON + Markdown e gate por conclusão,
+  first pass, custo médio e p95. Linha de base em `evals/baseline/`.
+- Ferramentas MCP por stdio (`MCP_SERVERS_JSON`, `MCP_TOOLS_ROLES`): servidores
+  do operador viram `mcp_<servidor>_<ferramenta>` no mesmo ToolLoop, com
+  hooks, tetos, allowlist por ferramenta e ambiente sem segredos.
+- CLI `forgehand` (run, status, decide, cancel) contra a API em execução.
+- `GET /workflows/{id}/events` (SSE) e dashboard consumindo o fluxo, com
+  polling como fallback.
+- `forgehand.toml` (ou `FORGEHAND_CONFIG`) como fonte de configuração abaixo
+  das variáveis de ambiente; `docs/quickstart.md` do zero ao primeiro workflow.
+- `PLANNER_TIER`/`JUDGE_TIER` e escalonamento do planner um tier acima quando
+  a validação estrutural rejeita o plano; memória de projeto injeta lições
+  (reprovações do judge por capability) no contexto do planner.
+- Corpo do PR traz a tabela de critérios verificados por tarefa (nota e quem
+  validou: código, pytest, ruff, mypy ou judge).
+- `op=replace` tolera diferença de indentação entre o trecho copiado e o
+  arquivo e reindenta a substituição; palavras do pedido são normalizadas
+  (acentos, plural, sufixos) antes de casar com o repositório.
+- Em `ENVIRONMENT=prod`, comandos do executor exigem backend Docker;
+  autocorreção passa a uma rodada por padrão (ciclo dirigido por teste).
 - Critérios objetivos para tarefas que não gravam arquivo: `output_contains`
   (regex sobre summary/notes) e `output_min_chars` (tamanho mínimo do texto
   entregue). Análise, pesquisa e síntese deixam de depender só do judge LLM;
@@ -46,6 +68,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Evidência cumulativa da autocorreção passa a ser relativa ao início da
+  tarefa: arquivo criado na rodada 1 e editado na rodada 2 continua `created`
+  (antes virava `modified` e reprovava `file_created`); criado e removido na
+  mesma tarefa sai de tudo, inclusive de `deleted_paths`. Achado da primeira
+  rodada de evals.
 - O allowlist do checkpoint não declarava `AcceptanceCriterion` nem
   `CriterionKind`: cada retomada de estado registrava "Blocked deserialization
   of app.models.task.CriterionKind". Teste de ida e volta incluído.

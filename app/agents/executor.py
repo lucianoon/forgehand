@@ -393,14 +393,39 @@ class LLMExecutor:
         merged["applied_files"] = list(
             dict.fromkeys([*str_list(previous, "applied_files"), *str_list(current_ws, "applied_files")])
         )
-        for key in ("published_files", "file_diffs"):
-            by_path = {item["path"]: item for item in path_items(previous, key)}
-            for path in deleted_now:
-                by_path.pop(path, None)
-            by_path.update({item["path"]: item for item in path_items(current_ws, key)})
-            if by_path or key in previous or key in current_ws:
-                merged[key] = list(by_path.values())
-        republished = {item["path"] for item in path_items(current_ws, "published_files")}
+        # Estado líquido por path em relação ao INÍCIO da tarefa: criado na
+        # rodada 1 e editado na 2 continua 'created' (file_created vale);
+        # criado e depois removido nunca existiu (sai de tudo, inclusive de
+        # deleted_paths); removido e recriado é 'modified'.
+        previous_diffs = {item["path"]: item for item in path_items(previous, "file_diffs")}
+        created_before = {
+            path for path, item in previous_diffs.items() if item.get("change_type") == "created"
+        }
+        vanished = created_before & deleted_now
+        diffs = dict(previous_diffs)
+        for path in deleted_now:
+            diffs.pop(path, None)
+        for item in path_items(current_ws, "file_diffs"):
+            path = item["path"]
+            net = dict(item)
+            before = previous_diffs.get(path, {}).get("change_type")
+            now = item.get("change_type")
+            if before == "created" and now in {"modified", "unchanged"}:
+                net["change_type"], net["changed"] = "created", True
+            elif before == "deleted" and now == "created":
+                net["change_type"], net["changed"] = "modified", True
+            diffs[path] = net
+        for path in vanished:
+            diffs.pop(path, None)
+        if diffs or "file_diffs" in previous or "file_diffs" in current_ws:
+            merged["file_diffs"] = list(diffs.values())
+        published = {item["path"]: item for item in path_items(previous, "published_files")}
+        for path in deleted_now:
+            published.pop(path, None)
+        published.update({item["path"]: item for item in path_items(current_ws, "published_files")})
+        if published or "published_files" in previous or "published_files" in current_ws:
+            merged["published_files"] = list(published.values())
+        republished = set(published) | vanished
         deleted = [
             p for p in dict.fromkeys([*str_list(previous, "deleted_paths"), *deleted_now])
             if p not in republished

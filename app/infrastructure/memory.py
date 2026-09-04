@@ -49,6 +49,7 @@ def workflow_summary(state: WorkflowState) -> dict[str, Any]:
         "cost_usd": float(state.usage.get("cost_usd", 0.0)),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "final_output_excerpt": (state.final_output or "")[:_MAX_OUTPUT_CHARS],
+        "lessons": _lessons(state),
         "tasks": [
             {
                 "id": str(t.id),
@@ -60,6 +61,25 @@ def workflow_summary(state: WorkflowState) -> dict[str, Any]:
             for t in state.plan
         ],
     }
+
+
+_MAX_LESSONS = 6
+
+
+def _lessons(state: WorkflowState) -> list[str]:
+    """Reprovações do judge por capability: o que não pode se repetir no
+    projeto. Entram no contexto do planner como `project_memory.lessons`."""
+    capability_by_task = {task.id: task.capability.value for task in state.plan}
+    lessons: list[str] = []
+    for evaluation in state.evaluations:
+        if evaluation.approved:
+            continue
+        capability = capability_by_task.get(evaluation.task_id, "?")
+        for failure in evaluation.failures[:2]:
+            lesson = f"{capability}: {failure.strip()[:160]}"
+            if lesson not in lessons:
+                lessons.append(lesson)
+    return lessons[:_MAX_LESSONS]
 
 
 def _context_entry(summary: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +141,15 @@ class BaseProjectMemory:
             context["project_memory"] = {
                 "recent_workflows": [_context_entry(s) for s in summaries]
             }
+            lessons = [
+                lesson
+                for summary in summaries
+                for lesson in (summary.get("lessons") or [])
+                if isinstance(lesson, str)
+            ]
+            unique = list(dict.fromkeys(lessons))[:_MAX_LESSONS]
+            if unique:
+                context["project_memory"]["lessons"] = unique
         if self._web_collector is not None and request:
             references = await self._web_collector.collect(request)
             if references is not None:

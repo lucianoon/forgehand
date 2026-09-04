@@ -1,0 +1,70 @@
+name: Evals
+
+# Avaliação contínua com LLM real e orçamento fechado. Não roda em todo push:
+# manual (com orçamento) e semanal. Sem a chave do provedor, o job termina em
+# sucesso sem gastar nada, para não bloquear forks.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: "Orçamento total em dólares para a suíte"
+        default: "1.5"
+      case_id:
+        description: "Opcional: rodar só este caso (id de evals/cases.json)"
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      LLM_PROVIDER_BACKEND: anthropic
+      FORGEHAND_ENV_FILE: ""
+      ENVIRONMENT: dev
+      CHECKPOINTER_BACKEND: memory
+      WORKFLOW_QUEUE_BACKEND: memory
+      MEMORY_BACKEND: memory
+      AUDIT_LOG_BACKEND: memory
+      TRACING_BACKEND: none
+      RUN_EMBEDDED_WORKFLOW_WORKERS: "true"
+      EXECUTOR_APPLY_FILES_ENABLED: "true"
+      EXECUTOR_COMMAND_BACKEND: local
+      EXECUTOR_WORKSPACE_ROOT: ${{ github.workspace }}/.evals-workspace
+      REPOSITORY_ROOT: ${{ github.workspace }}/.evals-workspace
+      PYTEST_VALIDATION_COMMAND: python -m pytest -q
+      RUFF_VALIDATION_COMMAND: ruff check .
+      AGENT_TOOLS_ALLOW_COMMANDS: "true"
+      WEB_REFERENCES_ENABLED: "true"
+      WEB_REFERENCES_ALLOWED_HOSTS: docs.astral.sh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev --locked
+      - name: Evals com orçamento fechado
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY ausente: evals pulados (sem gasto)."
+            exit 0
+          fi
+          mkdir -p "$EXECUTOR_WORKSPACE_ROOT"
+          CASE_ARG=""
+          if [ -n "${{ github.event.inputs.case_id }}" ]; then CASE_ARG="--case-id ${{ github.event.inputs.case_id }}"; fi
+          uv run python -m app.evaluation.evals \
+            --budget-usd "${{ github.event.inputs.budget_usd || '1.5' }}" \
+            --gates evals/gates.json --output-dir reports $CASE_ARG
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evals-report
+          path: reports/
+          if-no-files-found: ignore

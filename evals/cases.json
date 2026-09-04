@@ -1,0 +1,49 @@
+[
+  {
+    "id": "package-with-tests",
+    "project_id": "evals-package",
+    "request": "Crie o pacote Python sandbox_calc com um módulo core.py contendo as funções soma, subtrai, multiplica e divide (divide levanta ZeroDivisionError com mensagem em português), um arquivo tests/test_core.py com testes pytest para as quatro operações e o caso de divisão por zero, e um pyproject.toml mínimo. Antes de entregar, execute os testes com pytest e o ruff no workspace e relate o resultado no summary.",
+    "acceptance_criteria": [
+      "core.py criado com as quatro funções",
+      "tests/test_core.py criado e os testes passam",
+      "ruff check sem erros"
+    ],
+    "max_cost_usd": 0.6,
+    "timeout_seconds": 300
+  },
+  {
+    "id": "analysis-three-points",
+    "project_id": "evals-analysis",
+    "request": "Analise o código Python presente no workspace (pacote sandbox_calc e seus testes) e entregue, SEM criar nem alterar arquivos, uma avaliação em exatamente três pontos numerados: (1) o que o pacote faz, (2) um risco ou lacuna de qualidade concreto encontrado no código, (3) uma recomendação objetiva. Cite os arquivos examinados.",
+    "acceptance_criteria": [
+      "A resposta tem exatamente três pontos numerados",
+      "A resposta cita sandbox_calc/core.py",
+      "Nenhum arquivo foi criado ou alterado"
+    ],
+    "max_cost_usd": 0.3,
+    "timeout_seconds": 240
+  },
+  {
+    "id": "readme-doc",
+    "project_id": "evals-docs",
+    "request": "Escreva, em português, um arquivo README.md para o pacote sandbox_calc presente no workspace: descrição, instalação com uv, três exemplos de uso reais das funções e uma seção de contribuição. Use apenas funções que existem em sandbox_calc/core.py.",
+    "acceptance_criteria": [
+      "README.md criado em português",
+      "Há uma seção de instalação que usa uv",
+      "Os exemplos usam apenas funções existentes em core.py"
+    ],
+    "max_cost_usd": 0.4,
+    "timeout_seconds": 240
+  },
+  {
+    "id": "web-guide",
+    "project_id": "evals-web",
+    "request": "Leia a documentação oficial em https://docs.astral.sh/uv/guides/projects/ e escreva um arquivo GUIA_UV.md, em português, explicando como criar um projeto com uv, adicionar dependências e rodar um script, citando os comandos exatos que a página apresenta. Não invente comandos que não estejam na página.",
+    "acceptance_criteria": [
+      "Arquivo GUIA_UV.md criado em português",
+      "Os comandos citados existem na página de referência"
+    ],
+    "max_cost_usd": 0.4,
+    "timeout_seconds": 240
+  }
+]

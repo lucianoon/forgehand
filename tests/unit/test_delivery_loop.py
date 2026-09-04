@@ -101,7 +101,7 @@ class ScriptedDelivery:
         self.calls: list[dict] = []
 
     async def publish(
-        self, *, config, workflow_id, project_id, files, deletions, summary
+        self, *, config, workflow_id, project_id, files, deletions, summary, details=""
     ):
         self.calls.append(
             {

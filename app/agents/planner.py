@@ -214,6 +214,7 @@ class LLMPlanner:
         self,
         router: ProviderRouter,
         tier: ModelTier = ModelTier.STANDARD,
+        escalate_on_retry: bool = True,
         default_task_budget: TaskBudget | None = None,
         max_validation_attempts: int = 2,
         tools: list[AgentTool] | None = None,
@@ -238,6 +239,7 @@ class LLMPlanner:
         self._apply_files_enabled = apply_files_enabled
         self._require_write_paths = require_write_paths
         self._tier = tier
+        self._escalate_on_retry = escalate_on_retry
         self._default_task_budget = default_task_budget or TaskBudget()
         self._max_validation_attempts = max(1, max_validation_attempts)
 
@@ -357,6 +359,13 @@ class LLMPlanner:
                     "sem remover proteções realmente exigidas pelo usuário."
                 )
 
+    def _tier_for_attempt(self, attempt: int) -> ModelTier:
+        """Replanejamento após rejeição estrutural sobe um tier (regra 8: caro
+        só por escalonamento), sem passar de STRONG."""
+        if attempt <= 1 or not self._escalate_on_retry:
+            return self._tier
+        return ModelTier(min(int(self._tier) + 1, int(ModelTier.STRONG)))
+
     async def create_plan(
         self, request: str, context: dict[str, Any]
     ) -> PlanningOutcome:
@@ -386,7 +395,7 @@ class LLMPlanner:
                     "evidence_ids, write_paths e contradições de critérios."
                 )
             loop_outcome = await self._tool_loop.run(
-                self._tier,
+                self._tier_for_attempt(attempt),
                 CompletionRequest(
                     model="",  # resolvido pelo router
                     cache_prefix=cache_prefix,

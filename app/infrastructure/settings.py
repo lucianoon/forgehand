@@ -15,7 +15,12 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 from app.agents.executor import ExecutionStrategy
 from app.agents.hooks import ToolHookRule, parse_tool_hooks
@@ -169,6 +174,25 @@ class Settings(BaseSettings):
         env_file=resolve_env_file(), env_file_encoding="utf-8", extra="ignore"
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Arquivo de configuração versionável: forgehand.toml (ou FORGEHAND_CONFIG).
+        Precedência: argumentos > variáveis de ambiente > .env > TOML > defaults.
+        Segredos ficam fora do arquivo, no ambiente."""
+        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings, dotenv_settings]
+        toml_path = Path(os.environ.get("FORGEHAND_CONFIG") or "forgehand.toml")
+        if toml_path.is_file():
+            sources.append(TomlConfigSettingsSource(settings_cls, toml_file=toml_path))
+        sources.append(file_secret_settings)
+        return tuple(sources)
+
     app_name: str = "forgehand"
     environment: Literal["dev", "staging", "prod"] = "dev"
     llm_provider_backend: Literal["anthropic", "openrouter", "openai"] = "anthropic"
@@ -274,6 +298,15 @@ class Settings(BaseSettings):
     # sem shell, sem rede, com timeout e sem segredos no ambiente. Só executor.
     agent_tools_allow_commands: bool = False
     agent_tools_command_timeout_seconds: float = Field(default=120.0, gt=0, le=900)
+    # Ferramentas MCP (stdio): [{"name","command","args","env","allowed_tools"}].
+    mcp_servers_json: str = "[]"
+    mcp_tools_roles: str = "planner,executor"
+    mcp_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    # Roteamento por papel: 1=FAST, 2=STANDARD, 3=STRONG. O planner sobe um
+    # tier quando a validação estrutural rejeita o plano (caro só por escalonamento).
+    planner_tier: int = Field(default=2, ge=1, le=3)
+    judge_tier: int = Field(default=2, ge=1, le=3)
+    planner_escalate_on_retry: bool = True
     # fetch_url: o agente busca uma página no meio da tarefa, com as mesmas
     # guardas e limites WEB_REFERENCES_* (allowlist, SSRF, bytes, chars, CA).
     # Opt-in por papel; o judge fica fora por padrão — ele confere o workspace.
@@ -306,7 +339,8 @@ class Settings(BaseSettings):
     executor_sandbox_memory: str = "512m"
     executor_sandbox_cpus: float = Field(default=1.0, gt=0, le=8)
     executor_sandbox_network_enabled: bool = False
-    executor_max_autocorrect_rounds: int = Field(default=0, ge=0, le=5)
+    # Ciclo dirigido por teste: uma rodada de correção após checks reprovados.
+    executor_max_autocorrect_rounds: int = Field(default=1, ge=0, le=5)
     pytest_validation_command: str | None = None
     ruff_validation_command: str | None = None
     mypy_validation_command: str | None = None
@@ -367,6 +401,17 @@ class Settings(BaseSettings):
             _DEFAULT_API_KEYS
         ):
             raise ValueError("Defina API_KEYS_JSON diferente do default em produção.")
+        if self.environment == "prod" and self.executor_command_backend != "docker" and (
+            self.executor_apply_files_enabled
+            or self.agent_tools_allow_commands
+            or self.pytest_validation_command
+            or self.ruff_validation_command
+            or self.mypy_validation_command
+        ):
+            raise ValueError(
+                "Em produção, comandos do executor exigem EXECUTOR_COMMAND_BACKEND=docker "
+                "(sandbox sem rede); o backend local só vale para desenvolvimento."
+            )
         if (
             self.workflow_queue_backend == "postgres"
             and self.checkpointer_backend != "postgres"

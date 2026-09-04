@@ -7,6 +7,11 @@ POST /workflows/{id}/decision → retoma interrupt do human_gate
 
 from __future__ import annotations
 
+import asyncio
+from enum import Enum
+from collections.abc import AsyncIterator
+from fastapi.responses import StreamingResponse
+
 from typing import Any, Literal, cast
 
 import httpx
@@ -586,3 +591,61 @@ async def publish_pull_request(
         "changed": pull.changed,
         "ci": ci,
     }
+
+
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+@router.get("/{workflow_id}/events")
+async def workflow_events(
+    workflow_id: str,
+    request: Request,
+    interval: float = 1.0,
+    client: AuthenticatedClient = Depends(require_api_client),
+) -> StreamingResponse:
+    """Server-Sent Events: um evento por mudança de estado, keepalive quando
+    nada muda, fim em estado terminal. O dashboard lê via fetch com stream
+    (EventSource não envia X-API-Key); polling continua como fallback."""
+    service = _container(request).workflow_service
+    try:
+        access = await service.get_access_context(workflow_id)
+        await ensure_workflow_access(request, client, access)
+    except WorkflowNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow não encontrado."
+        ) from None
+    delay = min(5.0, max(0.2, interval))
+
+    async def stream() -> AsyncIterator[str]:
+        last: str | None = None
+        idle = 0
+        # Desconexão do cliente: o StreamingResponse do Starlette cancela este
+        # gerador ao receber http.disconnect. request.is_disconnected() aqui
+        # bloquearia sob transportes que só liberam receive() ao fim da resposta.
+        while True:
+            try:
+                current = await service.get(workflow_id)
+            except WorkflowNotFound:
+                yield "event: gone\ndata: {}\n\n"
+                return
+            snapshot = _to_response(current, include_local_path=client.can("operator"))
+            payload = snapshot.model_dump_json()
+            if payload != last:
+                yield f"data: {payload}\n\n"
+                last = payload
+                idle = 0
+            else:
+                idle += 1
+                if idle % 15 == 0:
+                    yield ": keepalive\n\n"
+            raw_status = snapshot.status
+            status_text = raw_status.value if isinstance(raw_status, Enum) else str(raw_status)
+            if status_text in _TERMINAL_STATUSES:
+                return
+            await asyncio.sleep(delay)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

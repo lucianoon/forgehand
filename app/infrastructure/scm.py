@@ -821,6 +821,7 @@ class GitHubDeliveryService:
         files: list[dict[str, str]],
         deletions: list[str],
         summary: str,
+        details: str = "",
     ) -> DeliveryResult:
         provider = self._token_provider_factory()
         if provider is None:
@@ -843,7 +844,10 @@ class GitHubDeliveryService:
                 base_branch=config.base_branch,
                 head_branch=head,
                 title=config.title or f"Forgehand: {project_id}",
-                body=(f"Entrega auditável do workflow `{workflow_id}`.\n\n{summary}"),
+                body=(
+                    f"Entrega auditável do workflow `{workflow_id}`.\n\n{summary}"
+                    + (f"\n\n{details}" if details else "")
+                ),
                 files=files,
                 deletions=deletions,
                 commit_message=f"forgehand: {summary}",

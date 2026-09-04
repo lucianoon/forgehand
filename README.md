@@ -14,7 +14,7 @@ e observabilidade OTel.
 
 ## Em 30 segundos
 
-- **513 funções de teste** entre cenários unitários e de integração.
+- **530 funções de teste** entre cenários unitários e de integração.
 - CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
 - `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
 - Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
@@ -32,6 +32,8 @@ e observabilidade OTel.
 | Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
 | Hooks de ferramentas | [Políticas pre/post/error](docs/tool-hooks.md), bloqueio e auditoria configuráveis |
 | Acesso à web | URLs do pedido viram evidências citáveis `[W1]` e a ferramenta `fetch_url` deixa planner e executor buscarem páginas durante a tarefa; tudo pelo controlador, com guarda anti-SSRF, allowlist e hooks ([opt-in](docs/configuration.md#referências-web-na-solicitação)) |
+| Avaliação contínua | `evals/` com LLM real, orçamento fechado e gates; relatório versionado em `evals/baseline/` ([como rodar](docs/configuration.md#avaliação-contínua)) |
+| Interoperabilidade | servidores MCP como ferramentas dos agentes, CLI `forgehand`, SSE no dashboard e `forgehand.toml` ([quickstart](docs/quickstart.md)) |
 
 ## Resultado medido
 

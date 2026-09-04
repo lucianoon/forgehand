@@ -213,11 +213,18 @@ def _line_offsets(text: str) -> list[int]:
     return offsets
 
 
-def _find_line_tolerant_spans(text: str, search: str) -> list[tuple[int, int]]:
+def _find_line_tolerant_spans(
+    text: str, search: str, *, ignore_indent: bool = False
+) -> list[tuple[int, int]]:
     """Casamento linha a linha ignorando espaços à direita — cobre CRLF e
-    trailing whitespace, os erros mais comuns quando o modelo copia um trecho."""
+    trailing whitespace, os erros mais comuns quando o modelo copia um trecho.
+    Com ignore_indent, também ignora a indentação à esquerda (o trecho foi
+    copiado de uma evidência com outro nível); o replace é reindentado."""
     text_lines = text.split("\n")
-    search_lines = [line.rstrip() for line in search.strip("\n").split("\n")]
+    def normalize(line: str) -> str:
+        return line.strip() if ignore_indent else line.rstrip()
+
+    search_lines = [normalize(line) for line in search.strip("\n").split("\n")]
     if not search_lines or not any(search_lines):
         return []
     offsets = _line_offsets(text)
@@ -225,26 +232,58 @@ def _find_line_tolerant_spans(text: str, search: str) -> list[tuple[int, int]]:
     width = len(search_lines)
     for index in range(len(text_lines) - width + 1):
         window = text_lines[index : index + width]
-        if all(a.rstrip() == b for a, b in zip(window, search_lines, strict=True)):
+        if all(normalize(a) == b for a, b in zip(window, search_lines, strict=True)):
             start = offsets[index]
             end = offsets[index + width - 1] + len(text_lines[index + width - 1])
             spans.append((start, end))
     return spans
 
 
-def find_replace_span(
+def _first_indent(block: str) -> str:
+    for line in block.split("\n"):
+        if line.strip():
+            return line[: len(line) - len(line.lstrip())]
+    return ""
+
+
+def reindent_replacement(original: str, search: str, replacement: str) -> str:
+    """Leva o `replace` para a indentação real do trecho encontrado quando o
+    `search` veio com outro nível (casamento tolerante à indentação)."""
+    target, source = _first_indent(original), _first_indent(search)
+    if target == source:
+        return replacement
+    lines: list[str] = []
+    for line in replacement.split("\n"):
+        if not line.strip():
+            lines.append(line)
+        elif source and line.startswith(source):
+            lines.append(target + line[len(source) :])
+        elif not source:
+            lines.append(target + line)
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _find_replace_span_ex(
     text: str, search: str, occurrence: int | None
-) -> tuple[int, int]:
+) -> tuple[int, int, bool]:
     """Localiza `search` em `text`. Exato primeiro; se não achar e o trecho é
-    multilinha, tenta o casamento tolerante. Ambiguidade sem `occurrence` é
-    erro: substituir "a primeira" silenciosamente é como bugs entram."""
+    multilinha, tenta o casamento tolerante (espaços à direita; depois também
+    indentação). Ambiguidade sem `occurrence` é erro: substituir "a primeira"
+    silenciosamente é como bugs entram. O terceiro valor diz se a indentação
+    foi ignorada (o replace precisa ser reindentado)."""
     if not search:
         raise OperationApplyError("`search` vazio.")
+    indent_tolerant = False
     spans = [
         (match.start(), match.end()) for match in re.finditer(re.escape(search), text)
     ]
     if not spans and "\n" in search:
         spans = _find_line_tolerant_spans(text, search)
+    if not spans and "\n" in search:
+        spans = _find_line_tolerant_spans(text, search, ignore_indent=True)
+        indent_tolerant = bool(spans)
     if not spans:
         raise OperationApplyError(
             "trecho `search` não encontrado no arquivo atual; copie-o "
@@ -256,13 +295,31 @@ def find_replace_span(
                 f"trecho `search` aparece {len(spans)} vezes; amplie o trecho "
                 "para torná-lo único ou informe `occurrence`."
             )
-        return spans[0]
+        start, end = spans[0]
+        return start, end, indent_tolerant
     if occurrence > len(spans):
         raise OperationApplyError(
             f"`occurrence`={occurrence}, mas o trecho aparece apenas "
             f"{len(spans)} vez(es)."
         )
-    return spans[occurrence - 1]
+    start, end = spans[occurrence - 1]
+    return start, end, indent_tolerant
+
+
+def find_replace_span(
+    text: str, search: str, occurrence: int | None
+) -> tuple[int, int]:
+    start, end, _ = _find_replace_span_ex(text, search, occurrence)
+    return start, end
+
+
+def apply_replace(
+    before: str, search: str, replacement: str, occurrence: int | None
+) -> str:
+    start, end, indent_tolerant = _find_replace_span_ex(before, search, occurrence)
+    if indent_tolerant:
+        replacement = reindent_replacement(before[start:end], search, replacement)
+    return before[:start] + replacement + before[end:]
 
 
 class LocalWorkspaceRuntime:
@@ -520,10 +577,12 @@ class LocalWorkspaceRuntime:
             if not isinstance(search, str) or not isinstance(replacement, str):
                 raise ValueError(f"Operação replace em {path.name} malformada.")
             occurrence = operation.get("occurrence")
-            start, end = find_replace_span(
-                before, search, occurrence if isinstance(occurrence, int) else None
+            after = apply_replace(
+                before,
+                search,
+                replacement,
+                occurrence if isinstance(occurrence, int) else None,
             )
-            after = before[:start] + replacement + before[end:]
             path.write_text(after, encoding="utf-8")
             return before, after
         if op == "delete":
