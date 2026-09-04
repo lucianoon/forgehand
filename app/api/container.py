@@ -17,9 +17,12 @@ from typing import Any
 import anthropic
 
 from app.agents.advisor import LLMAdvisor
+from app.agents.hooks import ToolHookDispatcher
 from app.agents.executor import ExecutionStrategy
 from app.agents.judge import LLMJudge
 from app.agents.planner import LLMPlanner
+from app.agents.product import ProductStudio
+from app.infrastructure.product_store import ProductStore
 from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
 from app.agents.validation import ObjectiveValidationPipeline
@@ -70,18 +73,26 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
 
 
 class Container:
-    def __init__(self, service: WorkflowService, job_queue: Any, audit_log: Any):
+    def __init__(self, service: WorkflowService, job_queue: Any, audit_log: Any,
+                 product_studio: ProductStudio | None = None):
         self.workflow_service = service
         self.job_queue = job_queue
         self.audit_log = audit_log
+        self.product_studio = product_studio
 
 
 class LeaseBoundRuntimeFactory:
     """Constrói agentes cujas ferramentas apontam somente para uma lease."""
 
-    def __init__(self, settings: Settings, router: ProviderRouter) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        router: ProviderRouter,
+        hooks: ToolHookDispatcher | None = None,
+    ) -> None:
         self._settings = settings
         self._router = router
+        self._hooks = hooks
         self._components: dict[
             str, tuple[LLMPlanner, CapabilityExecutorRegistry, LLMJudge]
         ] = {}
@@ -125,12 +136,14 @@ class LeaseBoundRuntimeFactory:
             ),
             tools=build_agent_tools(settings, lease.local_path),
             max_tool_calls=settings.agent_tools_max_calls_planner,
+            hooks=self._hooks,
             non_writing_capabilities={
                 capability
                 for capability, strategy in strategies.items()
                 if not strategy.apply_files
             },
             apply_files_enabled=True,
+            require_write_paths=True,
         )
         registry = CapabilityExecutorRegistry(
             self._router,
@@ -139,12 +152,14 @@ class LeaseBoundRuntimeFactory:
             execution_strategies=strategies,
             tools=build_agent_tools(settings, lease.local_path, validators=validators),
             max_tool_calls=settings.agent_tools_max_calls_executor,
+            hooks=self._hooks,
         )
         judge = LLMJudge(
             self._router,
             validation_pipeline=pipeline,
             tools=build_agent_tools(settings, lease.local_path),
             max_tool_calls=settings.agent_tools_max_calls_judge,
+            hooks=self._hooks,
             independence=settings.judge_independence,
             critical_quorum=settings.judge_critical_quorum,
         )
@@ -207,6 +222,15 @@ def build_container(
         JsonlAuditLog(settings.audit_log_path, max_events=settings.audit_log_max_events)
         if settings.audit_log_backend == "jsonl"
         else InMemoryAuditLog(max_events=settings.audit_log_max_events)
+    )
+    tool_hooks = (
+        ToolHookDispatcher(
+            settings.tool_hooks,
+            selected_audit_log,
+            timeout_seconds=settings.tool_hooks_timeout_seconds,
+        )
+        if settings.tool_hooks
+        else None
     )
 
     async def record_strategy_selection(
@@ -280,7 +304,7 @@ def build_container(
         else None
     )
     runtime_factory = (
-        LeaseBoundRuntimeFactory(settings, router)
+        LeaseBoundRuntimeFactory(settings, router, hooks=tool_hooks)
         if settings.factory_mode_enabled
         else None
     )
@@ -328,6 +352,7 @@ def build_container(
             ),
             tools=planner_tools,
             max_tool_calls=settings.agent_tools_max_calls_planner,
+            hooks=tool_hooks,
             non_writing_capabilities={
                 capability
                 for capability, strategy in execution_strategies.items()
@@ -342,12 +367,14 @@ def build_container(
             execution_strategies=execution_strategies,
             tools=executor_tools,
             max_tool_calls=settings.agent_tools_max_calls_executor,
+            hooks=tool_hooks,
         ),
         judge=LLMJudge(
             router,
             validation_pipeline=validation_pipeline,
             tools=judge_tools,
             max_tool_calls=settings.agent_tools_max_calls_judge,
+            hooks=tool_hooks,
             independence=settings.judge_independence,
             critical_quorum=settings.judge_critical_quorum,
         ),
@@ -387,6 +414,8 @@ def build_container(
         ),
         job_queue,
         selected_audit_log,
+        ProductStudio(router, ProductStore(settings.product_studio_database))
+        if settings.product_studio_enabled else None,
     )
 
 

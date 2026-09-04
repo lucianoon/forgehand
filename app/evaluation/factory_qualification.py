@@ -8,6 +8,7 @@ import fnmatch
 import json
 import math
 import os
+import re
 from contextlib import nullcontext
 import shutil
 import tempfile
@@ -38,6 +39,7 @@ class FactoryCase(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]+$")
     ecosystem: str = Field(pattern=r"^(python|node)$")
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    base_ref: str = Field(default="main", min_length=1, max_length=255)
     request: str = Field(min_length=10)
     acceptance_criteria: list[str] = Field(min_length=1)
     expected_paths: list[str] = Field(min_length=1)
@@ -52,6 +54,7 @@ class FactoryResult(BaseModel):
     workflow_id: str | None = None
     intake_key: str | None = None
     base_sha: str | None = None
+    base_ref: str = "main"
     repository: str | None = None
     branch: str | None = None
     pull_request: int | None = None
@@ -64,6 +67,7 @@ class FactoryResult(BaseModel):
     intervention: bool = False
     isolation_violations: int = Field(default=0, ge=0)
     technical_failure: str | None = None
+    workflow_error: str | None = None
     tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0, ge=0, allow_inf_nan=False)
     reserved_unknown_cost_usd: float = Field(default=0, ge=0, allow_inf_nan=False)
@@ -125,6 +129,8 @@ def summarize_factory(
         "remote_artifacts": [
             {
                 "repository": r.repository,
+                "base_ref": r.base_ref,
+                "base_sha": r.base_sha,
                 "branch": r.branch,
                 "pull_request": r.pull_request,
                 "commit_sha": r.commit_sha,
@@ -260,7 +266,8 @@ async def run_factory_case(
 ) -> FactoryResult:
     started = time.monotonic()
     result = FactoryResult(
-        case_id=case.id, repository=repository, base_sha=case.base_sha
+        case_id=case.id, repository=repository, base_sha=case.base_sha,
+        base_ref=case.base_ref,
     )
     result.intake_key = f"qualification:{run_id}:{case.id}"
     headers = {"X-API-Key": api_key}
@@ -274,7 +281,7 @@ async def run_factory_case(
                 "project_id": "factory-qualification",
                 "work_order": {
                     "repository": repository,
-                    "base_ref": "main",
+                    "base_ref": case.base_ref,
                     "expected_base_sha": case.base_sha,
                     "requested_outcome": case.request,
                     "acceptance_criteria": case.acceptance_criteria,
@@ -325,6 +332,14 @@ async def run_factory_case(
                 )
                 if result.outcome == "failed":
                     result.technical_failure = "workflow_failed"
+                    error = state.get("error")
+                    if isinstance(error, str) and re.fullmatch(
+                        r"(?:RetryableProviderError|NonRetryableProviderError|CircuitOpenError|StructuredOutputError)"
+                        r"(?::(?:HTTP[45][0-9]{2}|ReadTimeout|WriteTimeout|ConnectTimeout|PoolTimeout|"
+                        r"ConnectError|ReadError|WriteError|RemoteProtocolError))?",
+                        error,
+                    ):
+                        result.workflow_error = error
                 break
             if result.cost_usd >= case.max_cost_usd:
                 result.outcome = "budget_exhausted"
@@ -487,7 +502,9 @@ async def main_async(args: argparse.Namespace) -> int:
     if not api_key or not github_token:
         raise ValueError("FORGEHAND_API_KEY and GITHUB_TOKEN required")
     cases = [
-        FactoryCase.model_validate(value)
+        FactoryCase.model_validate(
+            {**value, **({"base_ref": args.base_ref} if getattr(args, "base_ref", None) else {})}
+        )
         for value in json.loads((args.fixtures / "cases.json").read_text())
     ]
     repositories = {"python": args.python_repository, "node": args.node_repository}
@@ -532,6 +549,7 @@ def main() -> None:
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     parser.add_argument("--python-repository", required=True)
     parser.add_argument("--node-repository", required=True)
+    parser.add_argument("--base-ref", help="Fixture branch pinned to the manifest SHA (default: main)")
     parser.add_argument("--total-budget", type=float, required=True)
     parser.add_argument("--fixtures", type=Path, default=Path("benchmarks/factory"))
     parser.add_argument("--socket", default="/var/run/docker.sock")

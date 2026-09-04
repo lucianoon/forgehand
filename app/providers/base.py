@@ -334,6 +334,14 @@ class LLMProvider(ABC):
             pricing = ModelPricing(input_per_mtok=30.0, output_per_mtok=150.0)
         return pricing.cost(usage)
 
+    def estimate_request_cost(self, model: str, request: CompletionRequest) -> float:
+        """Conservative reservation, including configured retries, not a billing cap."""
+        schema = request.response_schema.model_json_schema() if request.response_schema else {}
+        text = repr(schema) + (request.system or "") + (request.cache_prefix or "")
+        text += "".join(message.content for message in request.messages)
+        usage = Usage(input_tokens=len(text.encode("utf-8")) + 4096, output_tokens=request.max_tokens)
+        return self._cost_for(model, usage) * (self._max_retries + 1)
+
     @staticmethod
     def _validate_structured(
         raw: dict[str, Any], schema: type[BaseModel], provider: str

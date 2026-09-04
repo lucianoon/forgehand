@@ -31,6 +31,8 @@ from langgraph.types import Send, interrupt
 from pydantic import BaseModel, Field
 
 from app.agents.validation import format_validation_feedback
+from app.factory.architecture import architecture_feedback
+from app.factory.acceptance import acceptance_feedback, acceptance_verified
 from app.factory.delivery import factory_delivery_config, factory_ready_for_review
 from app.factory.sandbox import BuildRunCancelled
 from app.graph.state import (
@@ -303,6 +305,10 @@ def build_nodes(
                     "output_truncated": False,
                 }
             )
+        if report.architecture is not None:
+            feedback.extend(architecture_feedback(report.architecture))
+        if report.acceptance is not None:
+            feedback.extend(acceptance_feedback(report.acceptance))
         return feedback
 
     def attach_build_report(
@@ -342,6 +348,10 @@ def build_nodes(
         if report is None:
             return evaluation
         validated_by = list(dict.fromkeys([*evaluation.validated_by, "sandbox"]))
+        if report.architecture is not None:
+            validated_by = list(dict.fromkeys([*validated_by, "architecture"]))
+        if report.acceptance is not None:
+            validated_by = list(dict.fromkeys([*validated_by, "independent_acceptance"]))
         phase_by_name = {phase.phase.value: phase for phase in report.phases}
 
         def signal(name: str, current: bool | None) -> bool | None:
@@ -357,13 +367,27 @@ def build_nodes(
             "lint_passed": signal("lint", evaluation.lint_passed),
             "type_check_passed": signal("types", evaluation.type_check_passed),
         }
-        if report.outcome != BuildOutcome.SUCCESS:
+        if report.outcome != BuildOutcome.SUCCESS or (
+            report.architecture is not None and not report.architecture.passed
+        ) or (
+            report.acceptance is not None and not report.acceptance.passed
+        ):
             failures = [
                 f"[sandbox:{phase.phase.value}] "
                 f"{phase.error_code or phase.outcome.value}"
                 for phase in report.phases
                 if phase.outcome != BuildOutcome.SUCCESS
             ] or [f"[sandbox] {report.error_code or report.outcome.value}"]
+            if report.architecture is not None:
+                failures.extend(
+                    f"[architecture:{item.rule_id}] {item.path}:{item.line} → {item.dependency}; {item.remediation}"
+                    for item in report.architecture.findings[:10]
+                )
+            if report.acceptance is not None:
+                failures.extend(
+                    f"[acceptance:{case.case_id}] {case.criterion}: saída ou execução não atende ao contrato."
+                    for case in report.acceptance.cases if not case.passed
+                )
             updates.update(
                 approved=False,
                 score=min(evaluation.score, 0.4),
@@ -445,6 +469,8 @@ def build_nodes(
                 # Retomadas só reutilizam a seleção se a definição administrada
                 # ainda corresponder ao fingerprint persistido.
                 build_strategy_selector.profile_for(current)
+                if current.acceptance_digest is not None and current.acceptance_criteria != state.work_order.acceptance_criteria:
+                    raise ValueError("Critérios de aceitação mudaram após seleção.")
                 selection = current
             else:
                 selection = build_strategy_selector.select(
@@ -509,6 +535,24 @@ def build_nodes(
             )
         else:
             ctx = await memory.load_context(state.project_id, state.request)
+        ctx = dict(ctx)
+        ctx.pop("architecture_policy_guidance", None)
+        ctx.pop("acceptance_policy_guidance", None)
+        if state.build_strategy is not None and build_strategy_selector is not None:
+            profile = build_strategy_selector.profile_for(state.build_strategy)
+            if profile.acceptance is not None:
+                ctx["acceptance_policy_guidance"] = (
+                    "Aceitação independente definida pelo operador; implemente o comportamento, não altere os critérios.\n"
+                    + "\n".join(f"{case.id}: {case.criterion}" for case in profile.acceptance.cases)
+                )
+            if profile.architecture is not None:
+                ctx["architecture_policy_guidance"] = (
+                    "Política de arquitetura aprovada pelo operador. Não altere nem contorne as regras.\n"
+                    + "\n".join(
+                        f"{rule.id}: {rule.source} não pode importar {', '.join(rule.forbidden)}. {rule.remediation}"
+                        for rule in profile.architecture.rules
+                    )
+                )
         return {"context": ctx, "phase": WorkflowPhase.PLANNING}
 
     async def create_plan(state: WorkflowState) -> dict[str, Any]:
@@ -700,6 +744,28 @@ def build_nodes(
                     except BuildRunCancelled as exc:
                         await record_build_report(payload, exc.report)
                         raise
+                expected_architecture = payload.build_strategy.architecture_digest
+                if (
+                    build_report.outcome == BuildOutcome.SUCCESS
+                    and expected_architecture is not None
+                    and (
+                        build_report.architecture is None
+                        or not build_report.architecture.passed
+                        or build_report.architecture.policy_digest
+                        != expected_architecture
+                    )
+                ):
+                    build_report = build_report.model_copy(
+                        update={
+                            "outcome": BuildOutcome.POLICY_REJECTION,
+                            "error_code": "architecture_evidence_missing_or_failed",
+                        }
+                    )
+                if not acceptance_verified(build_report.acceptance, payload.build_strategy):
+                    build_report = build_report.model_copy(update={
+                        "outcome": BuildOutcome.POLICY_REJECTION,
+                        "error_code": "acceptance_evidence_missing_or_failed",
+                    })
                 await record_build_report(payload, build_report)
                 result = attach_build_report(result, build_report)
             tokens = int(outcome.get("tokens", 0))
@@ -1354,6 +1420,26 @@ def _with_delivery_section(final_output: str | None, result: DeliveryResult) -> 
 
 def _build_validation_section(report: BuildRunResult) -> str:
     lines = ["## Validação em sandbox", f"Resultado: {report.outcome.value}"]
+    if report.acceptance is None:
+        lines.append("Aceitação independente: sem evidência; testes do repositório não comprovam os requisitos por si só.")
+    else:
+        acceptance = report.acceptance
+        lines.append(
+            f"Aceitação independente: {'aprovada' if acceptance.passed else 'reprovada'}; "
+            f"casos={len(acceptance.cases)}; critérios declarados={len(set(acceptance.required_criteria))}; "
+            f"suite={acceptance.suite_digest}"
+        )
+        for case in acceptance.cases:
+            lines.append(f"- {case.case_id}: {'passou' if case.passed else 'falhou'} — {case.criterion}")
+    if report.architecture is not None:
+        architecture = report.architecture
+        lines.append(
+            f"Arquitetura: {'aprovada' if architecture.passed else 'reprovada'}; arquivos={architecture.files_checked}"
+        )
+        for finding in architecture.findings[:10]:
+            lines.append(
+                f"- {finding.rule_id}: {finding.path}:{finding.line} → {finding.dependency}; {finding.remediation}"
+            )
     for phase in report.phases:
         detail = phase.error_code or phase.outcome.value
         lines.append(

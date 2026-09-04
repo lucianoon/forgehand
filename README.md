@@ -30,6 +30,7 @@ e observabilidade OTel.
 | Limites operacionais | Circuit breakers de tokens, custo, tempo e tentativas |
 | Execução durável | Checkpoints em PostgreSQL e retomada após interrupção |
 | Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
+| Hooks de ferramentas | [Políticas pre/post/error](docs/tool-hooks.md), bloqueio e auditoria configuráveis |
 
 ## Resultado medido
 
@@ -49,6 +50,20 @@ matriz completa](docs/pilot-report-2026-07-20.md). Os números são um piloto
 interno reproduzível, não um benchmark público independente.
 
 ## Mission control
+
+### Estúdio de produto: ideia → demo
+
+O novo `/studio` transforma uma ideia em escopo editável e backlog. Após aprovação,
+gera uma aplicação de cadastros no navegador, com criação, edição, exclusão, busca
+e pacote ZIP com código. Histórico persistido em SQLite, acesso por cliente/projeto
+e reserva estimada de custo. É uma primeira versão frontend, **não um sistema de
+produção com backend ou banco compartilhado**. Desativado por padrão; veja
+[como habilitar e usar](docs/product-studio.md).
+
+Também é possível baixar uma [base full-stack independente](docs/fullstack-product-foundation.md)
+com login, dados persistentes privados por usuário, PostgreSQL, migração e Docker.
+Ela foi verificada em execução local, mas ainda exige regras de negócio e preparação
+operacional antes de produção.
 
 ![Dashboard real do ForgeHand com runtime, orçamento e etapas do workflow](docs/assets/forgehand-dashboard.jpg)
 
@@ -166,6 +181,10 @@ Camadas:
 
 ## Regras arquiteturais com enforcement
 
+Perfis Python da fábrica podem declarar [políticas de arquitetura executáveis](docs/architecture-policies.md):
+limites de imports com diagnóstico por arquivo/linha, correção orientada por evidências
+e veto de publicação. A política é aprovada pelo operador, não pelo agente gerador.
+
 | Regra | Mecanismo |
 |---|---|
 | Agente não chama fornecedor | `ProviderRouter` é a única porta; agente pede tier, não modelo |
@@ -212,6 +231,18 @@ transporte HTTP mockado — o request de verdade é montado e o response de
 verdade é parseado.
 
 ## Roadmap
+
+O Studio também oferece [entregas incrementais de produto](docs/incremental-product-delivery.md):
+plano persistente ligado a um repositório existente, contexto imutável por tentativa
+e avanço condicionado a merge verificado, sempre com execução explicitamente aprovada.
+
+Novas tentativas contam com [admissão atômica e recuperação aprovada](docs/delivery-recovery.md):
+o mesmo envio não cria outro job de início; ordens, contexto e limites são preservados.
+Recuperação após reinício exige PostgreSQL; não é garantia de efeitos externos exactly-once.
+
+Perfis também podem exigir [aceitação independente de comportamento](docs/independent-acceptance.md):
+casos CLI aprovados pelo operador, comparados no host e executados sem escrita no
+repositório. Testes verdes ou aprovação do modelo não substituem os casos exigidos.
 
 - [x] **Fase 1** — núcleo funcional vertical (com paralelismo e gate humano antecipados)
 - [x] **Fase 2** — execução paralela (Send + reducers), timeouts, retries, budgets

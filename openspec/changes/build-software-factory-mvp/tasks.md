@@ -82,7 +82,8 @@ factory path. Tests cover moving-base isolation, unexpected remote heads, CI
 gates, bounded red-CI repair, cancellation and explicit retry in a rebuilt graph
 without agent reexecution. Publication intent, parents and tree enable recovery
 after a lost commit/ref response; unknown branches remain refused. See
-`docs/factory-delivery.md`. Live qualification has run; its gate failed at 2/5.
+`docs/factory-delivery.md`. The initial live gate failed at 2/5; the later
+repeatable-baseline run passed at 4/5 (see the qualification notes below).
 
 ## 8. Mission control
 
@@ -114,3 +115,24 @@ this is not a provider-invoice reconciliation. See
 `docs/factory-live-results-2026-09-03.md` for reports and remaining limitations.
 9.7 is complete as an execution/documentation task, not as a release approval.
 Factory mode remains disabled by default; no PR was merged.
+
+Follow-up qualification (2026-09-03, 20:53 UTC): the same five cases completed
+against pinned `qualification-baseline` branches, without resetting fixture
+main branches. Four PRs passed CI, fresh-clone hidden checks and path scope in
+one run, all on their first attempt. The Node feature remained blocked by a
+contradictory planner criterion; no review gate was bypassed. All six release
+checks passed. This continuation recorded USD 0.053436 and 162,648 tokens;
+aggregate recorded pilot spending is USD 0.1155952, not invoice-reconciled.
+Local validation: 526 Python tests passed, 4 external-service tests skipped;
+4 dashboard tests passed; Ruff and Mypy passed. Evidence and open PR links are
+in `docs/factory-live-results-2026-09-03.md`. Factory mode remains disabled by
+default; the new fixture PRs remain open and no automatic merge was performed.
+
+Planner follow-up: factory proposals now declare write_paths and repair
+contradictions against file_unchanged before execution, with bounded retries and
+legacy compatibility. A targeted Node recheck avoided the original contradiction
+but still failed test generation/application and was cancelled without a new PR.
+This does not upgrade the complete-round 4/5 result. See
+`docs/planner-consistency.md` and the targeted-recheck section of the live report.
+Validation: 542 Python tests and 4 dashboard tests passed, with 4 external-service
+skips; Ruff, Mypy and strict OpenSpec validation passed. No new PR was published.

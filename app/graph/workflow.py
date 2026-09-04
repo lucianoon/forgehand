@@ -48,6 +48,8 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.build_execution", "BuildOutcome"),
     ("app.models.build_execution", "BuildPhaseResult"),
     ("app.models.build_execution", "BuildRunResult"),
+    ("app.models.build_execution", "AcceptanceCaseResult"),
+    ("app.models.build_execution", "AcceptanceReport"),
     ("app.graph.state", "DeliveryConfig"),
     ("app.graph.state", "DeliveryResult"),
     ("app.models.factory", "WorkOrderSourceKind"),

@@ -15,11 +15,13 @@ from app.evaluation.factory_qualification import (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("base_ref", ["main", "qualification-baseline"])
+@pytest.mark.parametrize("workflow_error", ["RetryableProviderError:ReadTimeout", "private response payload"])
 @pytest.mark.parametrize(
-    "status", ["ready_for_human_review", "awaiting_decision", "running"]
+    "status", ["ready_for_human_review", "awaiting_decision", "running", "failed"]
 )
 async def test_case_submits_pin_records_evidence_and_cancels_nonterminal(
-    tmp_path, monkeypatch, status
+    tmp_path, monkeypatch, status, base_ref, workflow_error
 ):
     from app.evaluation import factory_qualification as qualification
 
@@ -28,6 +30,7 @@ async def test_case_submits_pin_records_evidence_and_cancels_nonterminal(
         id="case-one",
         ecosystem="python",
         base_sha="a" * 40,
+        base_ref=base_ref,
         request="Fix something useful",
         acceptance_criteria=["works"],
         expected_paths=["app.py"],
@@ -46,12 +49,14 @@ async def test_case_submits_pin_records_evidence_and_cancels_nonterminal(
         if request.method == "POST" and request.url.path == "/workflows":
             body = json.loads(request.content)
             assert body["work_order"]["expected_base_sha"] == "a" * 40
+            assert body["work_order"]["base_ref"] == base_ref
             return httpx.Response(202, json={"workflow_id": "wf"})
         if request.method == "GET":
             return httpx.Response(
                 200,
                 json={
                     "status": status,
+                    "error": workflow_error if status == "failed" else None,
                     "workspace": {"base_sha": "a" * 40},
                     "usage": {"tokens": 5, "cost_usd": 1},
                     "tasks": [{"attempts": 1}],
@@ -72,10 +77,17 @@ async def test_case_submits_pin_records_evidence_and_cancels_nonterminal(
             client, client, case, "acme/r", "key", tmp_path, "/socket", "run"
         )
     assert result.pull_request == 7
+    assert result.base_ref == base_ref
+    assert result.workflow_error == (
+        workflow_error
+        if status == "failed" and workflow_error == "RetryableProviderError:ReadTimeout"
+        else None
+    )
+    assert "private response payload" not in result.model_dump_json()
     assert result.branch == "forgehand/wf"
     assert result.green == (status == "ready_for_human_review")
     assert any(request.url.path.endswith("/cancel") for request in requests) == (
-        status != "ready_for_human_review"
+        status not in {"ready_for_human_review", "failed"}
     )
 
 

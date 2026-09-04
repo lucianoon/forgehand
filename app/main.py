@@ -10,17 +10,19 @@ from typing import AsyncGenerator
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.container import build_container, checkpointer_context
 from app.api.routes.operations import router as operations_router
 from app.api.routes.workflows import router as workflows_router
+from app.api.routes.products import router as products_router
+from app.api.routes.product_deliveries import router as product_deliveries_router
 from app.infrastructure.memory import project_memory_context
 from app.infrastructure.settings import get_settings
 from app.infrastructure.telemetry import HttpMetrics
 from app.infrastructure.tracing import tracing_context
-from app.infrastructure.workflow_queue import workflow_queue_context
+from app.infrastructure.workflow_queue import WorkflowDispatchConflict, workflow_queue_context
 
 WEB_ROOT = Path(__file__).with_name("web")
 
@@ -53,6 +55,13 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.http_metrics = HttpMetrics()
 
+    @app.exception_handler(WorkflowDispatchConflict)
+    async def dispatch_conflict(request: Request, exc: WorkflowDispatchConflict) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": {"code": "workflow_dispatch_conflict", "message": str(exc)}},
+        )
+
     @app.middleware("http")
     async def request_context(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -75,6 +84,8 @@ def create_app() -> FastAPI:
 
     app.include_router(operations_router)
     app.include_router(workflows_router)
+    app.include_router(products_router)
+    app.include_router(product_deliveries_router)
     app.mount(
         "/dashboard/assets",
         StaticFiles(directory=WEB_ROOT),
@@ -88,6 +99,10 @@ def create_app() -> FastAPI:
     @app.get("/dashboard", include_in_schema=False)
     async def dashboard() -> FileResponse:
         return FileResponse(WEB_ROOT / "index.html")
+
+    @app.get("/studio", include_in_schema=False)
+    async def studio_page() -> FileResponse:
+        return FileResponse(WEB_ROOT / "studio.html")
 
     return app
 

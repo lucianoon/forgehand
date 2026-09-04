@@ -23,6 +23,11 @@ on:
         required: true
         default: '5'
         type: string
+      base_ref:
+        description: Fixture branch pinned to the manifest SHA (do not advance between cases)
+        required: true
+        default: main
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -71,6 +76,7 @@ jobs:
           PYTHON_REPOSITORY: ${{ inputs.python_repository }}
           NODE_REPOSITORY: ${{ inputs.node_repository }}
           TOTAL_BUDGET: ${{ inputs.total_budget }}
+          BASE_REF: ${{ inputs.base_ref }}
         run: |
           export FACTORY_BUILD_PROFILES_JSON="$(< benchmarks/factory/profiles.json)"
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/forgehand-runtime.log 2>&1 &
@@ -82,7 +88,7 @@ jobs:
           done
           uv run python -m app.evaluation.factory_qualification --allow-live \
             --python-repository "$PYTHON_REPOSITORY" --node-repository "$NODE_REPOSITORY" \
-            --total-budget "$TOTAL_BUDGET" --output reports/factory-qualification.json
+            --base-ref "$BASE_REF" --total-budget "$TOTAL_BUDGET" --output reports/factory-qualification.json
       - name: Upload reports and remote inventory (no logs or credentials)
         if: always()
         uses: actions/upload-artifact@v7

@@ -346,6 +346,8 @@ def graph(
     build_audit_recorder=None,
     delivery=None,
     checkpointer=None,
+    architecture_policy=None,
+    acceptance_suite=None,
 ):
     return build_workflow(
         Planner(),
@@ -360,6 +362,8 @@ def graph(
                 "python-tests": BuildProfile(
                     name="python-tests",
                     ecosystem="python",
+                    architecture=architecture_policy,
+                    acceptance=acceptance_suite,
                     image="python@sha256:" + "a" * 64,
                     phases=(
                         BuildPhase(
@@ -588,6 +592,139 @@ async def test_factory_build_evidence_reaches_attempt_judge_and_audit(
     assert runner.calls == 1
     assert audits[0]["report"].outcome is BuildOutcome.SUCCESS
     assert "## Validação em sandbox" in output["final_output"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [True, False])
+async def test_green_runner_cannot_omit_or_substitute_architecture_evidence(
+    tmp_path, missing
+):
+    from app.models.architecture import ArchitecturePolicy, ArchitectureReport
+
+    policy = ArchitecturePolicy(
+        rules=[
+            {
+                "id": "domain",
+                "source": "widget",
+                "forbidden": ["requests"],
+                "remediation": "Use uma interface de domínio em vez de HTTP direto.",
+            }
+        ]
+    )
+    report = successful_build().model_copy(
+        update={
+            "architecture": None
+            if missing
+            else ArchitectureReport(
+                policy_digest="f" * 64,
+                complete=True,
+                files_checked=1,
+            )
+        }
+    )
+    publisher, runner = Delivery(), BuildRunner([report])
+    workflow_id = "missing-architecture" if missing else "wrong-architecture"
+    result = await graph(
+        WorkspaceManager(lease(tmp_path, workflow_id)),
+        FactoryRuntime(tmp_path),
+        RecordingMemory(),
+        build_runner=runner,
+        delivery=publisher,
+        architecture_policy=policy,
+    ).ainvoke(
+        {
+            "request": "Validar limites do widget",
+            "project_id": "p",
+            "workflow_id": workflow_id,
+            "owner_client_id": "c",
+            "work_order": work_order(),
+        },
+        {"configurable": {"thread_id": workflow_id}},
+    )
+    assert not publisher.calls
+    assert 0 < runner.calls <= 3
+    assert all(not evaluation.approved for evaluation in result["evaluations"])
+    assert (
+        result["plan"][0].attempts[-1].build_validation.error_code
+        == "architecture_evidence_missing_or_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_architecture_violation_reaches_retry_and_review(tmp_path):
+    from app.factory.architecture import check_architecture
+    from app.models.architecture import ArchitecturePolicy
+    from app.agents.executor import LLMExecutor
+
+    policy = ArchitecturePolicy(
+        rules=[
+            {
+                "id": "domain",
+                "source": "widget",
+                "forbidden": ["requests"],
+                "remediation": "Use uma interface de domínio e injete o cliente HTTP.",
+            }
+        ]
+    )
+    source = tmp_path / "widget.py"
+    source.write_text("import requests")
+    failed_evidence = check_architecture(tmp_path, policy)
+    source.write_text("import os")
+    passed_evidence = check_architecture(tmp_path, policy)
+    bad = successful_build().model_copy(
+        update={
+            "outcome": BuildOutcome.POLICY_REJECTION,
+            "error_code": "architecture_policy_failed",
+            "architecture": failed_evidence,
+        }
+    )
+    good = successful_build().model_copy(update={"architecture": passed_evidence})
+    runner, runtime, publisher = (
+        BuildRunner([bad, good]),
+        FactoryRuntime(tmp_path),
+        Delivery(),
+    )
+    output = await graph(
+        WorkspaceManager(lease(tmp_path, "arch-retry")),
+        runtime,
+        RecordingMemory(),
+        build_runner=runner,
+        delivery=publisher,
+        architecture_policy=policy,
+    ).ainvoke(
+        {
+            "request": "Respeitar a arquitetura do widget",
+            "project_id": "p",
+            "workflow_id": "arch-retry",
+            "owner_client_id": "c",
+            "work_order": work_order(),
+        },
+        {"configurable": {"thread_id": "arch-retry"}},
+    )
+    assert runner.calls == 2 and len(publisher.calls) == 1
+    assert output["evaluations"][0].approved is False
+    assert "architecture" in output["evaluations"][0].validated_by
+    feedback = runtime.executor.tasks[1].result["workspace"]["command_feedback"]
+    assert any(
+        "widget.py:1" in item.get("details", "")
+        and "requests" in item.get("details", "")
+        for item in feedback
+    )
+    assert any("interface de domínio" in item.get("stdout", "") for item in feedback)
+    context = runtime.executor.contexts[0]
+    assert (
+        "widget não pode importar requests" in context["architecture_policy_guidance"]
+    )
+    prompt = LLMExecutor._build_user_content(
+        None,
+        runtime.executor.tasks[0],
+        context,
+        previous_feedback="",
+        current_iteration_feedback="",
+    )
+    assert "widget não pode importar requests" in prompt
+    assert "Arquitetura: aprovada" in output["final_output"]
+    assert output["phase"] is WorkflowPhase.READY_FOR_HUMAN_REVIEW
 
 
 @pytest.mark.asyncio

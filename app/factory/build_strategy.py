@@ -75,6 +75,26 @@ class BuildProfileRegistry:
             raise ValueError(
                 "o fingerprint do perfil mudou; uma nova seleção é necessária."
             )
+        expected_architecture = (
+            profile.architecture.fingerprint() if profile.architecture else None
+        )
+        if selection.architecture_digest != expected_architecture:
+            raise ValueError(
+                "O fingerprint da política de arquitetura diverge da seleção."
+            )
+        suite = profile.acceptance
+        if (
+            selection.acceptance_digest != (suite.fingerprint() if suite else None)
+            or selection.acceptance_cases != (
+                {case.id: case.fingerprint() for case in suite.cases} if suite else {}
+            )
+            or (suite is None and selection.acceptance_criteria)
+            or (suite is not None and (
+                not selection.acceptance_criteria
+                or not set(selection.acceptance_criteria) <= {case.criterion for case in suite.cases}
+            ))
+        ):
+            raise ValueError("Contrato de aceitação diverge da seleção ou não cobre os critérios.")
         if selection.phases != [phase.name.value for phase in profile.phases]:
             raise ValueError(
                 "as fases registradas não correspondem ao perfil aprovado."
@@ -82,6 +102,23 @@ class BuildProfileRegistry:
         return profile
 
     def select(self, order: WorkOrder, lease: WorkspaceLease) -> BuildProfileSelection:
+        selected = self._select(order, lease)
+        if selected.selected_profile is not None:
+            suite = self.get(selected.selected_profile).acceptance
+            if suite is not None:
+                if not set(order.acceptance_criteria) <= {case.criterion for case in suite.cases}:
+                    return self._unsupported(
+                        selected.requested_profile,
+                        "A suite de aceitação não cobre todos os critérios aprovados da ordem.",
+                    )
+                selected = selected.model_copy(update={
+                    "acceptance_digest": suite.fingerprint(),
+                    "acceptance_cases": {case.id: case.fingerprint() for case in suite.cases},
+                    "acceptance_criteria": list(order.acceptance_criteria),
+                })
+        return selected
+
+    def _select(self, order: WorkOrder, lease: WorkspaceLease) -> BuildProfileSelection:
         """Aplica explícito → mapeamento → detecção segura, falhando sem fallback."""
         requested = order.build_profile.requested_profile
         target = order.repository
@@ -163,6 +200,9 @@ class BuildProfileRegistry:
             selected_profile=profile.name,
             selection_reason=reason,
             profile_digest=profile.fingerprint(),
+            architecture_digest=profile.architecture.fingerprint()
+            if profile.architecture
+            else None,
             phases=[phase.name.value for phase in profile.phases],
         )
 

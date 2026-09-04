@@ -27,6 +27,7 @@ from app.factory.lifecycle import WorkspaceBusy
 from app.factory.workspace import LocalGitWorkspaceManager
 from app.infrastructure.audit import build_audit_event
 from app.models.task import TaskStatus
+from app.providers.base import ProviderError
 
 logger = logging.getLogger("forgehand")
 
@@ -129,8 +130,20 @@ class WorkflowService:
 
     async def _mark_failed(self, workflow_id: str, exc: Exception) -> None:
         error = type(exc).__name__
+        if isinstance(exc, ProviderError):
+            if isinstance(exc.status_code, int) and 400 <= exc.status_code <= 599:
+                error += f":HTTP{exc.status_code}"
+            elif type(exc.__cause__).__name__ in {
+                "ReadTimeout", "WriteTimeout", "ConnectTimeout", "PoolTimeout",
+                "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
+            }:
+                error += f":{type(exc.__cause__).__name__}"
         self._failures[workflow_id] = error
-        logger.exception("Workflow %s falhou", workflow_id)
+        # Provider messages and chained tracebacks can contain request/response data.
+        if isinstance(exc, ProviderError):
+            logger.error("Workflow %s falhou: %s", workflow_id, error)
+        else:
+            logger.exception("Workflow %s falhou", workflow_id)
         try:
             await self._app.aupdate_state(
                 self._config(workflow_id),
@@ -140,10 +153,12 @@ class WorkflowService:
                     "error": error,
                 },
             )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Não foi possível persistir a falha do workflow %s",
+        except Exception as persistence_error:  # noqa: BLE001
+            # A chained exception here still contains the original provider body.
+            logger.error(
+                "Não foi possível persistir a falha do workflow %s: %s",
                 workflow_id,
+                type(persistence_error).__name__,
             )
 
     async def _worker_loop(self, index: int) -> None:
@@ -210,7 +225,15 @@ class WorkflowService:
         )
         manager = self._workspace_manager
         lock = manager.journal.exclusive(job.workflow_id) if manager else nullcontext()
-        with span, lock:
+        from app.agents.hooks import HookScope, tool_hook_scope
+
+        with span, lock, tool_hook_scope(
+            HookScope(
+                workflow_id=job.workflow_id,
+                project_id=job.project_id,
+                client_id=job.owner_client_id,
+            )
+        ):
             if manager and job.kind == "resume" and job.payload == "retry":
                 retained = manager.journal.get(job.workflow_id)
                 if retained and retained.state in {
@@ -430,6 +453,9 @@ class WorkflowService:
         }
 
     # ------------------------------------------------------------------
+    async def dispatch_scope(self) -> str:
+        return str(await self._job_queue.dispatch_scope())
+
     async def start(
         self,
         project_id: str,
@@ -438,20 +464,10 @@ class WorkflowService:
         owner_client_id: str,
         delivery: DeliveryConfig | None = None,
         work_order: WorkOrder | None = None,
+        workflow_id: str | None = None,
+        expected_dispatch_scope: str | None = None,
     ) -> str:
-        workflow_id = str(uuid4())
-        if work_order is not None and work_order.idempotency_key is not None:
-            workflow_id, claimed = cast(
-                tuple[str, bool],
-                await self._job_queue.claim_idempotency(
-                    owner_client_id=owner_client_id,
-                    repository=work_order.repository.full_name,
-                    idempotency_key=work_order.idempotency_key,
-                    workflow_id=workflow_id,
-                ),
-            )
-            if not claimed:
-                return workflow_id
+        workflow_id = workflow_id or str(uuid4())
         initial: dict[str, Any] = {
             "request": request,
             "project_id": project_id,
@@ -469,16 +485,17 @@ class WorkflowService:
             initial["delivery"] = delivery
         if work_order is not None:
             initial["work_order"] = work_order
-        self._failures.pop(workflow_id, None)
-        self._ensure_workers_started()
-        await self._job_queue.enqueue(
+        admitted = await self._job_queue.enqueue_start(
             workflow_id=workflow_id,
             project_id=project_id,
             owner_client_id=owner_client_id,
-            kind="start",
             payload=initial,
+            repository=work_order.repository.full_name if work_order else "",
+            idempotency_key=work_order.idempotency_key if work_order else None,
+            expected_dispatch_scope=expected_dispatch_scope,
         )
-        return workflow_id
+        self._ensure_workers_started()
+        return str(admitted)
 
     async def get_access_context(self, workflow_id: str) -> WorkflowAccessContext:
         snapshot = await self._app.aget_state(self._config(workflow_id))
