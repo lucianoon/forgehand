@@ -91,8 +91,12 @@ async def test_fetch_url_respects_output_limit() -> None:
 
 def test_fetch_url_description_lists_allowlist() -> None:
     collector = WebReferenceCollector(allowed_hosts=["docs.example.com"])
-    assert "docs.example.com" in FetchUrlTool(collector).description
-    assert "qualquer host público" in FetchUrlTool(WebReferenceCollector()).description
+    # comparação exata do trecho (não substring de URL: evita o falso positivo
+    # py/incomplete-url-substring-sanitization do CodeQL)
+    hosts_clause = FetchUrlTool(collector).description.split("Hosts permitidos: ")[1]
+    assert hosts_clause.startswith("docs.example.com.")
+    open_clause = FetchUrlTool(WebReferenceCollector()).description.split("Hosts permitidos: ")[1]
+    assert open_clause.startswith("qualquer host público (80/443).")
 
 
 def test_build_agent_tools_offers_fetch_url_per_role(tmp_path: Path) -> None:
