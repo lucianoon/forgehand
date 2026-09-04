@@ -400,6 +400,9 @@ class ToolLoop:
     def has_tools(self) -> bool:
         return bool(self._specs) and self._max_tool_calls > 0
 
+    def has_tool(self, name: str) -> bool:
+        return self.has_tools and name in self._tools
+
     async def run(
         self,
         tier: ModelTier | None,

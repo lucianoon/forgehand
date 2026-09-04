@@ -93,18 +93,7 @@ class BaseProjectMemory:
         # URLs do pedido viram evidências [W*] buscadas uma vez pelo controlador.
         # Opt-in: fora do POSIX ou sem rede o comportamento é o de sempre.
         self._web_collector: WebReferenceCollector | None = (
-            WebReferenceCollector(
-                allowed_hosts=[
-                    host.strip()
-                    for host in settings.web_references_allowed_hosts.split(",")
-                    if host.strip()
-                ],
-                max_urls=settings.web_references_max_urls,
-                max_bytes=settings.web_references_max_bytes,
-                max_chars=settings.web_references_max_chars,
-                timeout_seconds=settings.web_references_timeout_seconds,
-                ca_bundle=settings.web_references_ca_bundle or None,
-            )
+            WebReferenceCollector.from_settings(settings)
             if settings.web_references_enabled
             else None
         )

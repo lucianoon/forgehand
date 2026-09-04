@@ -7,6 +7,11 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Ferramenta `fetch_url` para planner e executor (`AGENT_WEB_FETCH_ENABLED`,
+  `AGENT_WEB_FETCH_ROLES`; opt-in): o agente busca uma página no meio da
+  tarefa com as mesmas guardas e limites das referências web, o texto volta
+  marcado como externo e não confiável, e a chamada passa pelos hooks e
+  pelos tetos do papel como qualquer outra ferramenta.
 - Referências web na solicitação (`WEB_REFERENCES_ENABLED`, opt-in): URLs do
   pedido são buscadas uma vez pelo controlador e viram evidências `[W1]`,
   `[W2]`... no mesmo circuito de citações do grounding do repositório, com

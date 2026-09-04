@@ -29,11 +29,14 @@ import ssl
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import urljoin, urlsplit
 
 import certifi
 import httpx
+
+if TYPE_CHECKING:  # só anotação: settings importa metade do app, evitar ciclo
+    from app.infrastructure.settings import Settings
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"'`\]\)\}]+", re.IGNORECASE)
 _TRAILING_PUNCTUATION = ".,;:!?"
@@ -196,6 +199,23 @@ class WebReferenceCollector:
         context = ssl.create_default_context(cafile=certifi.where())
         context.load_verify_locations(cafile=self.ca_bundle)
         return context
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> WebReferenceCollector:
+        """Um coletor com os limites e a allowlist WEB_REFERENCES_* do operador.
+        Compartilhado pela peça 1 (URLs do pedido) e pela ferramenta fetch_url."""
+        return cls(
+            allowed_hosts=[
+                host.strip()
+                for host in settings.web_references_allowed_hosts.split(",")
+                if host.strip()
+            ],
+            max_urls=settings.web_references_max_urls,
+            max_bytes=settings.web_references_max_bytes,
+            max_chars=settings.web_references_max_chars,
+            timeout_seconds=settings.web_references_timeout_seconds,
+            ca_bundle=settings.web_references_ca_bundle or None,
+        )
 
     def host_allowed(self, host: str) -> bool:
         if not self.allowed_hosts:

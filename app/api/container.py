@@ -26,6 +26,7 @@ from app.agents.product import ProductStudio
 from app.infrastructure.product_store import ProductStore
 from app.agents.registry import CapabilityExecutorRegistry
 from app.agents.tools import AgentTool, build_workspace_tools
+from app.agents.web_tools import FetchUrlTool
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.factory.build_strategy import BuildProfileRegistry
@@ -35,6 +36,7 @@ from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audit_event
 from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
+from app.infrastructure.web_references import WebReferenceCollector
 from app.infrastructure.scm import GitHubDeliveryService
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
@@ -135,7 +137,7 @@ class LeaseBoundRuntimeFactory:
                 max_tokens=settings.default_task_max_tokens,
                 max_cost_usd=settings.default_task_max_cost_usd,
             ),
-            tools=build_agent_tools(settings, lease.local_path),
+            tools=build_agent_tools(settings, lease.local_path, role="planner"),
             max_tool_calls=settings.agent_tools_max_calls_planner,
             hooks=self._hooks,
             non_writing_capabilities={
@@ -151,14 +153,16 @@ class LeaseBoundRuntimeFactory:
             workspace_runtime=build_workspace_runtime(settings, pipeline),
             max_autocorrect_rounds=settings.executor_max_autocorrect_rounds,
             execution_strategies=strategies,
-            tools=build_agent_tools(settings, lease.local_path, validators=validators),
+            tools=build_agent_tools(
+                settings, lease.local_path, validators=validators, role="executor"
+            ),
             max_tool_calls=settings.agent_tools_max_calls_executor,
             hooks=self._hooks,
         )
         judge = LLMJudge(
             self._router,
             validation_pipeline=pipeline,
-            tools=build_agent_tools(settings, lease.local_path),
+            tools=build_agent_tools(settings, lease.local_path, role="judge"),
             max_tool_calls=settings.agent_tools_max_calls_judge,
             hooks=self._hooks,
             independence=settings.judge_independence,
@@ -341,10 +345,15 @@ def build_container(
     # o planner explora o repositório do grounding. run_check só no executor.
     ensure_executor_workspace(settings)
     executor_tools = build_agent_tools(
-        settings, settings.executor_workspace_root, validators=objective_validators
+        settings,
+        settings.executor_workspace_root,
+        validators=objective_validators,
+        role="executor",
     )
-    judge_tools = build_agent_tools(settings, settings.executor_workspace_root)
-    planner_tools = build_agent_tools(settings, settings.repository_root)
+    judge_tools = build_agent_tools(
+        settings, settings.executor_workspace_root, role="judge"
+    )
+    planner_tools = build_agent_tools(settings, settings.repository_root, role="planner")
     graph_app = build_workflow(
         planner=LLMPlanner(
             router,
@@ -434,16 +443,29 @@ def build_agent_tools(
     root: str,
     *,
     validators: list[CommandObjectiveValidator] | None = None,
+    role: str = "executor",
 ) -> list[AgentTool]:
     if not settings.agent_tools_enabled:
         return []
-    return build_workspace_tools(
+    tools = build_workspace_tools(
         root,
         max_output_chars=settings.agent_tools_max_output_chars,
         validators=list(validators)
         if validators and settings.agent_tools_allow_checks
         else None,
     )
+    if settings.agent_web_fetch_enabled and role in web_fetch_roles(settings):
+        tools.append(
+            FetchUrlTool(
+                WebReferenceCollector.from_settings(settings),
+                max_output_chars=settings.agent_tools_max_output_chars,
+            )
+        )
+    return tools
+
+
+def web_fetch_roles(settings: Settings) -> set[str]:
+    return {role.strip() for role in settings.agent_web_fetch_roles.split(",") if role.strip()}
 
 
 def build_workspace_runtime(
