@@ -90,7 +90,7 @@ async def delivery_preflight(
         ),
         (
             "scm_host",
-            "github.com" in settings.factory_approved_scm_hosts,
+            any(host == "github.com" for host in settings.factory_approved_scm_hosts),
             "Host GitHub aprovado.",
             "Inclua github.com nos hosts aprovados da fábrica.",
         ),

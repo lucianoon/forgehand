@@ -558,6 +558,43 @@ async def test_preflight_configuration_blockers(tmp_path, monkeypatch, updates, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hosts,expected",
+    [
+        (["github.com"], "pass"),
+        ([" GITHUB.COM. "], "pass"),
+        (["example.com", "github.com"], "pass"),
+        (["github.com.attacker.example"], "block"),
+        (["notgithub.com"], "block"),
+        (["attacker.github.com"], "block"),
+        ([], "block"),
+    ],
+)
+async def test_preflight_requires_exact_approved_github_host(
+    tmp_path, monkeypatch, hosts, expected
+):
+    from app.factory.preflight import delivery_preflight
+
+    monkeypatch.setattr(
+        "app.factory.preflight.github_credential_configured", lambda: True
+    )
+    product, store, plan = setup(tmp_path)
+    settings = Settings(
+        _env_file=None, factory_build_profiles_json=build_profiles()
+    ).model_copy(update={
+        "factory_mode_enabled": True,
+        "factory_approved_scm_hosts_json": json.dumps(hosts),
+    })
+    workflows = Workflows()
+    report = await delivery_preflight(plan, settings, workflows)
+    host_check = next(check for check in report.checks if check.code == "scm_host")
+    assert host_check.status == expected
+    assert report.can_start is (expected == "pass")
+    assert store.get(product["id"], "owner") == plan
+    assert not workflows.calls
+
+
+@pytest.mark.asyncio
 async def test_preflight_explicit_mapping_autodetect_and_network(tmp_path, monkeypatch):
     from app.factory.preflight import delivery_preflight
 
