@@ -55,6 +55,10 @@ uv sync --extra dev --locked
 uv run uvicorn app.main:app --env-file .env.demo
 ```
 
+Mission control and the operational executor run on any platform. **Factory
+mode** (isolated checkout, Docker sandbox, per-workflow POSIX lock) requires
+Linux or WSL and fails closed with `PosixRequired` elsewhere.
+
 The [`.env.demo`](.env.demo) profile forces every backend to memory and works
 even with a production `.env` in place. Open `http://localhost:8000/dashboard`
 and use the local `dev-key`. Running a workflow also requires an LLM provider

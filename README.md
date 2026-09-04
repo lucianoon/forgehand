@@ -78,6 +78,10 @@ uv sync --extra dev --locked
 uv run uvicorn app.main:app --env-file .env.demo
 ```
 
+O mission control e o executor operacional rodam em qualquer plataforma. O
+**factory mode** (checkout isolado, sandbox Docker, lock POSIX por workflow)
+exige Linux ou WSL e falha fechado com `PosixRequired` em outros hosts.
+
 O perfil [`.env.demo`](.env.demo) força todos os backends para memória e
 funciona mesmo com um `.env` de produção presente. Abra
 `http://localhost:8000/dashboard` e use a chave local `dev-key`. Executar

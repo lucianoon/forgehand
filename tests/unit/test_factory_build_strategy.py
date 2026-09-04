@@ -15,6 +15,10 @@ from app.models.factory import (
     WorkspaceLease,
 )
 
+# Factory mode é POSIX por design (lock fcntl, dir_fd/O_NOFOLLOW, grupo de
+# processos, caminhos de lease em /): no Windows só o mission control roda.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
+
 
 def _profile(
     name: str = "python-checks",

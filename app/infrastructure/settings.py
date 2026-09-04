@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import os
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -150,9 +151,22 @@ class ApiKeySettings(BaseModel):
     role: Literal["viewer", "operator", "approver", "admin"] = "admin"
 
 
+def resolve_env_file() -> str | None:
+    """Arquivo .env lido pelas Settings.
+
+    Padrão: `.env` do diretório atual. FORGEHAND_ENV_FILE aponta para outro
+    arquivo; vazio desliga a leitura — a suíte de testes usa isso para não
+    herdar o .env do operador (backends, caminhos e chaves reais).
+    """
+    value = os.environ.get("FORGEHAND_ENV_FILE")
+    if value is None:
+        return ".env"
+    return value or None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=resolve_env_file(), env_file_encoding="utf-8", extra="ignore"
     )
 
     app_name: str = "forgehand"
@@ -287,7 +301,10 @@ class Settings(BaseSettings):
     @field_validator("factory_docker_socket")
     @classmethod
     def validate_factory_docker_socket(cls, value: str) -> str:
-        if not Path(value).is_absolute():
+        # Socket Unix: caminho POSIX absoluto. PurePosixPath mantém o default
+        # válido também no Windows, onde Path("/var/run/...") não é absoluto e
+        # a factory (que nem roda lá) derrubaria Settings() inteiro.
+        if not (Path(value).is_absolute() or PurePosixPath(value).is_absolute()):
             raise ValueError("FACTORY_DOCKER_SOCKET must be an absolute local path")
         return value
 

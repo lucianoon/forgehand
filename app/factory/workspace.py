@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import os
 import re
-import signal
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -15,6 +14,7 @@ from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
 
 from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
+from app.infrastructure.posix import kill_process_group
 
 from app.models.factory import (
     RepositoryTarget,
@@ -126,11 +126,7 @@ class SafeGitRunner:
                 process.communicate(), timeout=self._timeout
             )
         except (TimeoutError, asyncio.CancelledError) as exc:
-            if process.returncode is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            kill_process_group(process)
             await asyncio.shield(process.wait())
             if isinstance(exc, asyncio.CancelledError):
                 raise

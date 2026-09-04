@@ -65,7 +65,11 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.factory", "WorkspaceRetention"),
     ("app.models.factory", "WorkspaceLease"),
     ("app.models.factory", "FactoryStage"),
-    ("app.graph.nodes", "ExecutionPayload"),  # viaja nos Send pendentes
+    # ExecutionPayload viaja nos Send pendentes. Definido em app.graph.contracts;
+    # a entrada antiga continua válida para checkpoints gravados antes da
+    # separação por fase (o nome segue re-exportado em app.graph.nodes).
+    ("app.graph.contracts", "ExecutionPayload"),
+    ("app.graph.nodes", "ExecutionPayload"),
 ]
 
 

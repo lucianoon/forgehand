@@ -4,8 +4,6 @@ import asyncio
 import difflib
 import re
 import shlex
-import os
-import signal as process_signal
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,6 +12,7 @@ from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
 from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
 from app.factory.lifecycle import inherited_lock_fds
+from app.infrastructure.posix import kill_process_group
 
 
 class CommandRunner(Protocol):
@@ -428,11 +427,7 @@ class LocalWorkspaceRuntime:
         try:
             stdout, stderr = await process.communicate()
         except asyncio.CancelledError:
-            if process.returncode is None:
-                try:
-                    os.killpg(process.pid, process_signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            kill_process_group(process)
             await asyncio.shield(process.wait())
             raise
         return {

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from app.infrastructure.posix import O_NOFOLLOW, O_NONBLOCK
 from app.models.build import BuildProfile
 from app.models.factory import BuildProfileSelection, WorkOrder, WorkspaceLease
 
@@ -234,7 +235,7 @@ class BuildProfileRegistry:
         try:
             # NOFOLLOW evita seguir links trocados após lstat; NONBLOCK impede
             # bloqueio caso um arquivo regular seja substituído por FIFO.
-            descriptor = os.open(manifest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            descriptor = os.open(manifest, os.O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
             with os.fdopen(descriptor, "rb") as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     return _Manifest(True, f"{name} não é um arquivo regular.")
