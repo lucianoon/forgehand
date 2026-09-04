@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import os
 import re
 import shlex
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -40,9 +42,27 @@ def resolve_argv(argv: list[str]) -> list[str]:
 PYTEST_NO_TESTS_COLLECTED = 5
 
 
+_SECRET_ENV_PATTERN = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.IGNORECASE)
+
+
+def sanitized_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Ambiente sem segredos para processos filhos: remove variáveis cujo nome
+    sugere chave, token, senha ou credencial. PATH e o resto ficam."""
+    base = os.environ if source is None else source
+    return {k: v for k, v in base.items() if not _SECRET_ENV_PATTERN.search(k)}
+
+
 class LocalCommandRunner:
-    def __init__(self, policy: CommandPolicy | None = None) -> None:
+    def __init__(
+        self,
+        policy: CommandPolicy | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        sanitize_env: bool = False,
+    ) -> None:
         self._policy = policy or CommandPolicy()
+        self._timeout_seconds = timeout_seconds
+        self._sanitize_env = sanitize_env
 
     async def run(
         self, command: str, workspace_root: Path, output_limit: int
@@ -51,13 +71,34 @@ class LocalCommandRunner:
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(workspace_root),
+            env=sanitized_environment() if self._sanitize_env else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        stdout, stderr = await process.communicate()
-        return _command_result(
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self._timeout_seconds
+            )
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            kill_process_group(process)
+            await asyncio.shield(process.wait())
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            result = _command_result(
+                command,
+                None,
+                b"",
+                f"timeout após {self._timeout_seconds:g}s; processo encerrado".encode(),
+                output_limit,
+            )
+            result["timed_out"] = True
+            return result
+        result = _command_result(
             command, process.returncode, stdout, stderr, output_limit
         )
+        result["timed_out"] = False
+        return result
 
 
 class DockerSandboxCommandRunner:

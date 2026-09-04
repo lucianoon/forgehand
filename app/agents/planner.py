@@ -58,7 +58,9 @@ file_unchanged (path: "X não pode ser alterado"), no_existing_file_modified \
 (SÓ para tarefas que criam arquivos novos sem tocar em nenhum existente — \
 não use quando a tarefa edita um arquivo), changes_limited_to (paths, aceita \
 globs), content_contains (path + pattern regex), citations_valid (análises \
-grounded). \
+grounded), output_contains (pattern regex sobre o texto entregue em \
+summary/notes) e output_min_chars (min_chars) — estes dois para tarefas que \
+NÃO gravam arquivo, como análise e pesquisa. \
 Use `subjective` só para o que realmente exige julgamento (qualidade, \
 clareza, aderência a um desenho). Um plano bom mistura os dois: o objetivo \
 prova que a mudança aconteceu, o subjetivo julga se ficou boa;
@@ -248,7 +250,8 @@ class LLMPlanner:
                 "\n\nNesta execução NENHUMA tarefa grava arquivos no workspace: o "
                 "resultado de cada tarefa é o texto de `summary`/`notes`. Não use "
                 "critérios de arquivo (file_created, file_modified, content_contains, "
-                "changes_limited_to); descreva o entregável como conteúdo do resultado."
+                "changes_limited_to); use output_contains (pattern) e output_min_chars "
+                "(min_chars) para provar o entregável, e subjective para a qualidade."
             )
         elif self._non_writing:
             names = ", ".join(sorted(c.value for c in self._non_writing))
@@ -256,7 +259,8 @@ class LLMPlanner:
                 f"\n\nCapabilities que NÃO gravam arquivos ({names}): o resultado é o "
                 "texto de `summary`/`notes`. Nelas, não use critérios de arquivo "
                 "(file_created, file_modified, content_contains, changes_limited_to); "
-                "para produzir um documento no repositório use `documentation`."
+                "use output_contains (pattern) e output_min_chars (min_chars). "
+                "Para produzir um documento no repositório use `documentation`."
             )
         if self._tool_loop.has_tools:
             prompt += TOOLS_GUIDANCE

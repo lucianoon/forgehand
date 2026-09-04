@@ -44,6 +44,8 @@ DOMAIN_TYPES: list[tuple[str, str]] = [
     ("app.models.task", "TaskAttempt"),
     ("app.models.task", "TaskBudget"),
     ("app.models.task", "EvaluationResult"),
+    ("app.models.task", "AcceptanceCriterion"),
+    ("app.models.task", "CriterionKind"),
     ("app.models.build", "BuildPhaseName"),
     ("app.models.build_execution", "BuildOutcome"),
     ("app.models.build_execution", "BuildPhaseResult"),

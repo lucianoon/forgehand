@@ -16,6 +16,7 @@ recebem CompletionResult; o resto é problema desta camada:
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from abc import ABC, abstractmethod
@@ -23,6 +24,8 @@ from enum import Enum
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger("forgehand.providers")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -299,6 +302,19 @@ class LLMProvider(ABC):
                 )
                 await self._breaker.on_success()
                 result.latency_ms = (time.monotonic() - started) * 1000
+                usage = result.usage
+                logger.info(
+                    "llm_call provider=%s model=%s input=%d cache_write=%d cache_read=%d "
+                    "output=%d cost_usd=%.5f latency_ms=%.0f",
+                    self.name,
+                    result.model,
+                    usage.input_tokens,
+                    usage.cache_write_tokens,
+                    usage.cache_read_tokens,
+                    usage.output_tokens,
+                    result.cost_usd,
+                    result.latency_ms,
+                )
                 return result
 
             except asyncio.TimeoutError:

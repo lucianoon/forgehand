@@ -112,6 +112,7 @@ class _Candidate:
     relative_path: str
     score: int
     text: str
+    keyword_hits: int = 0
 
 
 class RepositoryGroundingCollector:
@@ -123,8 +124,12 @@ class RepositoryGroundingCollector:
         max_excerpt_lines: int = 60,
         max_file_bytes: int = 64_000,
         full_file_max_bytes: int = 0,
+        max_total_chars: int = 40_000,
+        require_keyword_match: bool = True,
     ) -> None:
         self._repo_root = Path(repo_root).expanduser().resolve()
+        self._max_total_chars = max(1_000, max_total_chars)
+        self._require_keyword_match = require_keyword_match
         self._max_files = max_files
         self._max_excerpt_lines = max_excerpt_lines
         self._max_file_bytes = max_file_bytes
@@ -141,8 +146,24 @@ class RepositoryGroundingCollector:
             if entry.name not in _IGNORED_DIRS
         ][:20]
 
+        # Relevância antes de volume: sem palavra do pedido no path ou no texto,
+        # o arquivo só entra se for referência do projeto (README, pyproject...).
+        # O orçamento total de caracteres limita o prefixo enviado (e cacheado)
+        # a planner, executor e judge.
         evidence: list[dict[str, Any]] = []
-        for index, candidate in enumerate(candidates[: self._max_files], start=1):
+        omitted = 0
+        total_chars = 0
+        for candidate in candidates:
+            if len(evidence) >= self._max_files:
+                omitted += 1
+                continue
+            if (
+                self._require_keyword_match
+                and candidate.keyword_hits == 0
+                and candidate.relative_path not in _ALWAYS_INCLUDE
+            ):
+                omitted += 1
+                continue
             if (
                 self._full_file_max_bytes > 0
                 and len(candidate.text.encode("utf-8")) <= self._full_file_max_bytes
@@ -158,9 +179,13 @@ class RepositoryGroundingCollector:
                 )
             if not excerpt.strip():
                 continue
+            if evidence and total_chars + len(excerpt) > self._max_total_chars:
+                omitted += 1
+                continue
+            total_chars += len(excerpt)
             evidence.append(
                 {
-                    "id": f"E{index}",
+                    "id": f"E{len(evidence) + 1}",
                     "path": candidate.relative_path,
                     "line_start": line_start,
                     "line_end": line_end,
@@ -176,6 +201,8 @@ class RepositoryGroundingCollector:
             "top_level_entries": top_level,
             "require_citations": True,
             "evidence": evidence,
+            "total_chars": total_chars,
+            "omitted_candidates": omitted,
         }
 
     def _rank_candidates(self, keywords: list[str]) -> list[_Candidate]:
@@ -194,12 +221,15 @@ class RepositoryGroundingCollector:
                 continue
 
             score = self._score_candidate(relative_path, text, keywords)
+            lower_path, lower_text = relative_path.lower(), text.lower()
+            hits = sum(1 for kw in keywords if kw in lower_path or kw in lower_text)
             candidates.append(
                 _Candidate(
                     path=path,
                     relative_path=relative_path,
                     score=score,
                     text=text,
+                    keyword_hits=hits,
                 )
             )
 

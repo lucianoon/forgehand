@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     # de max_lines_per_file). Necessário para op=replace em arquivos pequenos:
     # o executor só pode substituir trechos que viu. 0 desliga.
     repository_grounding_full_file_max_bytes: int = Field(default=0, ge=0)
+    # Relevância antes de volume: arquivos sem palavra do pedido só entram se
+    # forem referência do projeto (README, pyproject...); o total de caracteres
+    # limita o prefixo cacheado enviado a planner, executor e judge.
+    repository_grounding_require_keyword_match: bool = True
+    repository_grounding_max_total_chars: int = Field(default=40_000, ge=4_000)
     # Referências web na solicitação: URLs do pedido são buscadas UMA vez pelo
     # controlador (nunca pelo sandbox) e viram evidências [W1], [W2]... com
     # guarda contra SSRF. Desligado por padrão. A allowlist é por sufixo de
@@ -265,6 +270,10 @@ class Settings(BaseSettings):
     agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
     agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     agent_tools_allow_checks: bool = True
+    # run_command: comandos da allowlist (git, python, pytest, ruff, mypy, uv)
+    # sem shell, sem rede, com timeout e sem segredos no ambiente. Só executor.
+    agent_tools_allow_commands: bool = False
+    agent_tools_command_timeout_seconds: float = Field(default=120.0, gt=0, le=900)
     # fetch_url: o agente busca uma página no meio da tarefa, com as mesmas
     # guardas e limites WEB_REFERENCES_* (allowlist, SSRF, bytes, chars, CA).
     # Opt-in por papel; o judge fica fora por padrão — ele confere o workspace.
