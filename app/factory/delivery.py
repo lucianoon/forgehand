@@ -3,6 +3,7 @@
 from app.graph.state import DeliveryConfig, WorkflowState
 from app.models.build_execution import BuildOutcome
 from app.models.factory import WorkspaceLifecycle
+from app.factory.acceptance import acceptance_verified
 
 
 def factory_delivery_config(state: WorkflowState) -> DeliveryConfig:
@@ -26,6 +27,8 @@ def factory_delivery_config(state: WorkflowState) -> DeliveryConfig:
         or selection.selection_reason == "unsupported"
     ):
         raise ValueError("factory_delivery_strategy_missing")
+    if selection.acceptance_digest is not None and selection.acceptance_criteria != order.acceptance_criteria:
+        raise ValueError("factory_delivery_acceptance_criteria_mismatch")
     for task in state.plan:
         report = task.attempts[-1].build_validation if task.attempts else None
         if (
@@ -34,6 +37,16 @@ def factory_delivery_config(state: WorkflowState) -> DeliveryConfig:
             or report.profile_digest != selection.profile_digest
             or report.outcome != BuildOutcome.SUCCESS
             or report.error_code is not None
+            or not acceptance_verified(report.acceptance, selection)
+            or (report.architecture is not None and not report.architecture.passed)
+            or (
+                selection.architecture_digest is not None
+                and (
+                    report.architecture is None
+                    or report.architecture.policy_digest
+                    != selection.architecture_digest
+                )
+            )
             or [phase.phase.value for phase in report.phases] != selection.phases
             or any(
                 phase.outcome != BuildOutcome.SUCCESS

@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Seu espaço de trabalho</title><link rel="stylesheet" href="/assets/app.css"></head>
+<body><main>
+  <header><small>ESPAÇO DE TRABALHO · DADOS PERSISTENTES</small><h1 id="product-name">Entre para continuar</h1><p id="product-description">Seus registros ficam salvos no servidor e separados por usuário.</p><div class="toolbar"><span id="identity"></span><button id="logout" hidden>Sair</button></div></header>
+  <p id="message" role="status" aria-live="polite"></p>
+  <form id="login"><h2>Acessar sua conta</h2><label>Usuário<input name="username" autocomplete="username" required minlength="3" maxlength="80"></label><label>Senha<input name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="128"></label><button class="primary" type="submit">Entrar</button><p class="notice">A conta é criada pelo administrador da instalação. Não use sua chave OpenAI aqui.</p></form>
+  <section id="workspace" hidden><nav id="entities" aria-label="Cadastros"></nav><div class="toolbar"><h2 id="entity-name"></h2><button id="export">Exportar meus dados</button></div><div class="work-grid"><form id="record-form"></form><section><div class="toolbar"><label>Buscar registros<input id="search" type="search" maxlength="100"></label><button id="refresh">Atualizar lista</button></div><div id="records" class="records"></div><div class="toolbar pager"><button id="previous">Anterior</button><span id="page"></span><button id="next">Próxima</button></div></section></div></section>
+</main><script src="/assets/app.js" defer></script></body></html>

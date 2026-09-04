@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forgehand · Estúdio de produto</title>
+<link rel="stylesheet" href="/dashboard/assets/styles.css"><link rel="stylesheet" href="/dashboard/assets/studio.css"></head>
+<body><header class="topbar"><a class="brand" href="/dashboard"><span class="brand-mark">F</span><span><strong>Forgehand</strong><small>Estúdio de produto</small></span></a><a href="/dashboard">Manter um repositório →</a></header>
+<main class="studio">
+  <section class="studio-intro"><p class="eyebrow">De uma ideia a algo que você pode usar</p><h1>Sua primeira versão,<br>na bancada.</h1><p>Descreva o problema. Revise o escopo. Experimente uma aplicação de cadastros com código para levar adiante.</p></section>
+  <ol class="studio-steps"><li id="step-idea">1 · Descrever</li><li id="step-brief">2 · Aprovar escopo</li><li id="step-demo">3 · Experimentar</li></ol>
+  <div class="studio-grid">
+    <aside class="panel studio-input">
+      <h2>O que vamos construir?</h2>
+      <form id="idea-form">
+        <label>API key do Forgehand<input id="studio-key" type="password" autocomplete="off" required placeholder="Não é a chave da OpenAI"></label>
+        <label>Projeto<input id="studio-project" value="forgehand" required maxlength="100"></label>
+        <label>Ideia<textarea id="studio-idea" rows="5" minlength="15" maxlength="4000" required placeholder="Quero organizar os agendamentos de uma barbearia, com cliente, profissional, serviço, data e horário."></textarea></label>
+        <label>Quem vai usar?<input id="studio-audience" required minlength="3" maxlength="300" placeholder="Recepcionistas de pequenas barbearias"></label>
+        <label>Orçamento total estimado (US$)<input id="studio-budget" type="number" value="0.50" min="0.01" max="5" step="0.01" required></label>
+        <button id="brief-button" class="primary" type="submit">Preparar escopo →</button>
+      </form>
+      <p class="field-help">Usa o provedor de IA configurado. A chave fica apenas nesta página. Custos são estimados; configure também os limites do provedor.</p>
+      <div class="history-heading"><h3>Suas ideias</h3><button id="studio-refresh" type="button">Atualizar</button></div>
+      <div id="studio-history" class="workflow-history"></div>
+    </aside>
+    <section class="panel studio-output">
+      <div class="studio-status"><span id="studio-state" class="badge neutral">Aguardando ideia</span><span id="studio-cost">—</span></div>
+      <p id="studio-message" role="status" aria-live="polite">Seu escopo aparece aqui antes de qualquer construção.</p>
+      <form id="brief-form" hidden>
+        <label>Nome do produto<input id="brief-name" required maxlength="80"></label>
+        <label>Público<input id="brief-audience" required maxlength="300"></label>
+        <label>Resultado esperado<textarea id="brief-outcome" rows="2" required maxlength="300"></textarea></label>
+        <label>Funcionalidades · uma por linha<textarea id="brief-features" rows="4" required></textarea></label>
+        <label>Backlog priorizado · uma tarefa por linha<textarea id="brief-backlog" rows="5" required></textarea></label>
+        <label>Como você vai testar · um critério por linha<textarea id="brief-acceptance_criteria" rows="4" required></textarea></label>
+        <label>Fora desta versão · um limite por linha<textarea id="brief-out_of_scope" rows="3" required></textarea></label>
+        <p class="field-help">Esta versão entrega cadastros, edição, exclusão, busca e exportação. Não inclui servidor, login real, pagamentos ou banco compartilhado.</p>
+        <button id="build-button" class="primary" type="submit">Aprovar escopo e construir →</button>
+      </form>
+      <div id="demo-area" hidden>
+        <div class="studio-demo-heading"><h2>Experimente sua aplicação</h2><button id="download-demo" type="button">Baixar código (.zip)</button></div>
+        <p><button id="download-fullstack" type="button">Baixar versão com login e banco</button></p>
+        <p class="field-help">O pacote full-stack roda separadamente: backend, dados persistentes privados por usuário e PostgreSQL para implantação. Requer instalação, criação de contas e validação operacional; não publica nada automaticamente.</p>
+        <p class="field-help">Preview isolado. Os dados ficam nesta sessão. A exportação de dados funciona no pacote baixado; a prévia não permite downloads internos.</p>
+        <iframe id="demo-frame" title="Aplicação de demonstração" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+        <h3>Checklist de aceitação manual</h3><div id="demo-checklist"></div>
+        <details><summary>Escopo aprovado</summary><pre id="approved-brief"></pre></details>
+      </div>
+      <section id="delivery-area" class="delivery-area" hidden aria-labelledby="delivery-heading">
+        <p class="eyebrow">Depois da primeira versão</p>
+        <h2 id="delivery-heading">Uma entrega de cada vez.</h2>
+        <p>Escolha um repositório existente. Defina o que muda e o que deve ser preservado. Cada etapa gera um workflow separado, com revisão e merge humano.</p>
+        <p id="delivery-message" role="status" aria-live="polite"></p>
+        <button id="delivery-refresh" type="button">Atualizar plano</button>
+        <form id="delivery-plan-form">
+          <label>Repositório GitHub existente<input id="delivery-repository" required placeholder="organizacao/repositorio" maxlength="200"></label>
+          <label>Branch base<input id="delivery-base" required value="main" maxlength="150"></label>
+          <label>Perfil de build aprovado (opcional)<input id="delivery-profile" maxlength="80" placeholder="python-service"></label>
+          <label>Preservar em todas as entregas · uma regra por linha<textarea id="delivery-preserve" rows="3" required maxlength="6000">Preservar os dados existentes; mudanças no banco exigem migração e teste de preservação.</textarea></label>
+          <label>Decisões de arquitetura · uma por linha<textarea id="delivery-decisions" rows="2" maxlength="10000"></textarea></label>
+          <label>Entregas e critérios · JSON revisável<textarea id="delivery-features" class="delivery-json" rows="12" required spellcheck="false" maxlength="48000"></textarea></label>
+          <p class="field-help">Salvar não usa IA nem cria repositório, commit ou PR. Revise os critérios sugeridos; a demo anterior não define o escopo desta evolução.</p>
+          <button type="submit">Salvar plano de entregas</button>
+        </form>
+        <div id="delivery-ledger" hidden>
+          <p id="delivery-target" class="delivery-reference"></p>
+          <details><summary>Decisões e regras preservadas</summary><pre id="delivery-rules"></pre></details>
+          <ol id="delivery-features-list" class="delivery-features"></ol>
+          <section aria-labelledby="delivery-preflight-heading">
+            <h3 id="delivery-preflight-heading">Antes de executar</h3>
+            <button id="delivery-preflight-button" type="button">Checar condições de execução</button>
+            <p id="delivery-preflight-summary" role="status" aria-live="polite">A checagem local não inicia IA nem acessa o GitHub. O servidor repete as verificações ao executar.</p>
+            <ul id="delivery-preflight-checks"></ul>
+            <p id="delivery-preflight-limits" class="field-help"></p>
+          </section>
+          <form id="delivery-start-form">
+            <label>Orçamento estimado desta tentativa (US$)<input id="delivery-budget" type="number" min="0.01" max="5" step="0.01" value="0.50" required></label>
+            <label class="check-label"><input id="delivery-approved" type="checkbox" required>Autorizo esta tentativa de execução com IA e a criação de um PR no destino acima.</label>
+            <button id="delivery-start" type="submit" class="primary">Executar próxima entrega</button>
+          </form>
+          <p class="field-help">Factory mode e credencial GitHub precisam estar configurados. Nenhum merge ou deploy é automático. O orçamento é por tentativa, separado da geração da demo.</p>
+          <button id="delivery-reconcile" type="button">Verificar execução e merge</button>
+          <a href="/dashboard">Revisar decisões no painel de workflows →</a>
+          <details><summary>Acrescentar entregas ou decisões</summary>
+            <form id="delivery-append-form">
+              <label>Novas entregas · JSON<textarea id="delivery-add-features" class="delivery-json" rows="6" maxlength="48000">[]</textarea></label>
+              <label>Novas decisões · uma por linha<textarea id="delivery-add-decisions" rows="2" maxlength="10000"></textarea></label>
+              <button type="submit">Acrescentar ao plano</button>
+            </form>
+          </details>
+          <details><summary>Contexto exato da tentativa selecionada</summary><pre id="delivery-context">Selecione “Ver contexto” em uma entrega executada.</pre></details>
+        </div>
+      </section>
+    </section>
+  </div>
+</main><script src="/dashboard/assets/studio.js" defer></script><script src="/dashboard/assets/product-delivery.js" defer></script></body></html>

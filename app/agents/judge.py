@@ -29,6 +29,7 @@ from app.agents.grounding import (
     validate_citations,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import (
     ObjectiveValidationPipeline,
     ObjectiveValidator,
@@ -97,9 +98,16 @@ class LLMJudge:
         max_tool_calls: int = 4,
         independence: str = "bindings",
         critical_quorum: int = 1,
+        hooks: ToolHookDispatcher | None = None,
     ):
         self._router = router
-        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
+        self._tool_loop = ToolLoop(
+            router,
+            tools,
+            max_tool_calls=max_tool_calls,
+            hooks=hooks,
+            agent_name="judge",
+        )
         # "off": não registra; "bindings": usa os bindings do papel "judge" e
         # registra se o modelo coincidiu com o do executor; "escalate": pede ao
         # router outro modelo (tier acima, depois abaixo) para garantir a
@@ -211,7 +219,9 @@ class LLMJudge:
                         ),
                     }
                 )
-                loop_outcome = await self._tool_loop.run(self._tier, request)
+                loop_outcome = await self._tool_loop.run(
+                    self._tier, request, task_id=str(task.id)
+                )
                 total_tokens += loop_outcome.tokens
                 total_cost += loop_outcome.cost_usd
                 verdicts.append(

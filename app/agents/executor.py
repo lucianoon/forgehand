@@ -17,6 +17,7 @@ from app.agents.grounding import (
     grounding_required,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import format_validation_feedback
 
 from app.models.task import AgentTask, Capability, format_criteria
@@ -150,11 +151,18 @@ class LLMExecutor:
         execution_strategies: dict[Capability, ExecutionStrategy] | None = None,
         tools: list[AgentTool] | None = None,
         max_tool_calls: int = 8,
+        hooks: ToolHookDispatcher | None = None,
     ):
         self._router = router
         self.agent_name = agent_name
         self.tier = tier
-        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
+        self._tool_loop = ToolLoop(
+            router,
+            tools,
+            max_tool_calls=max_tool_calls,
+            hooks=hooks,
+            agent_name=agent_name,
+        )
         self._workspace_runtime = workspace_runtime
         self._max_autocorrect_rounds = max(0, max_autocorrect_rounds)
         self._execution_strategies = execution_strategies or {}
@@ -198,6 +206,7 @@ class LLMExecutor:
                     max_tokens=min(16384, remaining_tokens),
                 ),
                 token_ceiling=remaining_tokens,
+                task_id=str(task.id),
             )
             result = loop_outcome.result
             total_tokens += loop_outcome.tokens
@@ -281,6 +290,12 @@ class LLMExecutor:
             user_content += (
                 f"\n\nFeedback operacional da tentativa anterior:\n{previous_feedback}"
             )
+        architecture_guidance = context.get("architecture_policy_guidance")
+        acceptance_guidance = context.get("acceptance_policy_guidance")
+        if isinstance(acceptance_guidance, str) and acceptance_guidance:
+            user_content += f"\n\nContrato de aceitação:\n{acceptance_guidance}"
+        if isinstance(architecture_guidance, str) and architecture_guidance:
+            user_content += f"\n\nRegras de dependências:\n{architecture_guidance}"
         if current_iteration_feedback:
             user_content += (
                 "\n\nFeedback operacional da iteração interna anterior:\n"

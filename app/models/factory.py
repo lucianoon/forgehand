@@ -84,6 +84,10 @@ class BuildProfileSelection(BaseModel):
     ) = None
     phases: list[str] = Field(default_factory=list)
     profile_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    architecture_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    acceptance_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    acceptance_cases: dict[str, str] = Field(default_factory=dict)
+    acceptance_criteria: list[str] = Field(default_factory=list)
     unsupported_reason: str | None = None
 
     @model_validator(mode="after")

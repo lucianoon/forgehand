@@ -12,6 +12,7 @@ Decisões:
 from __future__ import annotations
 
 import json
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -23,10 +24,12 @@ from app.agents.grounding import (
     grounding_required,
 )
 from app.agents.tools import AgentTool, ToolLoop
+from app.agents.hooks import ToolHookDispatcher
 from app.models.task import (
     AcceptanceCriterion,
     AgentTask,
     Capability,
+    CriterionKind,
     TaskBudget,
     coerce_criteria,
 )
@@ -42,6 +45,10 @@ Decomponha a requisição em tarefas atômicas e executáveis. Para cada tarefa:
 - description: o que fazer, com contexto suficiente para um executor \
 independente que NÃO viu a requisição original;
 - capability: exatamente uma competência;
+- write_paths: caminhos relativos exatos dos arquivos que a tarefa pretende
+  criar, editar ou remover; [] somente quando não grava arquivos. Declare também
+  arquivos de testes. Não use globs. Essa declaração é verificada contra os
+  critérios; não autoriza gravações nem substitui os gates de execução;
 - acceptance_criteria: critérios verificáveis (mínimo 1). Cada critério tem \
 `text` (o contrato legível) e `kind`. Prefira kinds OBJETIVOS, decididos por \
 código sem margem de interpretação: tests_pass / lint_pass / types_pass \
@@ -100,6 +107,7 @@ class PlannedTask(BaseModel):
     description: str
     capability: Capability
     acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
+    write_paths: list[str] | None = Field(default=None, max_length=256)
     evidence_ids: list[str] = Field(default_factory=list)
     depends_on: list[int] = Field(default_factory=list)
     is_critical: bool = False
@@ -118,7 +126,18 @@ class PlanOutput(BaseModel):
 
 
 class PlanValidationError(ValueError):
-    """Plano estruturalmente inválido — índices fora de faixa ou ciclo."""
+    """Plano inválido — dependências, grounding ou critérios contraditórios."""
+
+
+def _plan_path(value: str) -> str:
+    path = PurePosixPath(value)
+    if (
+        not value or len(value) > 512 or str(path) == "." or path.is_absolute()
+        or ".." in path.parts or any(c in value for c in "\\*?[]")
+        or any(ord(c) < 32 for c in value)
+    ):
+        raise PlanValidationError("write_paths e critérios exigem caminhos relativos exatos, sem traversal ou globs.")
+    return str(path)
 
 
 def _task_stable_id(task: PlannedTask) -> UUID:
@@ -133,6 +152,7 @@ def _task_stable_id(task: PlannedTask) -> UUID:
             "evidence_ids": task.evidence_ids,
             "depends_on": task.depends_on,
             "is_critical": task.is_critical,
+            **({"write_paths": task.write_paths} if task.write_paths is not None else {}),
         },
         ensure_ascii=True,
         sort_keys=True,
@@ -197,20 +217,31 @@ class LLMPlanner:
         max_tool_calls: int = 4,
         non_writing_capabilities: set[Capability] | None = None,
         apply_files_enabled: bool = True,
+        require_write_paths: bool = False,
+        hooks: ToolHookDispatcher | None = None,
     ):
         self._router = router
-        self._tool_loop = ToolLoop(router, tools, max_tool_calls=max_tool_calls)
+        self._tool_loop = ToolLoop(
+            router,
+            tools,
+            max_tool_calls=max_tool_calls,
+            hooks=hooks,
+            agent_name="planner",
+        )
         # Vem das execution strategies do container: capabilities cujo
         # resultado é só texto (apply_files=False). O planner precisa saber
         # para não exigir file_created/content_contains de quem não grava.
         self._non_writing = set(non_writing_capabilities or ())
         self._apply_files_enabled = apply_files_enabled
+        self._require_write_paths = require_write_paths
         self._tier = tier
         self._default_task_budget = default_task_budget or TaskBudget()
         self._max_validation_attempts = max(1, max_validation_attempts)
 
     def _system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT
+        if self._require_write_paths:
+            prompt += "\n\nModo fábrica: write_paths é obrigatório em cada tarefa; null não é aceito."
         if not self._apply_files_enabled:
             prompt += (
                 "\n\nNesta execução NENHUMA tarefa grava arquivos no workspace: o "
@@ -289,6 +320,36 @@ class LLMPlanner:
             for task in tasks
         ]
 
+    def _validate_plan_consistency(self, plan: PlanOutput) -> None:
+        for task in plan.tasks:
+            if self._require_write_paths and task.write_paths is None:
+                raise PlanValidationError(
+                    f"Tarefa '{task.title}' sem write_paths. Declare os arquivos a alterar; [] para tarefa somente leitura."
+                )
+            writes = {_plan_path(path) for path in task.write_paths or []}
+            # Explicit objective edit requirements are also declarations, including
+            # legacy plans without write_paths. Check only this task's contract:
+            # a different task may legitimately edit the same file later.
+            writes.update(
+                _plan_path(criterion.path)
+                for criterion in task.acceptance_criteria
+                if criterion.kind in {CriterionKind.FILE_CREATED, CriterionKind.FILE_MODIFIED}
+                and criterion.path is not None
+            )
+            protected = {
+                _plan_path(criterion.path)
+                for criterion in task.acceptance_criteria
+                if criterion.kind == CriterionKind.FILE_UNCHANGED and criterion.path is not None
+            }
+            conflicts = sorted(writes & protected)
+            if conflicts:
+                raise PlanValidationError(
+                    f"Tarefa '{task.title}' contraditória: write_paths/file_modified/file_created "
+                    f"e file_unchanged para {conflicts}. Preservar funções/API não significa "
+                    "congelar o arquivo inteiro. Refaça o plano conforme o pedido original, "
+                    "sem remover proteções realmente exigidas pelo usuário."
+                )
+
     async def create_plan(
         self, request: str, context: dict[str, Any]
     ) -> PlanningOutcome:
@@ -315,7 +376,7 @@ class LLMPlanner:
                     "\n\nO plano anterior foi rejeitado pela validação estrutural:\n"
                     f"{validation_feedback}\n"
                     "Gere o plano completo novamente, corrigindo índices, ciclos e "
-                    "evidence_ids."
+                    "evidence_ids, write_paths e contradições de critérios."
                 )
             loop_outcome = await self._tool_loop.run(
                 self._tier,
@@ -333,6 +394,7 @@ class LLMPlanner:
             parsed = loop_outcome.result.parse_as(PlanOutput)
             try:
                 self._validate_grounding(parsed, context)
+                self._validate_plan_consistency(parsed)
                 tasks = _to_agent_tasks(parsed)
             except PlanValidationError as exc:
                 if attempt == self._max_validation_attempts:

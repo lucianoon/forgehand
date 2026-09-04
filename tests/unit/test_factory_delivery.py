@@ -104,6 +104,50 @@ def test_delivery_target_is_derived_from_lease_and_order():
 
 
 @pytest.mark.parametrize(
+    "evidence",
+    ["missing", "wrong_policy", "incomplete", "empty", "violation", "passed"],
+)
+def test_architecture_evidence_is_required_even_with_green_build(evidence):
+    from app.models.architecture import ArchitectureFinding, ArchitectureReport
+
+    state = approved_state()
+    state.build_strategy = state.build_strategy.model_copy(
+        update={"architecture_digest": "a" * 64}
+    )
+    architecture = (
+        None
+        if evidence == "missing"
+        else ArchitectureReport(
+            policy_digest=("b" if evidence == "wrong_policy" else "a") * 64,
+            complete=evidence != "incomplete",
+            files_checked=0 if evidence == "empty" else 1,
+            findings=(
+                ArchitectureFinding(
+                    rule_id="domain",
+                    code="forbidden_dependency",
+                    path="domain.py",
+                    line=1,
+                    dependency="requests",
+                    message="Forbidden dependency",
+                    remediation="Use a domain interface.",
+                ),
+            )
+            if evidence == "violation"
+            else (),
+        )
+    )
+    attempt = state.plan[0].attempts[0]
+    attempt.build_validation = attempt.build_validation.model_copy(
+        update={"architecture": architecture}
+    )
+    if evidence == "passed":
+        assert factory_delivery_config(state).repository == "acme/widget"
+    else:
+        with pytest.raises(ValueError, match="validation_missing_or_failed"):
+            factory_delivery_config(state)
+
+
+@pytest.mark.parametrize(
     "update",
     [
         {"profile_digest": "f" * 64},

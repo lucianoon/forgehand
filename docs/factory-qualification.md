@@ -73,6 +73,16 @@ python -m app.evaluation.factory_qualification --allow-live \
   --total-budget 5 --output reports/factory-qualification.json
 ```
 
+For repeated runs after fixture PRs were merged, create a dedicated branch at
+each ecosystem's original manifest SHA and pass `--base-ref qualification-baseline`
+(also available as the manual workflow's `base_ref` input). This selects the
+same branch name in both repositories; it never changes the pinned SHA. Keep
+that branch fixed and leave generated benchmark PRs unmerged. Do not reset or
+force-push the fixture's main branch. Reports retain both the base ref and SHA.
+
+Failed workflows retain a safe provider error category, HTTP status or transport
+error type where available, without exporting raw provider response text.
+
 The runner first probes sandbox boundaries and verifies that fresh containers
 observe host file edits between builds, then submits sequential work orders
 through the API. It reserves each case's declared maximum against the remaining

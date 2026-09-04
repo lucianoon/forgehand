@@ -25,11 +25,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
+from urllib.parse import quote
 
 import httpx
 
 from app.graph.state import DeliveryConfig, DeliveryResult
 from app.models.factory import GitHubIssueSnapshot
+from app.models.product_delivery import MergeReceipt, ProductDeliveryPlan
 
 CheckState = Literal["success", "failure", "pending", "none"]
 _SUCCESS_CONCLUSIONS = {"success", "neutral", "skipped"}
@@ -331,6 +333,55 @@ class GitHubSCMClient:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise SCMError("Resposta da issue está incompleta ou inválida.") from exc
+
+    async def delivery_base(
+        self, repository: str, branch: str, ancestor: str | None = None
+    ) -> str:
+        """Read and pin the base, requiring a prior merge to remain in its history."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repository):
+            raise SCMError("Invalid delivery repository")
+        ProductDeliveryPlan.repository_name(repository)
+        ProductDeliveryPlan.branch_name(branch)
+        payload = await self._request(
+            "GET", f"/repos/{repository}/git/ref/heads/{quote(branch, safe='')}"
+        )
+        sha = payload.get("object", {}).get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{40}", sha):
+            raise SCMError("Invalid delivery base SHA")
+        if ancestor is not None:
+            if not re.fullmatch(r"[a-f0-9]{40}", ancestor):
+                raise SCMError("Invalid delivery ancestor")
+            comparison = await self._request(
+                "GET", f"/repos/{repository}/compare/{ancestor}...{sha}"
+            )
+            if comparison.get("status") not in {"ahead", "identical"}:
+                raise SCMError("Previous delivery is absent from the base history")
+        return sha
+
+    async def verified_delivery_merge(
+        self, repository: str, branch: str, number: int, head_sha: str
+    ) -> MergeReceipt | None:
+        """Observe only: never merges. Green CI alone is not incorporation evidence."""
+        ProductDeliveryPlan.repository_name(repository)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repository):
+            raise SCMError("Invalid delivery repository")
+        ProductDeliveryPlan.branch_name(branch)
+        if number <= 0 or not re.fullmatch(r"[a-f0-9]{40}", head_sha):
+            raise SCMError("Invalid delivery receipt")
+        pr = await self._request("GET", f"/repos/{repository}/pulls/{number}")
+        base, head = pr.get("base") or {}, pr.get("head") or {}
+        if (base.get("ref") != branch
+                or (base.get("repo") or {}).get("full_name", "").lower() != repository.lower()
+                or head.get("sha") != head_sha):
+            raise SCMError("Pull request differs from recorded delivery")
+        if pr.get("merged") is not True:
+            return None
+        merge_sha = pr.get("merge_commit_sha")
+        if not isinstance(merge_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", merge_sha):
+            raise SCMError("Missing merge commit")
+        base_sha = await self.delivery_base(repository, branch, merge_sha)
+        return MergeReceipt(pull_request_number=number, commit_sha=head_sha,
+                            merge_commit_sha=merge_sha, base_sha=base_sha)
 
     # ------------------------------------------------------------ publicação
     async def publish_pull_request(

@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.architecture import ArchitecturePolicy
+
 
 class BuildPhaseName(str, Enum):
     PREPARE = "prepare"
@@ -135,6 +137,52 @@ class BuildPhase(BaseModel):
         return self
 
 
+class AcceptanceCase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    criterion: str = Field(min_length=1, max_length=500)
+    command: BuildPhase
+    expected_stdout: str = Field(max_length=8192)
+
+    @model_validator(mode="after")
+    def _bounded_case(self) -> "AcceptanceCase":
+        if self.command.name != BuildPhaseName.TEST or self.command.network != "none":
+            raise ValueError("Aceitação exige comando test sem rede.")
+        if self.command.timeout_seconds > 30 or self.command.output_limit > 16_384:
+            raise ValueError("Aceitação limitada a 30 segundos e 16 KiB de captura por caso.")
+        if len(self.expected_stdout.encode()) > min(8192, self.command.output_limit):
+            raise ValueError("Saída esperada excede o limite de captura.")
+        return self
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(json.dumps(
+            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+
+
+class AcceptanceSuite(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal[1] = 1
+    cases: tuple[AcceptanceCase, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _bounded_suite(self) -> "AcceptanceSuite":
+        if len({case.id for case in self.cases}) != len(self.cases):
+            raise ValueError("IDs de casos de aceitação devem ser únicos.")
+        if sum(case.command.timeout_seconds for case in self.cases) > 120:
+            raise ValueError("Suite excede 120 segundos de execução configurada.")
+        if len(self.model_dump_json().encode()) > 64_000:
+            raise ValueError("Suite excede 64 KB.")
+        return self
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(json.dumps(
+            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+
+
 class BuildProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -143,9 +191,13 @@ class BuildProfile(BaseModel):
     image: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._/:+-]*@sha256:[0-9a-f]{64}$")
     phases: tuple[BuildPhase, ...] = Field(min_length=1, max_length=5)
     auto_detect: bool = False
+    architecture: ArchitecturePolicy | None = None
+    acceptance: AcceptanceSuite | None = None
 
     @model_validator(mode="after")
     def _unique_ordered_phases(self) -> "BuildProfile":
+        if self.architecture is not None and self.ecosystem != "python":
+            raise ValueError("Architecture policies currently support Python only.")
         names = [phase.name for phase in self.phases]
         if len(names) != len(set(names)):
             raise ValueError("Fases de um perfil não podem se repetir.")
@@ -154,7 +206,10 @@ class BuildProfile(BaseModel):
         return self
 
     def fingerprint(self) -> str:
-        payload = json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        )
+        data = self.model_dump(mode="json")
+        if self.architecture is None:
+            data.pop("architecture")  # Preserve fingerprints of pre-policy profiles.
+        if self.acceptance is None:
+            data.pop("acceptance")
+        payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()

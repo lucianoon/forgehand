@@ -1,17 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Literal, cast
+from uuid import uuid4
 
 from app.graph.state import WorkflowPhase
 from app.infrastructure.settings import Settings
 
 JobKind = Literal["start", "resume"]
 JobStatus = Literal["queued", "processing", "done", "failed"]
+
+
+class WorkflowDispatchConflict(ValueError):
+    """Admission cannot safely be repeated; messages contain no submitted data."""
+
+
+def _start_payload(
+    payload: dict[str, Any], workflow_id: str, project_id: str, owner: str
+) -> tuple[dict[str, Any], str]:
+    # Detach from caller-owned objects before any mutation of queue state.
+    copied: dict[str, Any] = json.loads(_serialize_payload(payload))
+    copied.update(workflow_id=workflow_id, project_id=project_id, owner_client_id=owner)
+    canonical = {k: v for k, v in copied.items() if k != "workflow_id"}
+    if isinstance(canonical.get("work_order"), dict):
+        canonical["work_order"] = {
+            k: v for k, v in canonical["work_order"].items()
+            if k not in {"id", "created_at"}
+        }
+    digest = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+    return copied, digest
 
 
 @dataclass(frozen=True)
@@ -127,6 +152,53 @@ class InMemoryWorkflowQueue:
         self._worker_heartbeats: dict[str, float] = {}
         self._idempotency: dict[tuple[str, str, str], str] = {}
         self._work_orders: dict[str, dict[str, Any]] = {}
+        self._dispatch_scope = str(uuid4())
+        self._start_receipts: dict[str, str] = {}
+
+    async def dispatch_scope(self) -> str:
+        return self._dispatch_scope
+
+    async def enqueue_start(
+        self, *, workflow_id: str, project_id: str, owner_client_id: str,
+        payload: dict[str, Any], repository: str = "", idempotency_key: str | None = None,
+        expected_dispatch_scope: str | None = None,
+    ) -> str:
+        copied, digest = _start_payload(payload, workflow_id, project_id, owner_client_id)
+        # Keep the memory backend's typed payload contract, but not caller aliases.
+        memory_payload = deepcopy(payload)
+        memory_payload.update(
+            workflow_id=workflow_id, project_id=project_id, owner_client_id=owner_client_id
+        )
+        scope = (owner_client_id, repository.lower(), idempotency_key or "")
+        async with self._condition:
+            if expected_dispatch_scope is not None and expected_dispatch_scope != self._dispatch_scope:
+                raise WorkflowDispatchConflict("Fila substituída; recuperação exige investigação operacional.")
+            existing = self._idempotency.get(scope) if idempotency_key else None
+            resolved = existing or workflow_id
+            receipt = self._start_receipts.get(resolved)
+            if receipt is not None:
+                if receipt != digest:
+                    raise WorkflowDispatchConflict("Chave ou workflow já associado a outra solicitação.")
+                return resolved
+            if existing is not None or resolved in self._access:
+                raise WorkflowDispatchConflict("Registro legado sem recibo atômico; investigue antes de executar.")
+            # No await/fallible serialization between these in-memory writes.
+            job = WorkflowJob(
+                id=str(self._sequence + 1), workflow_id=resolved, project_id=project_id,
+                owner_client_id=owner_client_id, kind="start", payload=memory_payload,
+                max_attempts=self._max_delivery_attempts,
+            )
+            self._sequence += 1
+            self._start_receipts[resolved] = digest
+            if idempotency_key:
+                self._idempotency[scope] = resolved
+            self._access[resolved] = WorkflowAccessContext(resolved, project_id, owner_client_id)
+            self._states[resolved] = WorkflowJobState(resolved, "queued")
+            if isinstance(copied.get("work_order"), dict):
+                self._work_orders[resolved] = copied["work_order"]
+            self._queued.append(job)
+            self._condition.notify_all()
+            return resolved
 
     async def claim_idempotency(
         self,
@@ -457,7 +529,105 @@ class PostgresWorkflowQueue:
                 )
                 """
             )
+            await self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_dispatch_identity (
+                    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+                    namespace TEXT NOT NULL
+                )
+            """)
+            await self._conn.execute(
+                "INSERT INTO workflow_dispatch_identity VALUES (TRUE, %s) ON CONFLICT DO NOTHING",
+                (str(uuid4()),),
+            )
+            await self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_start_receipts (
+                    workflow_id TEXT PRIMARY KEY,
+                    request_digest TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
             await self._conn.commit()
+
+    async def dispatch_scope(self) -> str:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.transaction():
+                cur = await self._conn.execute(
+                    "SELECT namespace FROM workflow_dispatch_identity WHERE singleton"
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise WorkflowDispatchConflict("Identidade da fila indisponível.")
+                return str(row[0])
+
+    async def enqueue_start(
+        self, *, workflow_id: str, project_id: str, owner_client_id: str,
+        payload: dict[str, Any], repository: str = "", idempotency_key: str | None = None,
+        expected_dispatch_scope: str | None = None,
+    ) -> str:
+        assert self._conn is not None
+        copied, digest = _start_payload(payload, workflow_id, project_id, owner_client_id)
+        async with self._lock:
+            async with self._conn.transaction():
+                cur = await self._conn.execute(
+                    "SELECT namespace FROM workflow_dispatch_identity WHERE singleton FOR SHARE"
+                )
+                namespace = await cur.fetchone()
+                if namespace is None or (
+                    expected_dispatch_scope is not None and expected_dispatch_scope != namespace[0]
+                ):
+                    raise WorkflowDispatchConflict("Fila substituída; recuperação exige investigação operacional.")
+                claimed = True
+                if idempotency_key:
+                    cur = await self._conn.execute("""
+                        INSERT INTO workflow_idempotency
+                            (owner_client_id, repository, idempotency_key, workflow_id)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING workflow_id
+                    """, (owner_client_id, repository.lower(), idempotency_key, workflow_id))
+                    claimed = await cur.fetchone() is not None
+                    cur = await self._conn.execute("""
+                        SELECT workflow_id FROM workflow_idempotency
+                        WHERE owner_client_id=%s AND repository=%s AND idempotency_key=%s
+                    """, (owner_client_id, repository.lower(), idempotency_key))
+                    row = await cur.fetchone()
+                    assert row is not None
+                    workflow_id = str(row[0])
+                if not claimed:
+                    cur = await self._conn.execute(
+                        "SELECT request_digest FROM workflow_start_receipts WHERE workflow_id=%s",
+                        (workflow_id,),
+                    )
+                    receipt = await cur.fetchone()
+                    if receipt is None or receipt[0] != digest:
+                        raise WorkflowDispatchConflict("Solicitação conflitante ou registro legado sem recibo atômico.")
+                    return workflow_id
+                cur = await self._conn.execute("""
+                    INSERT INTO workflow_start_receipts (workflow_id, request_digest)
+                    VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING workflow_id
+                """, (workflow_id, digest))
+                inserted = await cur.fetchone()
+                if inserted is None:
+                    cur = await self._conn.execute(
+                        "SELECT request_digest FROM workflow_start_receipts WHERE workflow_id=%s",
+                        (workflow_id,),
+                    )
+                    receipt = await cur.fetchone()
+                    if receipt is None or receipt[0] != digest:
+                        raise WorkflowDispatchConflict("Workflow já associado a outra solicitação.")
+                    return workflow_id
+                cur = await self._conn.execute(
+                    "SELECT 1 FROM workflow_jobs WHERE workflow_id=%s LIMIT 1", (workflow_id,)
+                )
+                if await cur.fetchone() is not None:
+                    raise WorkflowDispatchConflict("Registro legado sem recibo atômico; investigue antes de executar.")
+                copied["workflow_id"] = workflow_id
+                await self._conn.execute("""
+                    INSERT INTO workflow_jobs
+                        (workflow_id, project_id, owner_client_id, kind, payload, status, max_attempts)
+                    VALUES (%s, %s, %s, 'start', %s::jsonb, 'queued', %s)
+                """, (workflow_id, project_id, owner_client_id,
+                      _serialize_payload(copied), self._max_delivery_attempts))
+                return workflow_id
 
     async def claim_idempotency(
         self,

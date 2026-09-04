@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.agents.executor import ExecutionStrategy
+from app.agents.hooks import ToolHookRule, parse_tool_hooks
 from app.factory.build_strategy import BuildProfileRegistry
 from app.models.build import BuildProfile
 from app.providers.base import ModelPricing
@@ -238,6 +239,19 @@ class Settings(BaseSettings):
     agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
     agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     agent_tools_allow_checks: bool = True
+    tool_hooks_json: str = "[]"
+    tool_hooks_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
+
+    @field_validator("tool_hooks_json")
+    @classmethod
+    def validate_tool_hooks(cls, value: str) -> str:
+        parse_tool_hooks(value)
+        return value
+
+    @property
+    def tool_hooks(self) -> tuple[ToolHookRule, ...]:
+        return parse_tool_hooks(self.tool_hooks_json)
+
     # Entrega (PR + CI): cadência de polling dos checks e quanto esperar por
     # um primeiro check antes de concluir que o repositório não tem CI.
     # Credenciais (GITHUB_TOKEN ou GITHUB_APP_*) vêm do ambiente, não daqui.
@@ -262,6 +276,8 @@ class Settings(BaseSettings):
     # Software factory: opt-in e isolada do caminho legado. Perfis e
     # associações são administrados; conteúdo do repositório não injeta shell.
     factory_mode_enabled: bool = False
+    product_studio_enabled: bool = False
+    product_studio_database: str = "data/product-studio.sqlite3"
     factory_approved_scm_hosts_json: str = json.dumps(
         _DEFAULT_FACTORY_APPROVED_SCM_HOSTS
     )

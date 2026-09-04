@@ -7,6 +7,7 @@ do repositório escolhe flags Docker, mounts, imagem, ambiente ou executável.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -18,11 +19,15 @@ from typing import Protocol
 from uuid import uuid4
 
 from app.factory.build_strategy import BuildProfileRegistry
+from app.factory.architecture import check_architecture
 from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
 from app.infrastructure.command_policy import AuthorizedBuildCommand, CommandPolicy
 from app.models.build import BuildPhase, BuildProfile
+from app.models.architecture import ArchitectureReport
 from app.models.build_execution import (
     BuildOutcome,
+    AcceptanceCaseResult,
+    AcceptanceReport,
     BuildPhaseResult,
     BuildRunResult,
     SandboxLimits,
@@ -182,6 +187,8 @@ class DockerBuildRunner:
     ) -> BuildRunResult:
         lease = WorkspaceLease.model_validate(lease.model_dump())
         selection = BuildProfileSelection.model_validate(selection.model_dump())
+        architecture: ArchitectureReport | None = None
+        acceptance: AcceptanceReport | None = None
 
         def report(
             outcome: BuildOutcome,
@@ -194,6 +201,8 @@ class DockerBuildRunner:
                 outcome=outcome,
                 phases=phases,
                 error_code=error_code,
+                architecture=architecture,
+                acceptance=acceptance,
             )
 
         if (
@@ -218,6 +227,15 @@ class DockerBuildRunner:
         self._active[lease.workflow_id] = None
         results: list[BuildPhaseResult] = []
         try:
+            if profile.architecture is not None:
+                architecture = await asyncio.to_thread(
+                    check_architecture, Path(lease.local_path), profile.architecture
+                )
+                if not architecture.passed:
+                    return report(
+                        BuildOutcome.POLICY_REJECTION,
+                        error_code="architecture_policy_failed",
+                    )
             for phase in profile.phases:
                 if self._journal is not None:
                     self._journal.record_phase(
@@ -233,6 +251,46 @@ class DockerBuildRunner:
                     raise BuildRunCancelled(report(result.outcome, tuple(results)))
                 if result.outcome != BuildOutcome.SUCCESS:
                     return report(result.outcome, tuple(results), result.error_code)
+            if profile.architecture is not None:
+                architecture = await asyncio.to_thread(
+                    check_architecture, Path(lease.local_path), profile.architecture
+                )
+                if not architecture.passed:
+                    return report(
+                        BuildOutcome.POLICY_REJECTION,
+                        tuple(results),
+                        "architecture_policy_failed",
+                    )
+            if profile.acceptance is not None:
+                suite = profile.acceptance
+                cases: list[AcceptanceCaseResult] = []
+                acceptance = AcceptanceReport(
+                    suite_digest=suite.fingerprint(),
+                    required_criteria=tuple(selection.acceptance_criteria),
+                )
+                for case in suite.cases:
+                    # Only the operator-owned command enters the candidate container.
+                    # The expected stdout and comparator remain on the host.
+                    case_profile = profile.model_copy(update={
+                        "phases": (case.command,), "architecture": None, "acceptance": None,
+                    })
+                    result = await self._run_phase(
+                        lease, case_profile, case.command, readonly_workspace=True
+                    )
+                    cases.append(AcceptanceCaseResult(
+                        case_id=case.id, case_digest=case.fingerprint(), criterion=case.criterion,
+                        expected_stdout_sha256=hashlib.sha256(case.expected_stdout.encode()).hexdigest(),
+                        execution=result,
+                    ))
+                    acceptance = acceptance.model_copy(update={
+                        "cases": tuple(cases), "complete": len(cases) == len(suite.cases),
+                    })
+                    if result.outcome == BuildOutcome.CANCELLED:
+                        raise BuildRunCancelled(report(BuildOutcome.CANCELLED, tuple(results)))
+                    if result.outcome not in {BuildOutcome.SUCCESS, BuildOutcome.COMMAND_FAILURE}:
+                        return report(result.outcome, tuple(results), result.error_code)
+                if not acceptance.passed:
+                    return report(BuildOutcome.POLICY_REJECTION, tuple(results), "acceptance_failed")
             return report(BuildOutcome.SUCCESS, tuple(results))
         except BuildRunCancelled:
             raise
@@ -244,7 +302,8 @@ class DockerBuildRunner:
             self._active.pop(lease.workflow_id, None)
 
     def _create_args(
-        self, command: AuthorizedBuildCommand, root: Path, name: str, token: str
+        self, command: AuthorizedBuildCommand, root: Path, name: str, token: str,
+        *, readonly_workspace: bool = False,
     ) -> list[str]:
         # Docker --mount usa CSV; não admite delimitadores vindos do path.
         if any(char in str(root) for char in ',"\n\r'):
@@ -290,7 +349,7 @@ class DockerBuildRunner:
             "--user",
             f"{os.getuid() or 65534}:{os.getgid() or 65534}",
             "--mount",
-            f"type=bind,src={root},dst=/workspace",
+            f"type=bind,src={root},dst=/workspace" + (",readonly" if readonly_workspace else ""),
             "--workdir",
             "/workspace" if cwd == "." else f"/workspace/{cwd}",
             # env -i ignora o ENV da imagem; ENTRYPOINT/CMD não podem trocar argv.
@@ -342,7 +401,8 @@ class DockerBuildRunner:
         return value[:limit]
 
     async def _run_phase(
-        self, lease: WorkspaceLease, profile: BuildProfile, phase: BuildPhase
+        self, lease: WorkspaceLease, profile: BuildProfile, phase: BuildPhase,
+        *, readonly_workspace: bool = False,
     ) -> BuildPhaseResult:
         started = time.monotonic()
         outcome = BuildOutcome.INFRASTRUCTURE_ERROR
@@ -364,7 +424,9 @@ class DockerBuildRunner:
                     allow_dependency_network=self._allow_dependency_network,
                 )
                 root = Path(lease.local_path).resolve()
-                args = self._create_args(command, root, name, token)
+                args = self._create_args(
+                    command, root, name, token, readonly_workspace=readonly_workspace
+                )
             except ValueError:
                 outcome = BuildOutcome.POLICY_REJECTION
                 error_code = (
@@ -475,9 +537,11 @@ class DockerBuildRunner:
             duration_seconds=time.monotonic() - started,
             exit_code=exit_code,
             stdout=self._sanitize(output.stdout, phase.output_limit),
+            stdout_sha256=hashlib.sha256(output.stdout.encode()).hexdigest(),
             stderr=self._sanitize(output.stderr, phase.output_limit),
             output_truncated=output.truncated,
             network_enabled=network_enabled,
+            workspace_read_only=readonly_workspace,
             cleanup_failed=cleanup_failed,
             container_name=name if create_attempted else None,
             error_code=error_code,

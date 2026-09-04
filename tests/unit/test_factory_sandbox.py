@@ -49,7 +49,55 @@ def selection(profile: BuildProfile) -> BuildProfileSelection:
         selection_reason="explicit",
         phases=[phase.name.value for phase in profile.phases],
         profile_digest=profile.fingerprint(),
+        architecture_digest=profile.architecture.fingerprint()
+        if profile.architecture
+        else None,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_bad,generated_bad", [(True, False), (False, True), (False, False)]
+)
+async def test_architecture_gate_before_and_after_build(
+    tmp_path, initial_bad, generated_bad
+):
+    from app.models.architecture import ArchitecturePolicy
+
+    policy = ArchitecturePolicy(
+        rules=[
+            {
+                "id": "domain",
+                "source": "domain",
+                "forbidden": ["requests"],
+                "remediation": "Use uma interface de domínio no lugar do cliente HTTP.",
+            }
+        ]
+    )
+    profile = make_profile().model_copy(update={"architecture": policy})
+    target = tmp_path / "domain.py"
+    target.write_text("import requests" if initial_bad else "import os")
+
+    class GeneratingDocker(FakeDocker):
+        async def call(self, args, **kwargs):
+            result = await super().call(args, **kwargs)
+            if args[0] == "start" and generated_bad:
+                target.write_text("import requests")
+            return result
+
+    docker = GeneratingDocker()
+    runner = DockerBuildRunner(BuildProfileRegistry({profile.name: profile}), docker)
+    report = await runner.run(make_lease(tmp_path), selection(profile))
+    assert report.architecture is not None
+    assert report.architecture.passed == (not initial_bad and not generated_bad)
+    assert (report.outcome == BuildOutcome.SUCCESS) == report.architecture.passed
+    assert not runner.active_containers
+    if initial_bad:
+        assert not docker.calls and not report.phases
+    if generated_bad:
+        assert report.phases[0].outcome == BuildOutcome.SUCCESS
+        assert report.error_code == "architecture_policy_failed"
+    assert BuildRunResult.model_validate(report.model_dump()) == report
 
 
 class FakeDocker:

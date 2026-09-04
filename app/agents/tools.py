@@ -23,7 +23,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
+from app.agents.hooks import ToolHookCall, ToolHookDispatcher
 from app.agents.validation import ValidationSignal
 from app.infrastructure.repository_grounding import IGNORED_DIRS, TEXT_EXTENSIONS
 from app.providers.base import (
@@ -383,12 +385,16 @@ class ToolLoop:
         *,
         max_tool_calls: int = 8,
         preview_chars: int = 200,
+        hooks: ToolHookDispatcher | None = None,
+        agent_name: str = "agent",
     ) -> None:
         self._router = router
         self._tools = {tool.name: tool for tool in (tools or [])}
         self._specs = tool_specs(list(self._tools.values()))
         self._max_tool_calls = max(0, max_tool_calls)
         self._preview_chars = preview_chars
+        self._hooks = hooks
+        self._agent_name = agent_name
 
     @property
     def has_tools(self) -> bool:
@@ -400,6 +406,7 @@ class ToolLoop:
         request: CompletionRequest,
         *,
         token_ceiling: int | None = None,
+        task_id: str | None = None,
     ) -> ToolLoopOutcome:
         if not self.has_tools:
             result = await self._router.complete(tier, request)
@@ -418,6 +425,7 @@ class ToolLoop:
         trace: list[dict[str, Any]] = []
         force_final = False
         stopped_reason = "final_answer"
+        run_id = str(uuid4())
 
         while True:
             rounds += 1
@@ -435,11 +443,30 @@ class ToolLoop:
             cost += result.cost_usd
             if result.parsed is not None or not result.tool_calls:
                 break
+            if force_final:
+                raise ToolError(
+                    "Provider ignored final-answer limit; tool loop stopped."
+                )
 
             tool_results: list[ToolResult] = []
             for call in result.tool_calls:
-                calls_made += 1
-                content, ok = await self._execute(call)
+                if calls_made >= self._max_tool_calls or (
+                    token_ceiling is not None and tokens >= token_ceiling
+                ):
+                    content, ok = (
+                        "Limite de exploração atingido; ferramenta não executada.",
+                        False,
+                    )
+                else:
+                    calls_made += 1
+                    hook_call = ToolHookCall(
+                        run_id=run_id,
+                        ordinal=calls_made,
+                        tool=call.name if call.name in self._tools else "<unknown>",
+                        agent=self._agent_name,
+                        task_id=task_id,
+                    )
+                    content, ok = await self._execute_with_hooks(call, hook_call)
                 trace.append(
                     {
                         "round": rounds,
@@ -486,6 +513,26 @@ class ToolLoop:
             stopped_reason=stopped_reason,
             trace=trace,
         )
+
+    async def _execute_with_hooks(
+        self, call: ToolCall, hook_call: ToolHookCall
+    ) -> tuple[str, bool]:
+        if self._hooks is None:
+            return await self._execute(call)
+        if not await self._hooks.dispatch("pre_tool", hook_call):
+            return "Ferramenta bloqueada pela política do operador.", False
+        content, ok = await self._execute(call)
+        if not ok:
+            await self._hooks.dispatch("tool_error", hook_call, outcome="failed")
+            return content, False
+        if not await self._hooks.dispatch(
+            "post_tool", hook_call, output_chars=len(content), outcome="succeeded"
+        ):
+            return (
+                "Resultado ocultado pela política do operador; ação não desfeita.",
+                False,
+            )
+        return content, True
 
     async def _execute(self, call: ToolCall) -> tuple[str, bool]:
         tool = self._tools.get(call.name)

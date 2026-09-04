@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.executor import ExecutionStrategy, LLMExecutor, WorkspaceRuntime
 from app.agents.tools import AgentTool
+from app.agents.hooks import ToolHookDispatcher
 from app.models.task import AgentTask, Capability
 from app.providers.registry import ModelTier, ProviderRouter
 
@@ -68,6 +69,7 @@ class CapabilityExecutorRegistry:
         execution_strategies: dict[Capability, ExecutionStrategy] | None = None,
         tools: list[AgentTool] | None = None,
         max_tool_calls: int = 8,
+        hooks: ToolHookDispatcher | None = None,
     ):
         self._router = router
         self._profiles = sorted(
@@ -89,6 +91,7 @@ class CapabilityExecutorRegistry:
                 execution_strategies=execution_strategies,
                 tools=tools,
                 max_tool_calls=max_tool_calls,
+                hooks=hooks,
             )
             for p in self._profiles
         }
@@ -104,6 +107,7 @@ class CapabilityExecutorRegistry:
                 execution_strategies=execution_strategies,
                 tools=tools,
                 max_tool_calls=max_tool_calls,
+                hooks=hooks,
             )
             for p in self._profiles
         }

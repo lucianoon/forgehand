@@ -115,6 +115,10 @@ class ProviderRouter:
         nenhum executor escala a si mesmo."""
         return ModelTier(min(current + 1, ModelTier.STRONG))
 
+    def estimate_request_cost(self, tier: ModelTier, request: CompletionRequest) -> float:
+        provider, model = self.resolve(tier, role=request.role)
+        return provider.estimate_request_cost(model, request)
+
     async def complete(
         self,
         tier: ModelTier | None,
