@@ -244,6 +244,18 @@ class Settings(BaseSettings):
     # de max_lines_per_file). Necessário para op=replace em arquivos pequenos:
     # o executor só pode substituir trechos que viu. 0 desliga.
     repository_grounding_full_file_max_bytes: int = Field(default=0, ge=0)
+    # Referências web na solicitação: URLs do pedido são buscadas UMA vez pelo
+    # controlador (nunca pelo sandbox) e viram evidências [W1], [W2]... com
+    # guarda contra SSRF. Desligado por padrão. A allowlist é por sufixo de
+    # host, separada por vírgula; vazia = qualquer host público em 80/443.
+    web_references_enabled: bool = False
+    web_references_allowed_hosts: str = ""
+    web_references_max_urls: int = Field(default=5, ge=1, le=20)
+    web_references_max_bytes: int = Field(default=512_000, ge=10_000)
+    web_references_max_chars: int = Field(default=12_000, ge=500, le=100_000)
+    web_references_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    # PEM extra somado ao certifi (CA corporativo de interceptação TLS).
+    web_references_ca_bundle: str = ""
     # Tool-use dos agentes: exploração limitada do workspace (read_file,
     # list_directory, search_repository e, para o executor, run_check).
     # max_calls=0 desliga para aquele papel; enabled=False desliga tudo.

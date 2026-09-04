@@ -30,6 +30,7 @@ from typing import Any, AsyncGenerator
 from app.graph.state import WorkflowState
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.settings import Settings
+from app.infrastructure.web_references import WebReferenceCollector
 
 logger = logging.getLogger("forgehand")
 
@@ -89,6 +90,24 @@ class BaseProjectMemory:
         )
         self._grounding_enabled = settings.repository_grounding_enabled
         self._recent_limit = settings.memory_recent_workflows_limit
+        # URLs do pedido viram evidências [W*] buscadas uma vez pelo controlador.
+        # Opt-in: fora do POSIX ou sem rede o comportamento é o de sempre.
+        self._web_collector: WebReferenceCollector | None = (
+            WebReferenceCollector(
+                allowed_hosts=[
+                    host.strip()
+                    for host in settings.web_references_allowed_hosts.split(",")
+                    if host.strip()
+                ],
+                max_urls=settings.web_references_max_urls,
+                max_bytes=settings.web_references_max_bytes,
+                max_chars=settings.web_references_max_chars,
+                timeout_seconds=settings.web_references_timeout_seconds,
+                ca_bundle=settings.web_references_ca_bundle or None,
+            )
+            if settings.web_references_enabled
+            else None
+        )
 
     async def load_context(self, project_id: str, request: str = "") -> dict[str, Any]:
         context = await self.load_project_context(project_id, request)
@@ -111,6 +130,10 @@ class BaseProjectMemory:
             context["project_memory"] = {
                 "recent_workflows": [_context_entry(s) for s in summaries]
             }
+        if self._web_collector is not None and request:
+            references = await self._web_collector.collect(request)
+            if references is not None:
+                context["web_references"] = references
         return context
 
     async def _recent_summaries(self, project_id: str) -> list[dict[str, Any]]:
