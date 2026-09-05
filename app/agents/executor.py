@@ -21,6 +21,7 @@ from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.command_tool import COMMAND_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import format_validation_feedback
+from app.infrastructure.llm_budget import BudgetAdmissionError, active_call_budget
 
 from app.models.task import AgentTask, Capability, format_criteria
 from app.providers.base import CompletionRequest, Message
@@ -182,6 +183,10 @@ class LLMExecutor:
         total_cost = 0.0
         last_model = "unknown"
         payload: dict[str, Any] = {}
+        call_budget = active_call_budget()
+        initial_tokens = call_budget.tokens if call_budget is not None else 0
+        initial_cost = call_budget.cost_usd if call_budget is not None else 0.0
+        budget_blocked_reason: str | None = None
         runtime_task = task
         autocorrect_iterations: list[dict[str, Any]] = []
         stopped_reason = "completed_without_runtime"
@@ -194,30 +199,42 @@ class LLMExecutor:
                 task.budget.max_tokens - task.budget.consumed_tokens - total_tokens
             )
             remaining_tokens = max(1, available_tokens)
-            loop_outcome = await self._tool_loop.run(
-                self.tier,
-                CompletionRequest(
-                    model="",
-                    cache_prefix=cache_prefix,
-                    system=self._system_prompt(task),
-                    messages=[
-                        Message(
-                            role="user",
-                            content=self._build_user_content(
-                                task,
-                                context,
-                                previous_feedback=previous_feedback,
-                                current_iteration_feedback=current_iteration_feedback,
-                            ),
-                        )
-                    ],
-                    response_schema=ExecutionOutput,
-                    max_tokens=min(16384, remaining_tokens),
-                ),
-                token_ceiling=remaining_tokens,
-                task_id=str(task.id),
-                refresh_paths=refresh_paths if available_tokens > 0 else None,
-            )
+            try:
+                loop_outcome = await self._tool_loop.run(
+                    self.tier,
+                    CompletionRequest(
+                        model="",
+                        cache_prefix=cache_prefix,
+                        system=self._system_prompt(task),
+                        messages=[
+                            Message(
+                                role="user",
+                                content=self._build_user_content(
+                                    task,
+                                    context,
+                                    previous_feedback=previous_feedback,
+                                    current_iteration_feedback=current_iteration_feedback,
+                                ),
+                            )
+                        ],
+                        response_schema=ExecutionOutput,
+                        max_tokens=min(16384, remaining_tokens),
+                    ),
+                    token_ceiling=remaining_tokens,
+                    task_id=str(task.id),
+                    refresh_paths=refresh_paths if available_tokens > 0 else None,
+                )
+            except BudgetAdmissionError as exc:
+                if not autocorrect_iterations or not isinstance(payload.get("workspace"), dict):
+                    raise
+                # Earlier corrections already changed the workspace. Return
+                # their evidence for the checkpoint, but leave admission blocked.
+                budget_blocked_reason = str(exc)
+                stopped_reason = "budget_blocked"
+                if call_budget is not None:
+                    total_tokens = max(total_tokens, call_budget.tokens - initial_tokens)
+                    total_cost = max(total_cost, call_budget.cost_usd - initial_cost)
+                break
             result = loop_outcome.result
             total_tokens += loop_outcome.tokens
             total_cost += loop_outcome.cost_usd
@@ -279,6 +296,7 @@ class LLMExecutor:
             "model": last_model,
             "tokens": total_tokens,
             "cost_usd": total_cost,
+            **({"budget_blocked_reason": budget_blocked_reason} if budget_blocked_reason else {}),
         }
 
     def _system_prompt(self, task: AgentTask) -> str:
