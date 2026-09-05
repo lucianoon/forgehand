@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.agents.executor import ExecutionStrategy
+from app.agents.executor import ExecutionStrategy, LLMExecutor
 from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
 from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
@@ -347,7 +347,12 @@ class LocalWorkspaceRuntime:
     ) -> dict[str, Any]:
         strategy = strategy or ExecutionStrategy()
         operations = normalize_operations(result_payload)
-        if not self._apply_files_enabled or not strategy.apply_files or not operations:
+        previous = self._previous_workspace(task)
+        if (
+            not self._apply_files_enabled
+            or not strategy.apply_files
+            or (not operations and not previous)
+        ):
             return {
                 "workspace": {
                     "apply_files_enabled": self._apply_files_enabled
@@ -363,6 +368,7 @@ class LocalWorkspaceRuntime:
         operation_history: list[dict[str, Any]] = []
         apply_errors: list[dict[str, Any]] = []
         published: dict[str, str] = {}
+        originals: dict[str, str | None] = {}
         deleted_paths: list[str] = []
         for operation in operations:
             op = operation.get("op")
@@ -385,7 +391,10 @@ class LocalWorkspaceRuntime:
                 )
                 continue
             applied_files.append(relative_path)
-            diff_entry = self._build_diff_entry(relative_path, before, after)
+            originals.setdefault(relative_path, before)
+            diff_entry = self._build_diff_entry(
+                relative_path, originals[relative_path], after
+            )
             diff_entry["operation"] = op
             file_diffs.append(diff_entry)
             if after is None:
@@ -393,6 +402,7 @@ class LocalWorkspaceRuntime:
                 published.pop(relative_path, None)
             else:
                 published[relative_path] = after
+                deleted_paths = [item for item in deleted_paths if item != relative_path]
             operation_history.append(
                 {
                     "step": "apply_file",
@@ -403,6 +413,16 @@ class LocalWorkspaceRuntime:
                 }
             )
 
+        evidence = LLMExecutor._merge_workspace_evidence(previous, {
+            "applied_files": applied_files,
+            "file_diffs": file_diffs,
+            "published_files": [
+                {"path": path, "content": content}
+                for path, content in published.items()
+            ],
+            "deleted_paths": deleted_paths,
+        })
+        applied_files = evidence["applied_files"]
         command_feedback: list[ValidationSignal] = []
         if apply_errors:
             command_feedback.append(
@@ -446,6 +466,10 @@ class LocalWorkspaceRuntime:
                     "status": git_snapshot["status"],
                 }
             )
+        # Re-read after validation: commands may also change/remove an artifact.
+        # Checkpoint contents and workspace_root never authorize filesystem reads.
+        self._refresh_artifacts(evidence)
+        prior_history = previous.get("operation_history", []) if previous else []
         return {
             "workspace": {
                 "apply_files_enabled": True,
@@ -456,17 +480,14 @@ class LocalWorkspaceRuntime:
                 "command_feedback": [
                     signal.model_dump(mode="json") for signal in command_feedback
                 ],
-                "file_diffs": file_diffs,
+                "file_diffs": evidence.get("file_diffs", []),
                 "apply_errors": apply_errors,
                 # Conteúdo FINAL dos arquivos tocados — o que a publicação de PR
                 # envia. Com replace o payload do executor não carrega o
                 # arquivo inteiro, então ele precisa viver aqui.
-                "published_files": [
-                    {"path": item_path, "content": content}
-                    for item_path, content in published.items()
-                ],
-                "deleted_paths": deleted_paths,
-                "operation_history": operation_history,
+                "published_files": evidence["published_files"],
+                "deleted_paths": evidence["deleted_paths"],
+                "operation_history": [*prior_history, *operation_history],
                 "command_executions": [
                     {
                         "name": signal.name,
@@ -481,6 +502,64 @@ class LocalWorkspaceRuntime:
                 "git_snapshot": git_snapshot,
             }
         }
+
+    @staticmethod
+    def _previous_workspace(task: AgentTask) -> dict[str, Any] | None:
+        if not isinstance(task.result, dict):
+            return None
+        workspace = task.result.get("workspace")
+        if (
+            not isinstance(workspace, dict)
+            or workspace.get("task_id") != str(task.id)
+            or workspace.get("apply_files_enabled") is not True
+        ):
+            return None
+        return workspace
+
+    def _refresh_artifacts(self, evidence: dict[str, Any]) -> None:
+        diffs = {item["path"]: item for item in evidence.get("file_diffs", [])}
+        previous_contents = {
+            item["path"]: item["content"]
+            for item in evidence.get("published_files", [])
+        }
+        published: list[dict[str, str]] = []
+        deleted: list[str] = []
+        refreshed: list[dict[str, Any]] = []
+        retained_paths = set(diffs) | set(previous_contents) | set(
+            evidence.get("deleted_paths", [])
+        )
+        for relative_path in evidence["applied_files"]:
+            if relative_path not in retained_paths:
+                continue  # Historical create/delete already cancelled out.
+            path = self._resolve_artifact_path(relative_path)
+            after = path.read_text(encoding="utf-8") if path.exists() else None
+            old_diff = diffs.get(relative_path, {})
+            if "before_content" in old_diff or old_diff.get("change_type") == "created":
+                before = old_diff.get("before_content")
+                if before is None and after is None:
+                    continue  # Created then deleted: no net publication.
+                diff = self._build_diff_entry(relative_path, before, after)
+                if "operation" in old_diff:
+                    diff["operation"] = old_diff["operation"]
+            else:
+                # Compatibility with older checkpoints: re-read bytes without
+                # inventing a task-start baseline that was never recorded.
+                diff = dict(old_diff)
+                if after != previous_contents.get(relative_path):
+                    diff.update(self._build_diff_entry(
+                        relative_path, previous_contents.get(relative_path), after
+                    ))
+                    if old_diff.get("change_type") == "created" and after is None:
+                        continue
+            if after is None:
+                deleted.append(relative_path)
+            else:
+                published.append({"path": relative_path, "content": after})
+            if diff:
+                refreshed.append(diff)
+        evidence["file_diffs"] = refreshed
+        evidence["published_files"] = published
+        evidence["deleted_paths"] = deleted
 
     async def _run_command_feedback(
         self,
@@ -633,6 +712,7 @@ class LocalWorkspaceRuntime:
         )
         return {
             "path": relative_path,
+            "before_content": before,
             "change_type": change_type,
             "changed": changed,
             "diff": "\n".join(diff_lines)[:8000],

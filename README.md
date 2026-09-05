@@ -247,10 +247,15 @@ worker que recebeu o job. Workers externos também registram heartbeat no
 PostgreSQL; `/readyz` deixa de responder 200 quando nenhum worker registrado
 está ativo. A CI sobe PostgreSQL 16 e Neo4j 5 e executa esses cenários.
 
-O consumo agregado inclui chamadas de planner, executores e judge. O budget
-por tarefa é verificado antes da execução e qualquer ultrapassagem vira
-escalation; uma decisão humana `retry` concede headroom para uma tentativa
-adicional e fica registrada no checkpoint.
+O consumo agregado inclui planner, executores, judge e advisor. Antes de cada
+tentativa de chamada, o provider reserva uma estimativa conservadora da entrada
+completa e do máximo de saída; a chamada só começa se couber no saldo do
+workflow e da tarefa. Branches paralelos dividem esse saldo. A estimativa pode
+interromper o trabalho antes do teto de tokens medidos; não é garantia de
+faturamento do fornecedor. Uso sem confirmação após erro ou timeout fica em
+`unconfirmed_tokens` / `unconfirmed_cost_usd`, separado do consumo medido e
+descontado do saldo. Uma decisão humana `retry` concede headroom e fica
+registrada no checkpoint. Veja [limites e recuperação](docs/configuration.md#reserva-de-orçamento-por-chamada).
 
 Os testes de integração exercitam o grafo completo com providers reais sobre
 transporte HTTP mockado — o request de verdade é montado e o response de

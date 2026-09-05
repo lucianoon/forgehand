@@ -85,6 +85,14 @@ Critérios devem expressar o resultado pedido, não uma implementação inventad
   específica quando implementações equivalentes satisfazem o pedido;
 - pattern contém somente uma regex Python, nunca JSON de outros critérios;
 - mantenha separados os critérios de testes, escopo e comportamento.
+- tests_pass/lint_pass/types_pass provam somente que a fase correspondente
+  executou com sucesso; não provam cobertura de um caso específico. Não rotule
+  "lista vazia retorna zero" como tests_pass: use um critério de comportamento
+  e, quando a tarefa incluir regressão, outro que exija o teste desse caso;
+- cada tarefa deve ser aprovável antes das tarefas que dependem dela. Para uma
+  correção pequena, prefira implementar a mudança e seus testes de regressão na
+  mesma tarefa. Se separar implementação e testes, atribua a criação/cobertura
+  dos testes à tarefa responsável, sem exigir o trabalho futuro na antecessora.
 
 Se o contexto trouxer evidências do repositório:
 - use SOMENTE tecnologias, componentes e afirmações sustentadas por essas evidências;

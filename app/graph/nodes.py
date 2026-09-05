@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.factory.workspace import WorkspaceManager, WorkspaceRuntimeFactory
+from app.graph.call_budget import with_call_budget
 from app.graph.contracts import (
     Advisor,
     AdvisingOutcome,
@@ -118,4 +119,6 @@ def build_nodes(
         if overlap:
             raise ValueError(f"nó definido em mais de uma fase: {sorted(overlap)}")
         nodes.update(phase_nodes)
+    for name in ("create_plan", "execute_task", "evaluate_results", "replan"):
+        nodes[name] = with_call_budget(nodes[name])
     return nodes

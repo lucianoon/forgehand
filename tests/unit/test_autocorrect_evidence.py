@@ -54,7 +54,7 @@ def test_round_without_operations_keeps_earlier_files() -> None:
     assert merged["operation_history"] == [{"step": "create", "path": "pkg/core.py"}]
     # chaves da rodada atual prevalecem
     assert merged["workspace_root"] == "/ws"
-    assert "command_feedback" not in merged or merged["command_feedback"] == _round_one()["command_feedback"]
+    assert "command_feedback" not in merged
 
 
 def test_later_round_overrides_content_and_honours_deletions() -> None:

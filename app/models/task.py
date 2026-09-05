@@ -185,13 +185,15 @@ class TaskBudget(BaseModel):
     max_cost_usd: float = Field(default=3.00, gt=0)
     consumed_tokens: int = Field(default=0, ge=0)
     consumed_cost_usd: float = Field(default=0.0, ge=0)
+    unconfirmed_tokens: int = Field(default=0, ge=0)
+    unconfirmed_cost_usd: float = Field(default=0.0, ge=0)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def exhausted(self) -> bool:
         return (
-            self.consumed_tokens >= self.max_tokens
-            or self.consumed_cost_usd >= self.max_cost_usd
+            self.consumed_tokens + self.unconfirmed_tokens >= self.max_tokens
+            or self.consumed_cost_usd + self.unconfirmed_cost_usd >= self.max_cost_usd
         )
 
     @computed_field  # type: ignore[prop-decorator]
@@ -199,22 +201,31 @@ class TaskBudget(BaseModel):
     def exceeded(self) -> bool:
         """Distingue atingir exatamente o limite de ultrapassá-lo."""
         return (
-            self.consumed_tokens > self.max_tokens
-            or self.consumed_cost_usd > self.max_cost_usd
+            self.consumed_tokens + self.unconfirmed_tokens > self.max_tokens
+            or self.consumed_cost_usd + self.unconfirmed_cost_usd > self.max_cost_usd
         )
 
-    def charge(self, tokens: int, cost_usd: float) -> "TaskBudget":
+    def charge(
+        self, tokens: int, cost_usd: float, *, unconfirmed_tokens: int = 0,
+        unconfirmed_cost_usd: float = 0.0,
+    ) -> "TaskBudget":
         """Retorna novo budget (imutável — compatível com reducers do LangGraph)."""
         return self.model_copy(
             update={
                 "consumed_tokens": self.consumed_tokens + tokens,
                 "consumed_cost_usd": self.consumed_cost_usd + cost_usd,
+                "unconfirmed_tokens": self.unconfirmed_tokens + unconfirmed_tokens,
+                "unconfirmed_cost_usd": self.unconfirmed_cost_usd + unconfirmed_cost_usd,
             }
         )
 
 
 class TaskAttempt(BaseModel):
-    """Registro de cada tentativa — base da rastreabilidade (regra 10)."""
+    """Tentativa do executor, identificada por agente/modelo (regra 10).
+
+    tokens_used e cost_usd medem a execução; o budget da tarefa também inclui
+    julgamento. Somá-los aqui atribuiria o consumo do judge ao modelo executor.
+    """
 
     attempt_number: int = Field(ge=1)
     agent_name: str

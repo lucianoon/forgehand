@@ -270,10 +270,30 @@ class FakeMemory:
 async def test_agents_e2e(tmp_path):
     (tmp_path / "README.md").write_text("# workspace e2e\n", encoding="utf-8")
     tools = build_workspace_tools(str(tmp_path))
+    measured_calls = []
+
+    def recording_handler(request):
+        response = handler(request)
+        body = json.loads(request.content)
+        properties = body["tools"][0]["input_schema"]["properties"]
+        role = (
+            "planner" if "tasks" in properties
+            else "executor" if "operations" in properties
+            else "judge"
+        )
+        # Ledger at the HTTP seam is independent of the graph's accounting.
+        # Use the response's actual metering and the request's selected model.
+        usage = Usage.model_validate(response.json()["usage"])
+        measured_calls.append({
+            "role": role, "tokens": usage.total_tokens,
+            "cost_usd": PRICING[body["model"]].cost(usage),
+        })
+        return response
+
     client = anthropic.AsyncAnthropic(
         api_key="test",
         max_retries=0,
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(recording_handler)),
     )
     provider = AnthropicProvider(PRICING, client=client, base_backoff_seconds=0.01)
     router = ProviderRouter(
@@ -349,9 +369,19 @@ async def test_agents_e2e(tmp_path):
     # 9 chamadas de agentes + 1 rodada de exploração do planner (read_file),
     # cada uma com 800 + 400 tokens no mock
     assert out["usage"]["tokens"] == 12_000
-    assert out["usage"]["cost_usd"] > 0
-    per_task = sum(t.budget.consumed_cost_usd for t in plan)
-    assert abs(per_task - sum(a.cost_usd for t in plan for a in t.attempts)) < 1e-9
+    for key, budget_field, attempt_field in (
+        ("tokens", "consumed_tokens", "tokens_used"),
+        ("cost_usd", "consumed_cost_usd", "cost_usd"),
+    ):
+        planner_usage = sum(call[key] for call in measured_calls if call["role"] == "planner")
+        executor_usage = sum(call[key] for call in measured_calls if call["role"] == "executor")
+        judge_usage = sum(call[key] for call in measured_calls if call["role"] == "judge")
+        per_task = sum(getattr(task.budget, budget_field) for task in plan)
+        per_attempt = sum(getattr(attempt, attempt_field) for task in plan for attempt in task.attempts)
+        # Attempts identify the executor/model; task budgets also cover judging.
+        assert per_attempt == pytest.approx(executor_usage)
+        assert per_task == pytest.approx(executor_usage + judge_usage)
+        assert out["usage"][key] == pytest.approx(planner_usage + per_task)
     print(
         f"5. custo OK — {out['usage']['tokens']} tokens, {out['usage']['cost_usd']:.4f} USD rastreados por tarefa e no agregado"
     )
