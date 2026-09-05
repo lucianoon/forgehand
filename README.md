@@ -52,6 +52,13 @@ executados com LLM via OpenRouter após as correções de regressão.
 matriz completa](docs/pilot-report-2026-07-20.md). Os números são um piloto
 interno reproduzível, não um benchmark público independente.
 
+## Para equipes com repositório existente
+
+O dashboard e o comando `forgehand deliver` enviam uma mudança ou issue à
+fábrica, com critérios, orçamento, build e entrega por PR. A CLI oferece prévia
+sem execução (`--dry-run`) e acompanhamento retomável (`forgehand wait ID`).
+Veja o [fluxo pelo terminal](docs/developer-delivery-cli.md) e seus pré-requisitos.
+
 ## Mission control
 
 ### Estúdio de produto: ideia → demo

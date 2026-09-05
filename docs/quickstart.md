@@ -76,6 +76,7 @@ está em `evals/baseline/`.
 
 ## Depois
 
+- Mudanças em repositórios existentes pelo terminal: [CLI de entrega por PR](developer-delivery-cli.md).
 - Entrega até PR verde no GitHub: `docs/integrations.md`.
 - Factory mode (checkout isolado, sandbox Docker): `docs/factory-delivery.md`, Linux ou WSL.
 - Todas as variáveis: `docs/configuration.md`.

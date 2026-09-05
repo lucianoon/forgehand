@@ -789,3 +789,111 @@ async def test_events_stream_emits_state_and_ends_on_terminal():
         assert events and events[-1]["status"] == "cancelled"
         missing = await client.get("/workflows/00000000-0000-0000-0000-000000000000/events")
         assert missing.status_code == 404
+
+
+def _cli_asgi_bridge(api):
+    """Run the synchronous CLI in a thread against the actual ASGI routes."""
+    loop = asyncio.get_running_loop()
+
+    def bridge(request):
+        pending = asyncio.run_coroutine_threadsafe(
+            api.request(
+                request.method, request.url.path,
+                headers=request.headers, content=request.content,
+            ), loop,
+        )
+        response = pending.result(timeout=5)
+        return httpx.Response(
+            response.status_code, headers=response.headers, content=response.content,
+        )
+
+    return httpx.MockTransport(bridge)
+
+
+@requires_docker_cli
+@pytest.mark.asyncio
+async def test_cli_deliver_reaches_real_intake_and_deduplicates(capsys):
+    """Exercise the CLI request across real auth/intake/queue, without a worker."""
+    from app.cli import main as cli_main
+
+    app = make_app(run_workers=False, factory_mode_enabled=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        transport = _cli_asgi_bridge(api)
+
+        args = [
+            "--url", "http://test", "--api-key", "key-demo", "deliver",
+            "--project", "demo", "--repository", "acme/widgets",
+            "--request", "Corrigir o cálculo do total do pedido.",
+            "--criterion", "Desconto aplicado uma única vez",
+            "--budget-usd", "0.5", "--base-ref", "develop",
+            "--expected-base-sha", "a" * 40,
+            "--build-profile", "python", "--idempotency-key", "cli-request-42",
+            "--no-wait",
+        ]
+        try:
+            first = await asyncio.to_thread(
+                cli_main, args, transport=transport
+            )
+            first_id = capsys.readouterr().out.strip()
+            second = await asyncio.to_thread(
+                cli_main, args, transport=transport
+            )
+            second_id = capsys.readouterr().out.strip()
+            assert first == second == 0
+            assert first_id == second_id and first_id
+            assert (await app.state.container.job_queue.get_stats()).queued == 1
+            job = await app.state.container.job_queue.dequeue("inspection", 0.01)
+            order = job.payload["work_order"]
+            assert order.repository.full_name == "acme/widgets"
+            assert order.repository.base_ref == "develop"
+            assert order.repository.expected_base_sha == "a" * 40
+            assert order.requested_outcome == "Corrigir o cálculo do total do pedido."
+            assert order.acceptance_criteria == ["Desconto aplicado uma única vez"]
+            assert order.limits.max_cost_usd == 0.5
+            assert order.delivery_policy.wait_for_checks
+            assert order.delivery_policy.require_human_merge
+            assert job.payload["delivery"].repository == "acme/widgets"
+        finally:
+            await app.state.container.workflow_service.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("key", "project", "factory_enabled", "http_code"),
+    [
+        ("key-viewer", "demo", True, 403),
+        ("key-demo", "other", True, 403),
+        ("invalid-key", "demo", True, 401),
+        ("key-demo", "demo", False, 409),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cli_deliver_preserves_server_authorization(
+    capsys, key, project, factory_enabled, http_code
+):
+    from app.cli import main as cli_main
+
+    if factory_enabled and shutil.which("docker") is None:
+        pytest.skip("factory mode requires Docker CLI")
+    app = make_app(run_workers=False, factory_mode_enabled=factory_enabled)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        transport = _cli_asgi_bridge(api)
+
+        try:
+            code = await asyncio.to_thread(
+                cli_main,
+                ["--url", "http://test", "--api-key", key, "deliver",
+                 "--project", project, "--repository", "acme/widgets",
+                 "--request", "Corrigir o cálculo do total do pedido.",
+                 "--criterion", "Teste de regressão passa",
+                 "--budget-usd", "0.5", "--no-wait"],
+                transport=transport,
+            )
+            assert code == 2
+            assert str(http_code) in capsys.readouterr().err
+            assert (await app.state.container.job_queue.get_stats()).queued == 0
+        finally:
+            await app.state.container.workflow_service.shutdown()
