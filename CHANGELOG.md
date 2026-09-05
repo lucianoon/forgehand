@@ -7,6 +7,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- CLI de entrega por PR: `deliver` aceita repositório/pedido ou issue, critérios,
+  orçamento explícito, base/perfil/limites, chave de idempotência e prévia
+  `--dry-run`. `wait` retoma acompanhamento sem criar outra execução. O estado
+  `ready_for_human_review` encerra a espera com sucesso e a saída apresenta
+  PR, SHA, CI e custo; timeout da CLI preserva a execução remota.
+
 - Avaliação contínua (`app/evaluation/evals.py`, `evals/cases.json`,
   `evals/gates.json`, workflow `Evals`): casos reais com LLM, orçamento total
   em dólares como teto duro, relatório JSON + Markdown e gate por conclusão,
