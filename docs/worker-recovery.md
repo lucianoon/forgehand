@@ -20,12 +20,19 @@ uma fase `completed` pode ainda ter um nó de persistência para executar.
 
 ## Identidade das aprovações
 
-`decide()` grava uma mensagem versionada na fila, com a decisão e os IDs dos
-interrupts presentes naquele momento. O worker aplica o valor somente aos IDs
+`decide()` grava uma mensagem versionada na fila, com a decisão, os IDs dos
+interrupts e sua posição persistida naquele momento (checkpoint, task e número
+de valores já consumidos pelo nó). O envelope atual usa `resume_version=2`. O worker aplica o valor somente aos IDs
 correspondentes via `Command(resume={id: decision})`.
 
-Se a decisão já foi consumida, o worker continua o trabalho pendente sem
-reenviar a decisão. Se existe outro gate, confirma o job antigo e preserva o
+O ID do interrupt e o ID do checkpoint podem se repetir em chamadas sequenciais
+no mesmo nó, inclusive com o mesmo texto. A posição usa o comprimento da lista
+`__resume__` da task nos pending writes do checkpointer; os valores das decisões
+não são copiados para essa identidade. A leitura usa o contrato do LangGraph
+fixado no lockfile e tem regressão com memória e PostgreSQL.
+
+Se a decisão já foi consumida, o worker continua com os valores já persistidos,
+sem reenviar a decisão. Se existe outro gate, confirma o job antigo e preserva o
 novo interrupt, que continua exigindo uma decisão explícita.
 
 Mensagens legadas de texto continuam aceitas na primeira entrega. Na
@@ -33,7 +40,14 @@ reentrega, podem continuar um checkpoint sem interrupts ou confirmar um grafo
 já finalizado. Se há um interrupt pendente, não há identidade suficiente para
 provar que ele foi aprovado: o job falha com `resume_decision_unbound`, o
 checkpoint permanece intacto e o operador pode enviar uma nova decisão.
-Mensagens versionadas inválidas também não alteram o grafo.
+Envelopes antigos com `resume_version=1`, contendo apenas IDs, continuam aceitos
+na primeira entrega. Reentregas com um ID ainda pendente são ambíguas e exigem
+nova decisão; sem IDs correspondentes, preservam outro gate ou continuam trabalho
+normal. Mensagens versionadas inválidas também não alteram o grafo.
+
+Se o checkpointer não fornece uma posição verificável, ou a task depende de um
+checkpoint de subgrafo ainda não resolvido, a API recusa a decisão e preserva o
+gate. Não assume posição zero em namespaces desconhecidos.
 
 ## Compatibilidade de implantação
 
@@ -50,14 +64,15 @@ Com um PostgreSQL de teste separado:
 
 ```bash
 RUN_POSTGRES_TESTS=1 TEST_DATABASE_URL=postgresql://usuario:senha@localhost:5432/forgehand_test \
-  uv run pytest tests/integration/test_worker_crash.py tests/unit/test_worker_shutdown.py tests/unit/test_resume_recovery.py -q
+  uv run pytest tests/integration/test_worker_crash.py tests/unit/test_worker_shutdown.py tests/unit/test_resume_recovery.py tests/unit/test_resume_same_node.py -q
 ```
 
 Os testes criam schemas únicos e os removem ao encerrar. Os filhos usam o
 serviço, a fila e o checkpointer reais, com nós determinísticos sem LLM ou SCM.
 O pai observa o checkpoint/evento da etapa e mata o processo com SIGKILL; um
 segundo processo recupera a entrega após expiração do lease. Também são
-verificados o número de tentativas e a preservação do gate seguinte.
+verificados o número de tentativas e a preservação do gate seguinte, incluindo
+duas aprovações no mesmo nó com payloads diferentes ou idênticos.
 
 ## Limites
 

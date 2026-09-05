@@ -68,6 +68,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Decisões reenviadas distinguem interrupts sequenciais dentro do mesmo nó:
+  o envelope v2 inclui checkpoint, task e posição persistida da aprovação.
+  IDs sozinhos podem ser reutilizados pelo LangGraph; envelopes antigos
+  ambíguos preservam o gate e pedem uma decisão nova. Posições de subgrafos
+  não resolvidas são recusadas, sem assumir que representam o primeiro gate.
+
 - Qualificação independente passa a conferir a identidade completa do PR antes
   e depois da execução, verificar ancestralidade da base e inventariar o diff
   diretamente dos commits publicados. Registra SHA verificado e hashes do
