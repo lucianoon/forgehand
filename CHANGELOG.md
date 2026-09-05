@@ -7,6 +7,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Instalação persistente de equipe com API, PostgreSQL e dois workers; imagem
+  operacional com Git, Docker CLI e PostgreSQL client 16. `doctor --json` oferece
+  diagnóstico administrativo sem IA. Fingerprints impedem consumo de trabalhos
+  por workers incompatíveis; migrações de checkpoints são serializadas no banco.
+- Backup offline e restauração em banco novo, com lock de manutenção, manifesto
+  e integridade dos dados. Ensaio Compose em CI cobre morte de worker, build Docker,
+  restauração de histórico/owner/idempotência/orçamento e aprovação ainda pendente.
+
 - Checkout privado no modo fábrica com PAT ou GitHub App, renovação pelo
   provedor, acesso revalidado na retomada e tokens restritos ao processo Git
   remoto. Inclui TLS/redirects, validação do cache e testes de Git HTTPS real.

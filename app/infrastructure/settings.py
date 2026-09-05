@@ -194,6 +194,8 @@ class Settings(BaseSettings):
         return tuple(sources)
 
     app_name: str = "forgehand"
+    forgehand_revision: str = Field(default="", max_length=128, pattern=r"^[A-Za-z0-9._/-]*$")
+    installation_expected_workers: int = Field(default=1, ge=1, le=10000)
     environment: Literal["dev", "staging", "prod"] = "dev"
     llm_provider_backend: Literal["anthropic", "openrouter", "openai"] = "anthropic"
     api_keys_json: str = json.dumps(_DEFAULT_API_KEYS)

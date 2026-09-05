@@ -104,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("workflow_id", type=_nonblank)
     _tracking_options(wait)
 
+    doctor = sub.add_parser("doctor", help="diagnostica a instalação sem iniciar IA")
+    doctor.add_argument("--json", dest="doctor_json", action="store_true",
+                        help="imprime o diagnóstico validado em JSON")
+
     status = sub.add_parser("status", help="consulta um workflow")
     status.add_argument("workflow_id")
     decide = sub.add_parser("decide", help="responde ao gate humano")
@@ -198,6 +202,81 @@ class _StatusPayload(_WorkflowReceipt):
     pending_decision: _PendingDecision | None = None
     delivery: _DeliverySummary | None = None
     final_output: str | None = None
+
+
+class _InstallationCheck(_ResponseModel):
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")
+    status: Literal["pass", "fail", "warning"]
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,119}$")
+    detail: str | None = Field(default=None, max_length=1000)
+
+
+class _InstallationWorkers(_ResponseModel):
+    active: int = Field(ge=0)
+    compatible: int = Field(ge=0)
+    incompatible: int = Field(ge=0)
+    legacy: int = Field(ge=0)
+
+
+class _InstallationConfiguration(_ResponseModel):
+    workspace_root: str | None = None
+    workspace_identity: str | None = None
+    build_profiles_digest: str | None = None
+    source_digest: str | None = None
+    dependency_network_enabled: bool = False
+    approved_scm_hosts: list[str] = Field(default_factory=list)
+    queue_backend: str
+    checkpointer_backend: str
+    command_backend: str
+    docker_socket: str | None = None
+
+
+class _InstallationJobs(_ResponseModel):
+    incompatible: int = Field(ge=0)
+    legacy_unbound: int = Field(ge=0)
+    unconfigured: int = Field(ge=0)
+
+
+class _InstallationReport(_ResponseModel):
+    schema_version: Literal[1]
+    ready: bool
+    factory_mode: bool
+    revision: str | None
+    fingerprint: str | None
+    checks: list[_InstallationCheck] = Field(min_length=1)
+    workers: _InstallationWorkers
+    jobs: _InstallationJobs
+    expected_workers: int = Field(ge=1)
+    configuration: _InstallationConfiguration
+
+
+def _doctor(client: httpx.Client, as_json: bool) -> int:
+    response = client.get("/operations/installation")
+    if response.status_code not in {200, 503}:
+        return _fail(response)
+    try:
+        report = _InstallationReport.model_validate(_response_object(response))
+    except ValidationError:
+        raise _InvalidAPIResponse() from None
+    if (report.ready and any(check.status == "fail" for check in report.checks)) or (
+        report.ready != (response.status_code == 200)
+    ):
+        raise _InvalidAPIResponse()
+    if as_json:
+        # Emit the validated contract only, never an arbitrary server response body.
+        sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+    else:
+        state = "pronta" if report.ready else "precisa de atenção"
+        sys.stdout.write(f"Instalação {state}.\n")
+        for check in report.checks:
+            detail = f" — {check.detail}" if check.detail else ""
+            sys.stdout.write(f"[{check.status}] {check.name}: {check.code}{detail}\n")
+        workers = report.workers
+        sys.stdout.write(
+            f"Workers compatíveis: {workers.compatible}/{report.expected_workers} exigidos "
+            f"({workers.active} ativos).\n"
+        )
+    return 0 if report.ready else 1
 
 
 def _response_object(response: httpx.Response) -> dict[str, Any]:
@@ -309,6 +388,8 @@ def _wait(client: httpx.Client, workflow_id: str, timeout: float, poll: float, a
 
 
 def _execute(args: argparse.Namespace, client: httpx.Client, body: dict[str, Any] | None) -> int:
+    if args.command == "doctor":
+        return _doctor(client, args.json or args.doctor_json)
     if args.command in {"run", "deliver"}:
         assert body is not None
         response = client.post("/workflows", content=json.dumps(body, ensure_ascii=False).encode("utf-8"))

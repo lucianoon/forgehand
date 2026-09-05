@@ -40,6 +40,16 @@ Technical pilot from July 20, 2026: 9 real workflows across 3 scenarios and
 matrix](docs/pilot-report-2026-07-20.md). These figures come from a
 reproducible internal pilot, not an independent public benchmark.
 
+## Teams with existing repositories
+
+Use [`forgehand deliver`](docs/developer-delivery-cli.md) to submit a repository
+change with acceptance criteria and explicit limits, then follow it with `wait`.
+The [single-team installation](docs/team-installation.md) runs the API,
+PostgreSQL and two workers on one Linux host. `forgehand doctor --json` checks
+installation compatibility without model calls. The [offline backup and restore
+procedure](docs/team-backup.md) preserves history, ownership, idempotency and
+pending approvals in an isolated destination.
+
 ## Mission control
 
 ![ForgeHand's actual dashboard with runtime health, budget, and workflow stages](docs/assets/forgehand-dashboard.jpg)

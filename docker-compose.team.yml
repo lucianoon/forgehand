@@ -1,0 +1,130 @@
+# Standalone installation for one team on one Linux Docker host.
+# See docs/team-installation.md; never combine with docker-compose.prod.yml.
+x-runtime-environment: &runtime-environment
+  ENVIRONMENT: prod
+  FORGEHAND_ENV_FILE: ""
+  FORGEHAND_REVISION: ${FORGEHAND_REVISION:?set the reviewed commit SHA}
+  FORGEHAND_DATA_ROOT: ${FORGEHAND_DATA_ROOT:?set an absolute persistent host directory}
+  DATABASE_URL: ${DATABASE_URL:?set the internal PostgreSQL connection URL}
+  API_KEYS_JSON: ${API_KEYS_JSON:?configure team API keys and roles}
+  WORKFLOW_QUEUE_BACKEND: postgres
+  CHECKPOINTER_BACKEND: postgres
+  MEMORY_BACKEND: memory
+  TRACING_BACKEND: none
+  FACTORY_MODE_ENABLED: "true"
+  PRODUCT_STUDIO_ENABLED: "false"
+  FACTORY_WORKSPACE_ROOT: ${FORGEHAND_DATA_ROOT}/factory
+  FACTORY_DOCKER_SOCKET: /var/run/docker.sock
+  FACTORY_COMMAND_BACKEND: docker
+  EXECUTOR_COMMAND_BACKEND: docker
+  EXECUTOR_APPLY_FILES_ENABLED: "false"
+  REPOSITORY_ROOT: ${FORGEHAND_DATA_ROOT}/executor
+  EXECUTOR_WORKSPACE_ROOT: ${FORGEHAND_DATA_ROOT}/executor
+  AUDIT_LOG_BACKEND: jsonl
+  INSTALLATION_EXPECTED_WORKERS: ${INSTALLATION_EXPECTED_WORKERS:-2}
+  WORKFLOW_WORKER_CONCURRENCY: "1"
+
+x-runtime: &runtime
+  image: ${FORGEHAND_IMAGE:?set one reviewed runtime image for API and workers}
+  pull_policy: never
+  build:
+    context: .
+    target: runtime
+    args:
+      FORGEHAND_REVISION: ${FORGEHAND_REVISION:?set the reviewed commit SHA}
+  user: "${FORGEHAND_UID:-1000}:${FORGEHAND_GID:-1000}"
+  # Access to this socket confers control of the Docker host, despite this UID.
+  group_add:
+    - ${DOCKER_SOCKET_GID:?set the numeric group that can access the Docker socket}
+  env_file:
+    - path: ${TEAM_ENV_FILE:?set the absolute path of the protected server env file}
+      required: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  stop_grace_period: 60s
+  volumes:
+    # Sibling build containers resolve source paths on the Docker host.
+    - type: bind
+      source: ${FORGEHAND_DATA_ROOT:?set the persistent host directory}
+      target: ${FORGEHAND_DATA_ROOT:?set the same absolute path inside the container}
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+      target: /var/run/docker.sock
+      bind:
+        create_host_path: false
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.15-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forgehand
+      POSTGRES_DB: forgehand
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?configure a private database password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U forgehand -d forgehand"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # PostgreSQL is only reachable on the Compose network; no host port.
+
+  api:
+    <<: *runtime
+    environment:
+      <<: *runtime-environment
+      RUN_EMBEDDED_WORKFLOW_WORKERS: "false"
+      AUDIT_LOG_PATH: ${FORGEHAND_DATA_ROOT}/audit/api.jsonl
+    command:
+      - python
+      - -m
+      - app.operations.team_backup
+      - run
+      - --data-root
+      - ${FORGEHAND_DATA_ROOT}
+      - --
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    healthcheck:
+      test: [CMD, python, -c, "import httpx; httpx.get('http://127.0.0.1:8000/health', timeout=2).raise_for_status()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+    mem_limit: 1g
+    cpus: "1.0"
+
+  worker:
+    <<: *runtime
+    environment:
+      <<: *runtime-environment
+      RUN_EMBEDDED_WORKFLOW_WORKERS: "true"
+    # Each process owns its audit file; the JSONL implementation does not
+    # coordinate concurrent compaction of one shared file across processes.
+    command:
+      - /bin/sh
+      - -c
+      - 'exec env AUDIT_LOG_PATH="$${FORGEHAND_DATA_ROOT}/audit/worker-$${HOSTNAME}.jsonl" python -m app.operations.team_backup run --data-root "$${FORGEHAND_DATA_ROOT}" -- python -m app.worker'
+    healthcheck:
+      disable: true
+    mem_limit: 2g
+    cpus: "2.0"
+
+volumes:
+  pgdata:

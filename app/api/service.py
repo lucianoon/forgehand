@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
+from app.infrastructure.installation import installation_descriptor, local_installation_checks
 from app.infrastructure.workflow_queue import WorkflowAccessContext
 from app.models.factory import WorkOrder
 from app.models.factory import WorkspaceLifecycle, WorkspaceRetention
@@ -133,6 +134,14 @@ class WorkflowService:
         self._build_runner = build_runner
         self._audit_log = audit_log
         self._reconciler: asyncio.Task[Any] | None = None
+        self._refresh_installation()
+
+    def _refresh_installation(self) -> dict[str, Any]:
+        descriptor = installation_descriptor(self._settings)
+        configure = getattr(self._job_queue, "configure_installation", None)
+        if callable(configure):
+            configure(descriptor["fingerprint"], required=descriptor["required"])
+        return descriptor
 
     # ------------------------------------------------------------------
     def _config(self, workflow_id: str) -> dict[str, Any]:
@@ -187,6 +196,7 @@ class WorkflowService:
         worker_id = f"{self._worker_id_prefix}:worker-{index}"
         while True:
             failed = False
+            self._refresh_installation()
             await self._job_queue.touch_worker(worker_id)
             job = await self._job_queue.dequeue(
                 worker_id=worker_id,
@@ -518,6 +528,8 @@ class WorkflowService:
             await asyncio.sleep(interval)
             if not await self._job_queue.heartbeat(job):
                 raise WorkflowLeaseLost(job.workflow_id)
+            if job.locked_by is not None:
+                await self._job_queue.touch_worker(job.locked_by)
 
     async def _run_job_with_heartbeat(self, job: Any) -> None:
         invocation = asyncio.create_task(self._invoke_job(job))
@@ -573,13 +585,19 @@ class WorkflowService:
             await self._event_publisher.publish(event, payload)
 
     async def readiness(self) -> dict[str, Any]:
+        descriptor = self._refresh_installation()
         queue_error = None
+        queue_stats = None
+        workers = {"active": 0, "compatible": 0, "incompatible": 0, "legacy": 0}
         try:
             queue_ready = await self._job_queue.ping()
+            if queue_ready:
+                queue_stats = await self._job_queue.get_stats()
+                if descriptor["required"]:
+                    workers = await self._job_queue.installation_workers(descriptor["fingerprint"])
         except Exception as exc:  # noqa: BLE001
             queue_ready = False
             queue_error = type(exc).__name__
-        queue_stats = await self._job_queue.get_stats() if queue_ready else None
         expected_workers = (
             self._settings.workflow_worker_concurrency if self._run_workers else 0
         )
@@ -592,9 +610,16 @@ class WorkflowService:
             or self._settings.workflow_queue_backend != "postgres"
             or (queue_stats is not None and queue_stats.active_workers > 0)
         )
-        ready = queue_ready and embedded_worker_health and external_worker_health
+        installation_compatible = not descriptor["required"] or (
+            descriptor["fingerprint"] is not None
+            and workers["compatible"] >= self._settings.installation_expected_workers
+        )
+        ready = queue_ready and embedded_worker_health and external_worker_health and installation_compatible
         return {
             "ready": ready,
+            "installation_compatible": installation_compatible,
+            "compatible_workers": workers["compatible"],
+            "incompatible_workers": workers["incompatible"],
             "queue_ready": queue_ready,
             "queue_error": queue_error,
             "embedded_workers_enabled": self._run_workers,
@@ -605,6 +630,31 @@ class WorkflowService:
             "registered_workers": (
                 queue_stats.active_workers if queue_stats is not None else 0
             ),
+        }
+
+    async def installation_diagnostics(self) -> dict[str, Any]:
+        """Administrative, non-secret diagnostics; no model or SCM request."""
+        descriptor = self._refresh_installation()
+        readiness = await self.readiness()
+        checks = await local_installation_checks(self._settings, descriptor)
+        workers = {"active": 0, "compatible": 0, "incompatible": 0, "legacy": 0}
+        jobs = {"incompatible": 0, "legacy_unbound": 0, "unconfigured": 0}
+        if readiness["queue_ready"]:
+            workers = await self._job_queue.installation_workers(descriptor["fingerprint"])
+            if descriptor["required"]:
+                jobs = await self._job_queue.installation_jobs(descriptor["fingerprint"])
+        checks.append({"name": "queue", "status": "pass" if readiness["queue_ready"] else "fail", "code": "ok" if readiness["queue_ready"] else "queue_unavailable"})
+        checks.append({"name": "workers", "status": "pass" if readiness["installation_compatible"] and readiness["external_worker_health"] else "fail", "code": "ok" if readiness["installation_compatible"] and readiness["external_worker_health"] else "compatible_workers_missing"})
+        if jobs["incompatible"]:
+            checks.append({"name": "pending_jobs", "status": "fail", "code": "jobs_require_reconciliation"})
+        return {
+            "schema_version": 1,
+            "ready": readiness["ready"] and all(check["status"] != "fail" for check in checks),
+            "factory_mode": self._settings.factory_mode_enabled,
+            "revision": descriptor["revision"], "fingerprint": descriptor["fingerprint"],
+            "checks": checks, "workers": workers, "jobs": jobs,
+            "expected_workers": self._settings.installation_expected_workers,
+            "configuration": descriptor["configuration"],
         }
 
     async def metrics(self) -> dict[str, Any]:
@@ -639,6 +689,7 @@ class WorkflowService:
         workflow_id: str | None = None,
         expected_dispatch_scope: str | None = None,
     ) -> str:
+        self._refresh_installation()
         workflow_id = workflow_id or str(uuid4())
         initial: dict[str, Any] = {
             "request": request,
@@ -774,6 +825,7 @@ class WorkflowService:
 
     # ------------------------------------------------------------------
     async def decide(self, workflow_id: str, decision: str) -> None:
+        self._refresh_installation()
         await self.get(workflow_id)  # levanta WorkflowNotFound
         snapshot = await self._app.aget_state(self._config(workflow_id))
         interrupts = _snapshot_interrupts(snapshot)

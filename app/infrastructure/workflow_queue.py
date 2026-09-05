@@ -150,10 +150,23 @@ class InMemoryWorkflowQueue:
         self._done_total = 0
         self._sequence = 0
         self._worker_heartbeats: dict[str, float] = {}
+        self._worker_fingerprints: dict[str, str | None] = {}
+        self._deployment_fingerprint: str | None = None
+        self._installation_required = False
         self._idempotency: dict[tuple[str, str, str], str] = {}
         self._work_orders: dict[str, dict[str, Any]] = {}
         self._dispatch_scope = str(uuid4())
         self._start_receipts: dict[str, str] = {}
+
+    def configure_installation(self, fingerprint: str | None, *, required: bool) -> None:
+        self._deployment_fingerprint = fingerprint
+        self._installation_required = required
+
+    @property
+    def _required_fingerprint(self) -> str | None:
+        if not self._installation_required:
+            return None
+        return self._deployment_fingerprint or "installation-unconfigured"
 
     async def dispatch_scope(self) -> str:
         return self._dispatch_scope
@@ -216,9 +229,18 @@ class InMemoryWorkflowQueue:
             self._idempotency[scope] = workflow_id
             return workflow_id, True
 
+    async def installation_workers(self, fingerprint: str | None) -> dict[str, int]:
+        cutoff = time.monotonic() - max(self._lease_seconds * 2, 1.0)
+        async with self._condition:
+            workers = [self._worker_fingerprints.get(key) for key, heartbeat in self._worker_heartbeats.items() if heartbeat >= cutoff]
+        compatible = sum(value == fingerprint and value is not None for value in workers)
+        return {"active": len(workers), "compatible": compatible,
+                "incompatible": len(workers)-compatible, "legacy": workers.count(None)}
+
     async def touch_worker(self, worker_id: str) -> None:
         async with self._condition:
             self._worker_heartbeats[worker_id] = time.monotonic()
+            self._worker_fingerprints[worker_id] = self._deployment_fingerprint
 
     async def list_workflows(
         self, *, owner_client_id: str, project_id: str | None = None, limit: int = 20
@@ -458,12 +480,15 @@ class PostgresWorkflowQueue:
         self._max_delivery_attempts = max_delivery_attempts
         self._conn: Any | None = None
         self._lock = asyncio.Lock()
+        self._deployment_fingerprint: str | None = None
+        self._installation_required = False
 
     async def setup(self) -> None:
         from psycopg import AsyncConnection
 
         self._conn = await AsyncConnection.connect(self._dsn)
         async with self._lock:
+            await self._conn.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':workflow-setup'))")
             await self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_jobs (
@@ -517,6 +542,57 @@ class PostgresWorkflowQueue:
                 )
                 """
             )
+            await self._conn.execute("ALTER TABLE workflow_workers ADD COLUMN IF NOT EXISTS deployment_fingerprint TEXT")
+            await self._conn.execute("ALTER TABLE workflow_jobs ADD COLUMN IF NOT EXISTS required_fingerprint TEXT")
+            await self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_installation_policy (
+                    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+                    enforced BOOLEAN NOT NULL DEFAULT FALSE
+                )
+            """)
+            await self._conn.execute("INSERT INTO workflow_installation_policy VALUES (TRUE, FALSE) ON CONFLICT DO NOTHING")
+            await self._conn.execute("""
+                CREATE OR REPLACE FUNCTION guard_workflow_installation() RETURNS trigger
+                LANGUAGE plpgsql AS $$
+                DECLARE previous_fingerprint TEXT; installation_enforced BOOLEAN;
+                BEGIN
+                    IF TG_OP='INSERT' THEN
+                        -- Serialize legacy admission with first-time activation.
+                        SELECT enforced INTO installation_enforced
+                        FROM workflow_installation_policy WHERE singleton FOR SHARE;
+                        IF NEW.kind='resume' THEN
+                            SELECT required_fingerprint INTO previous_fingerprint
+                            FROM workflow_jobs WHERE workflow_id=NEW.workflow_id AND kind='start'
+                            ORDER BY id LIMIT 1;
+                            IF previous_fingerprint IS NOT NULL THEN
+                                NEW.required_fingerprint := previous_fingerprint;
+                            END IF;
+                        END IF;
+                        IF installation_enforced AND NEW.required_fingerprint IS NULL THEN
+                            NEW.required_fingerprint := 'legacy-unbound';
+                        END IF;
+                    ELSIF NEW.status='processing' AND OLD.status='queued'
+                          AND NEW.required_fingerprint IS NOT NULL THEN
+                        IF NOT EXISTS (SELECT 1 FROM workflow_workers
+                            WHERE worker_id=NEW.locked_by
+                              AND deployment_fingerprint=NEW.required_fingerprint) THEN
+                            RAISE EXCEPTION 'worker_installation_incompatible';
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END $$
+            """)
+            await self._conn.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                        WHERE tgname='workflow_installation_guard'
+                          AND tgrelid='workflow_jobs'::regclass) THEN
+                        CREATE TRIGGER workflow_installation_guard
+                        BEFORE INSERT OR UPDATE ON workflow_jobs FOR EACH ROW
+                        EXECUTE FUNCTION guard_workflow_installation();
+                    END IF;
+                END $$
+            """)
             await self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_idempotency (
@@ -548,6 +624,16 @@ class PostgresWorkflowQueue:
             """)
             await self._conn.commit()
 
+    def configure_installation(self, fingerprint: str | None, *, required: bool) -> None:
+        self._deployment_fingerprint = fingerprint
+        self._installation_required = required
+
+    @property
+    def _required_fingerprint(self) -> str | None:
+        if not self._installation_required:
+            return None
+        return self._deployment_fingerprint or "installation-unconfigured"
+
     async def dispatch_scope(self) -> str:
         assert self._conn is not None
         async with self._lock:
@@ -569,6 +655,7 @@ class PostgresWorkflowQueue:
         copied, digest = _start_payload(payload, workflow_id, project_id, owner_client_id)
         async with self._lock:
             async with self._conn.transaction():
+                await self._enable_installation_locked()
                 cur = await self._conn.execute(
                     "SELECT namespace FROM workflow_dispatch_identity WHERE singleton FOR SHARE"
                 )
@@ -623,10 +710,10 @@ class PostgresWorkflowQueue:
                 copied["workflow_id"] = workflow_id
                 await self._conn.execute("""
                     INSERT INTO workflow_jobs
-                        (workflow_id, project_id, owner_client_id, kind, payload, status, max_attempts)
-                    VALUES (%s, %s, %s, 'start', %s::jsonb, 'queued', %s)
+                        (workflow_id, project_id, owner_client_id, kind, payload, status, max_attempts, required_fingerprint)
+                    VALUES (%s, %s, %s, 'start', %s::jsonb, 'queued', %s, %s)
                 """, (workflow_id, project_id, owner_client_id,
-                      _serialize_payload(copied), self._max_delivery_attempts))
+                      _serialize_payload(copied), self._max_delivery_attempts, self._required_fingerprint))
                 return workflow_id
 
     async def claim_idempotency(
@@ -672,17 +759,64 @@ class PostgresWorkflowQueue:
             raise RuntimeError("Falha ao recuperar chave de idempotência.")
         return str(existing[0]), False
 
+    async def _enable_installation_locked(self) -> None:
+        if not self._installation_required:
+            return
+        assert self._conn is not None
+        cur = await self._conn.execute("""
+            UPDATE workflow_installation_policy SET enforced=TRUE
+            WHERE singleton AND NOT enforced RETURNING singleton
+        """)
+        if await cur.fetchone() is not None:
+            # Migration cannot infer revision or shared volume for old installation jobs.
+            await self._conn.execute("""
+                UPDATE workflow_jobs SET required_fingerprint='legacy-unbound'
+                WHERE required_fingerprint IS NULL
+            """)
+
+    async def installation_jobs(self, fingerprint: str | None) -> dict[str, int]:
+        assert self._conn is not None
+        async with self._lock:
+            cur = await self._conn.execute("""
+                SELECT COUNT(*) FILTER (WHERE required_fingerprint IS NOT NULL
+                          AND required_fingerprint IS DISTINCT FROM %s),
+                    COUNT(*) FILTER (WHERE required_fingerprint='legacy-unbound'),
+                    COUNT(*) FILTER (WHERE required_fingerprint='installation-unconfigured')
+                FROM workflow_jobs WHERE status IN ('queued', 'processing')
+            """, (fingerprint,))
+            row = await cur.fetchone()
+            await self._conn.commit()
+        return dict(zip(("incompatible", "legacy_unbound", "unconfigured"), map(int, row), strict=True))
+
+    async def installation_workers(self, fingerprint: str | None) -> dict[str, int]:
+        assert self._conn is not None
+        async with self._lock:
+            cur = await self._conn.execute("""
+                SELECT COUNT(*),
+                    COUNT(*) FILTER (WHERE deployment_fingerprint=%s),
+                    COUNT(*) FILTER (WHERE deployment_fingerprint IS NULL)
+                FROM workflow_workers
+                WHERE heartbeat_at >= NOW() - (%s * INTERVAL '1 second')
+            """, (fingerprint, max(self._lease_seconds * 2, 1.0)))
+            row = await cur.fetchone()
+            await self._conn.commit()
+        active, compatible, legacy = map(int, row)
+        return {"active": active, "compatible": compatible,
+                "incompatible": active-compatible, "legacy": legacy}
+
     async def touch_worker(self, worker_id: str) -> None:
         assert self._conn is not None
         async with self._lock:
+            await self._enable_installation_locked()
             await self._conn.execute(
                 """
-                INSERT INTO workflow_workers (worker_id, heartbeat_at)
-                VALUES (%s, NOW())
+                INSERT INTO workflow_workers (worker_id, heartbeat_at, deployment_fingerprint)
+                VALUES (%s, NOW(), %s)
                 ON CONFLICT (worker_id)
-                DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at
+                DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at,
+                    deployment_fingerprint = EXCLUDED.deployment_fingerprint
                 """,
-                (worker_id,),
+                (worker_id, self._deployment_fingerprint),
             )
             await self._conn.commit()
 
@@ -696,6 +830,7 @@ class PostgresWorkflowQueue:
     ) -> WorkflowJob:
         assert self._conn is not None
         async with self._lock:
+            await self._enable_installation_locked()
             cur = await self._conn.execute(
                 """
                 INSERT INTO workflow_jobs (
@@ -706,9 +841,10 @@ class PostgresWorkflowQueue:
                     payload,
                     status,
                     max_attempts,
-                    retry_after
+                    retry_after,
+                    required_fingerprint
                 )
-                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', %s, NOW())
+                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', %s, NOW(), %s)
                 RETURNING id
                 """,
                 (
@@ -718,6 +854,7 @@ class PostgresWorkflowQueue:
                     kind,
                     _serialize_payload(payload),
                     self._max_delivery_attempts,
+                    self._required_fingerprint,
                 ),
             )
             row = await cur.fetchone()
@@ -768,6 +905,9 @@ class PostgresWorkflowQueue:
         self, worker_id: str, poll_interval_seconds: float
     ) -> WorkflowJob | None:
         assert self._conn is not None
+        if self._installation_required and self._deployment_fingerprint is None:
+            await asyncio.sleep(poll_interval_seconds)
+            return None
         async with self._lock:
             async with self._conn.transaction():
                 await self._requeue_expired_locked()
@@ -778,6 +918,7 @@ class PostgresWorkflowQueue:
                         FROM workflow_jobs
                         WHERE status = 'queued'
                           AND retry_after <= NOW()
+                          AND (required_fingerprint IS NULL OR required_fingerprint=%s)
                         ORDER BY id
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
@@ -801,7 +942,7 @@ class PostgresWorkflowQueue:
                         jobs.max_attempts,
                         jobs.locked_by
                     """,
-                    (worker_id,),
+                    (self._deployment_fingerprint, worker_id),
                 )
                 row = await cur.fetchone()
             await self._conn.commit()
