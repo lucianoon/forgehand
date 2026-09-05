@@ -59,6 +59,12 @@ fábrica, com critérios, orçamento, build e entrega por PR. A CLI oferece pré
 sem execução (`--dry-run`) e acompanhamento retomável (`forgehand wait ID`).
 Veja o [fluxo pelo terminal](docs/developer-delivery-cli.md) e seus pré-requisitos.
 
+Para operação persistente em um host Linux, use a [instalação para uma equipe](docs/team-installation.md):
+API, PostgreSQL e dois workers com dados compartilhados. `forgehand doctor --json`
+verifica a instalação e a compatibilidade dos workers sem chamar modelos. O
+[procedimento de backup e restauração](docs/team-backup.md) preserva histórico,
+idempotência e aprovações pendentes em um destino isolado.
+
 ## Mission control
 
 ### Estúdio de produto: ideia → demo

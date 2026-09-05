@@ -35,6 +35,24 @@ async def readyz(request: Request) -> JSONResponse:
     return JSONResponse(status_code=200 if readiness["ready"] else 503, content=payload)
 
 
+@router.get("/operations/installation")
+async def installation_diagnostics(
+    request: Request,
+    client: AuthenticatedClient = Depends(require_api_client),
+) -> JSONResponse:
+    require_role(client, "admin")
+    report = await _container(request).workflow_service.installation_diagnostics()
+    status_code = 200 if report["ready"] else 503
+    await record_audit_event(
+        request,
+        action="installation_diagnostics",
+        outcome="ready" if report["ready"] else "not_ready",
+        client_id=client.client_id,
+        status_code=status_code,
+    )
+    return JSONResponse(status_code=status_code, content=report)
+
+
 @router.get("/metrics")
 async def metrics(request: Request) -> dict[str, object]:
     container = _container(request)

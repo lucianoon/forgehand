@@ -82,3 +82,24 @@ jobs:
           RUN_FACTORY_DOCKER_TESTS: "1"
           FACTORY_DOCKER_PYTHON_TEST_IMAGE: python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
           FACTORY_DOCKER_NODE_TEST_IMAGE: node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+
+  team-installation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev --extra postgres --extra github-app --locked
+      - name: Build the operator runtime
+        run: docker build --target runtime --build-arg FORGEHAND_REVISION=${{ github.sha }} --tag forgehand:team-ci .
+      - name: Pull the pinned acceptance fixture image
+        run: docker pull python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      - name: Verify installation, worker crash recovery and offline restore
+        run: uv run pytest tests/integration/test_team_installation.py tests/unit/test_team_compose.py -q -rP
+        env:
+          RUN_TEAM_INSTALLATION_TESTS: "1"
+          FORGEHAND_TEAM_TEST_IMAGE: forgehand:team-ci
+          FACTORY_DOCKER_SOCKET: /var/run/docker.sock

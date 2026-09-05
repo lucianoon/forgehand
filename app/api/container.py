@@ -73,11 +73,32 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
     if settings.checkpointer_backend == "postgres":
         # import tardio: dependência opcional (extra [postgres])
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg import AsyncConnection
 
         async with AsyncPostgresSaver.from_conn_string(
             settings.database_url, serde=build_serde()
         ) as saver:
-            await saver.setup()  # idempotente: cria tabelas se não existem
+            # from_conn_string mantém uma conexão autocommit dedicada. A trava
+            # de sessão serializa migrações entre API/workers sem envolver os
+            # índices CONCURRENTLY em uma transação. O runtime não retém a trava.
+            connection = saver.conn
+            assert isinstance(connection, AsyncConnection)
+            # Uma espera SQL bloqueante retém snapshot e pode causar deadlock
+            # com CREATE INDEX CONCURRENTLY. Cada tentativa termina antes da pausa.
+            while True:
+                cursor = await connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(current_schema() || ':forgehand-checkpointer-setup')) AS acquired"
+                )
+                row = await cursor.fetchone()
+                if row is not None and row["acquired"]:
+                    break
+                await asyncio.sleep(0.05)
+            try:
+                await saver.setup()
+            finally:
+                await connection.execute(
+                    "SELECT pg_advisory_unlock(hashtext(current_schema() || ':forgehand-checkpointer-setup'))"
+                )
             yield saver
     else:
         from langgraph.checkpoint.memory import MemorySaver
