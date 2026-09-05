@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fnmatch
+import hashlib
 import json
 import math
 import os
@@ -23,9 +24,9 @@ from pydantic import BaseModel, Field
 from app.evaluation.benchmark import _percentile
 from app.factory.build_strategy import BuildProfileRegistry
 from app.factory.sandbox import DockerBuildRunner, DockerCLI
-from app.factory.workspace import LocalGitWorkspaceManager
+from app.factory.workspace import LocalGitWorkspaceManager, SafeGitRunner
 from app.models.build import BuildPhase, BuildPhaseName, BuildProfile
-from app.infrastructure.scm import GitHubSCMClient
+from app.infrastructure.scm import GitHubSCMClient, SCMError
 from app.models.build_execution import BuildOutcome
 from app.models.factory import (
     BuildProfileSelection,
@@ -61,6 +62,9 @@ class FactoryResult(BaseModel):
     commit_sha: str | None = None
     ci: str | None = None
     hidden_check: bool = False
+    verified_commit_sha: str | None = None
+    verifier_sha256: str | None = None
+    verification_profile_digest: str | None = None
     scope_passed: bool = False
     changed_paths: list[str] = Field(default_factory=list)
     first_pass: bool = False
@@ -142,6 +146,79 @@ def summarize_factory(
     }
 
 
+class QualificationVerificationError(ValueError):
+    """A classified verification failure, safe to include in public reports."""
+
+
+async def _verify_publication(
+    case: FactoryCase, result: FactoryResult, github: httpx.AsyncClient
+) -> None:
+    response = await github.get(
+        f"/repos/{result.repository}/pulls/{result.pull_request}"
+    )
+    response.raise_for_status()
+    data = response.json()
+    head = data.get("head") or {}
+    base = data.get("base") or {}
+    repository = (result.repository or "").lower()
+    if (
+        data.get("number") != result.pull_request
+        or data.get("state") != "open"
+        or data.get("merged") is not False
+        or head.get("sha") != result.commit_sha
+        or head.get("ref") != result.branch
+        or (head.get("repo") or {}).get("full_name", "").lower() != repository
+        or base.get("sha") != case.base_sha
+        or base.get("ref") != case.base_ref
+        or (base.get("repo") or {}).get("full_name", "").lower() != repository
+    ):
+        raise QualificationVerificationError("publication_identity_changed")
+
+
+async def _verify_ci(result: FactoryResult, scm: GitHubSCMClient) -> bool:
+    assert result.repository and result.commit_sha
+    checks = await scm.fetch_checks(result.repository, result.commit_sha)
+    result.ci = checks.state
+    if checks.state != "success":
+        return False
+    # Neutral/skipped checks can coexist with success, but cannot establish it.
+    if not any(c.completed and c.conclusion == "success" for c in checks.checks):
+        result.technical_failure = "ci_without_successful_check"
+        return False
+    return True
+
+
+async def _published_paths(
+    workspace: Path, base_sha: str, commit_sha: str
+) -> list[str]:
+    """Inventory immutable Git objects, including both sides of every rename."""
+    max_chars = 1_000_000
+    git = SafeGitRunner(workspace, max_output_chars=max_chars)
+    ancestry = await git.run(
+        ["merge-base", "--is-ancestor", base_sha, commit_sha], check=False
+    )
+    if ancestry.exit_code != 0:
+        raise QualificationVerificationError("verification_base_not_ancestor")
+    diff = await git.run(
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            base_sha,
+            commit_sha,
+            "--",
+        ]
+    )
+    if len(diff.stdout) >= max_chars or (
+        diff.stdout and not diff.stdout.endswith("\0")
+    ):
+        raise QualificationVerificationError("diff_inventory_limit")
+    return sorted(set(diff.stdout[:-1].split("\0"))) if diff.stdout else []
+
+
 async def independent_check(
     case: FactoryCase,
     result: FactoryResult,
@@ -149,53 +226,34 @@ async def independent_check(
     github: httpx.AsyncClient,
     socket: str,
 ) -> None:
-    assert (
+    # Rechecks never inherit success from an earlier snapshot.
+    result.hidden_check = False
+    result.scope_passed = False
+    result.changed_paths = []
+    result.verified_commit_sha = None
+    result.verifier_sha256 = None
+    result.verification_profile_digest = None
+    if not (
         result.repository
         and result.pull_request
-        and result.commit_sha
         and result.branch
-    )
-    pull = await github.get(f"/repos/{result.repository}/pulls/{result.pull_request}")
-    pull.raise_for_status()
-    data = pull.json()
-    if data["head"]["sha"] != result.commit_sha or data["head"]["ref"] != result.branch:
-        raise ValueError("publication_identity_changed")
+        and result.commit_sha
+        and re.fullmatch(r"[0-9a-f]{40}", result.commit_sha)
+    ):
+        raise QualificationVerificationError("publication_identity_missing")
+    await _verify_publication(case, result, github)
     scm = GitHubSCMClient(
         token=github.headers.get("Authorization", "").removeprefix("Bearer "),
         client=github,
     )
-    result.ci = (await scm.fetch_checks(result.repository, result.commit_sha)).state
-    if result.ci != "success":
-        return
-    paths: list[str] = []
-    for page in range(1, 31):
-        response = await github.get(
-            f"/repos/{result.repository}/pulls/{result.pull_request}/files",
-            params={"per_page": 100, "page": page},
-        )
-        response.raise_for_status()
-        batch = response.json()
-        paths.extend(item["filename"] for item in batch)
-        paths.extend(
-            item["previous_filename"] for item in batch if item.get("previous_filename")
-        )
-        if len(batch) < 100:
-            break
-    else:
-        raise ValueError("diff_inventory_limit")
-    result.changed_paths = sorted(set(paths))
-    result.scope_passed = bool(paths) and all(
-        any(fnmatch.fnmatchcase(p, scope) for scope in case.expected_paths)
-        for p in paths
-    )
-    if not result.scope_passed:
+    if not await _verify_ci(result, scm):
         return
     profiles = json.loads((fixture_root / "profiles.json").read_text())
     profile = BuildProfile.model_validate(profiles[f"{case.ecosystem}-fixture"])
     extension = "py" if case.ecosystem == "python" else "cjs"
     script_name = f"__forgehand_verify.{extension}"
     script = (fixture_root / "hidden" / f"{case.ecosystem}.{extension}").read_text()
-    # Fresh clone of the *published commit*, never the agent's residual checkout.
+    # Fresh clone of the published commit, never the agent's residual checkout.
     root = Path(tempfile.mkdtemp(prefix="forgehand-independent-"))
     manager = LocalGitWorkspaceManager(root, approved_hosts=["github.com"])
     order = WorkOrder(
@@ -208,11 +266,22 @@ async def independent_check(
         requested_outcome=case.request,
         acceptance_criteria=case.acceptance_criteria,
     )
-    lease = await manager.provision(str(uuid4()), order)
+    lease = None
+    runner = None
     try:
-        script_path = Path(lease.local_path) / script_name
+        lease = await manager.provision(str(uuid4()), order)
+        workspace = Path(lease.local_path)
+        paths = await _published_paths(workspace, case.base_sha, result.commit_sha)
+        result.changed_paths = paths
+        result.scope_passed = bool(paths) and all(
+            any(fnmatch.fnmatchcase(path, scope) for scope in case.expected_paths)
+            for path in paths
+        )
+        if not result.scope_passed:
+            return
+        script_path = workspace / script_name
         if script_path.exists() or script_path.is_symlink():
-            raise ValueError("reserved_verifier_path")
+            raise QualificationVerificationError("reserved_verifier_path")
         script_path.write_text(script)
         verification = profile.model_copy(
             update={
@@ -228,6 +297,8 @@ async def independent_check(
                 )
             }
         )
+        result.verifier_sha256 = hashlib.sha256(script.encode()).hexdigest()
+        result.verification_profile_digest = verification.fingerprint()
         runner = DockerBuildRunner(
             BuildProfileRegistry({verification.name: verification}),
             DockerCLI(socket_path=socket),
@@ -240,7 +311,6 @@ async def independent_check(
             profile_digest=verification.fingerprint(),
         )
         evidence = await runner.run(lease, selection)
-        result.hidden_check = evidence.outcome == BuildOutcome.SUCCESS
         if evidence.outcome in {
             BuildOutcome.INFRASTRUCTURE_ERROR,
             BuildOutcome.POLICY_REJECTION,
@@ -249,9 +319,33 @@ async def independent_check(
         if runner.active_containers:
             result.technical_failure = "sandbox_cleanup_pending"
             return
+        if evidence.outcome != BuildOutcome.SUCCESS or len(evidence.phases) != 1:
+            return
+        phase = evidence.phases[0]
+        if (
+            phase.phase != BuildPhaseName.TEST
+            or phase.outcome != BuildOutcome.SUCCESS
+            or phase.exit_code != 0
+            or phase.cleanup_failed
+            or phase.output_truncated
+            or phase.error_code
+            or phase.stdout.rstrip().splitlines()[-1:] != ["FORGEHAND_VERIFIER_OK"]
+        ):
+            return
+        # A successful build proves one SHA. Only attest the PR if it still
+        # points to that SHA and CI has not become pending/failed in the meantime.
+        if not await _verify_ci(result, scm):
+            return
+        await _verify_publication(case, result, github)
     finally:
-        if not manager.journal.containers():
-            await manager.cleanup(lease)
+        if not manager.journal.containers() and not (
+            runner and runner.active_containers
+        ):
+            if lease is not None:
+                await manager.cleanup(lease)
+            shutil.rmtree(root)
+    result.verified_commit_sha = result.commit_sha
+    result.hidden_check = True
 
 
 async def run_factory_case(
@@ -266,7 +360,9 @@ async def run_factory_case(
 ) -> FactoryResult:
     started = time.monotonic()
     result = FactoryResult(
-        case_id=case.id, repository=repository, base_sha=case.base_sha,
+        case_id=case.id,
+        repository=repository,
+        base_sha=case.base_sha,
         base_ref=case.base_ref,
     )
     result.intake_key = f"qualification:{run_id}:{case.id}"
@@ -350,6 +446,15 @@ async def run_factory_case(
             result.technical_failure = "timeout"
         if result.outcome == "ready_for_human_review":
             await independent_check(case, result, fixture_root, github, socket)
+    except QualificationVerificationError as exc:
+        result.technical_failure = str(exc)
+    except SCMError as exc:
+        code = str(exc)
+        result.technical_failure = (
+            code
+            if re.fullmatch(r"check_inventory_(?:malformed|incomplete|changed|limit)", code)
+            else "scm_error"
+        )
     except httpx.HTTPError:
         result.technical_failure = (
             "http_error" if result.workflow_id else "intake_unconfirmed"
@@ -503,7 +608,14 @@ async def main_async(args: argparse.Namespace) -> int:
         raise ValueError("FORGEHAND_API_KEY and GITHUB_TOKEN required")
     cases = [
         FactoryCase.model_validate(
-            {**value, **({"base_ref": args.base_ref} if getattr(args, "base_ref", None) else {})}
+            {
+                **value,
+                **(
+                    {"base_ref": args.base_ref}
+                    if getattr(args, "base_ref", None)
+                    else {}
+                ),
+            }
         )
         for value in json.loads((args.fixtures / "cases.json").read_text())
     ]
@@ -549,7 +661,9 @@ def main() -> None:
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     parser.add_argument("--python-repository", required=True)
     parser.add_argument("--node-repository", required=True)
-    parser.add_argument("--base-ref", help="Fixture branch pinned to the manifest SHA (default: main)")
+    parser.add_argument(
+        "--base-ref", help="Fixture branch pinned to the manifest SHA (default: main)"
+    )
     parser.add_argument("--total-budget", type=float, required=True)
     parser.add_argument("--fixtures", type=Path, default=Path("benchmarks/factory"))
     parser.add_argument("--socket", default="/var/run/docker.sock")

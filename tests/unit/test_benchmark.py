@@ -113,3 +113,55 @@ async def test_run_case_forwards_delivery_and_reports_it():
     seen.clear()
     await run_case(client, plain, "key")
     assert "delivery" not in seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["failed", "cancelled", "awaiting_decision", "completed", "ready_for_human_review"],
+)
+async def test_first_pass_requires_successful_completion(status):
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(202, json={"workflow_id": "wf"})
+        return httpx.Response(
+            200,
+            json={
+                "status": status,
+                "tasks": [{"attempts": 1}],
+                "usage": {"cost_usd": 0.2},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://api.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await run_case(
+            client,
+            BenchmarkCase(id="c", project_id="p", request="execute este pedido"),
+            "key",
+        )
+    assert result.first_pass is (status in {"completed", "ready_for_human_review"})
+
+
+def test_summary_counts_failure_cost_and_rejects_inconsistent_first_pass():
+    report = summarize(
+        [
+            CaseResult(case_id="a", completed=True, first_pass=True, cost_usd=0.2),
+            CaseResult(case_id="b", completed=False, first_pass=True, cost_usd=0.8),
+        ]
+    )
+    assert report["first_pass_rate"] == 0.5
+    assert report["cost_per_completed_usd"] == pytest.approx(1.0)
+
+
+def test_no_completions_has_no_defined_cost_per_completion():
+    report = summarize([CaseResult(case_id="a", cost_usd=0.8)])
+    assert report["cost_per_completed_usd"] is None
+
+
+def test_empty_suite_never_passes_even_with_zero_rate_thresholds():
+    report = summarize(
+        [], BenchmarkPolicy(min_completion_rate=0, min_first_pass_rate=0)
+    )
+    assert report["quality_gate"]["passed"] is False

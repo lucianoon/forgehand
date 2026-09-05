@@ -568,13 +568,13 @@ class GitHubSCMClient:
     async def fetch_checks(self, repository: str, sha: str) -> CheckRunsResult:
         """Snapshot dos check runs (Checks API) + statuses (Status API) do
         commit. Statuses publicados pelo próprio Forgehand são ignorados."""
-        runs_payload = await self._request(
-            "GET",
+        runs = await self._check_inventory(
             f"/repos/{repository}/commits/{sha}/check-runs",
-            params={"per_page": 100},
+            "check_runs",
+            params={"filter": "latest"},
         )
         checks: list[CheckRun] = []
-        for run in runs_payload.get("check_runs", []) or []:
+        for run in runs:
             output = run.get("output") or {}
             summary_parts = [
                 str(part)
@@ -590,10 +590,10 @@ class GitHubSCMClient:
                     summary=" — ".join(summary_parts)[:500],
                 )
             )
-        status_payload = await self._request(
-            "GET", f"/repos/{repository}/commits/{sha}/status"
+        statuses = await self._check_inventory(
+            f"/repos/{repository}/commits/{sha}/status", "statuses"
         )
-        for status in status_payload.get("statuses", []) or []:
+        for status in statuses:
             context = str(status.get("context", "status"))
             if context.startswith(_FORGEHAND_STATUS_PREFIX):
                 continue
@@ -623,11 +623,87 @@ class GitHubSCMClient:
             if check.summary:
                 line += f" — {check.summary}"
             failures.append(line)
-        annotations, paths = await self._annotations(repository, runs_payload, failed)
+        annotations, paths = await self._annotations(
+            repository, {"check_runs": runs}, failed
+        )
         failures.extend(annotations)
         return CheckRunsResult(
             state="failure", checks=checks, failures=failures, failure_paths=paths
         )
+
+    async def _check_inventory(
+        self,
+        path: str,
+        key: Literal["check_runs", "statuses"],
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read current CI evidence completely or refuse to classify it.
+
+        The combined status endpoint already selects the latest status per
+        context. Keep it rather than mixing historical statuses into the gate.
+        Pagination stays on the original endpoint, never on a server-supplied URL.
+        """
+        items: list[dict[str, Any]] = []
+        identities: set[str | int] = set()
+        expected_count: int | None = None
+        page_size, max_pages = 100, 30
+        for page in range(1, max_pages + 1):
+            response = await self._raw(
+                "GET",
+                path,
+                params={**(params or {}), "per_page": page_size, "page": page},
+            )
+            self._raise_for_status(response)
+            try:
+                payload = response.json()
+            except ValueError:
+                raise SCMError("check_inventory_malformed") from None
+            if not isinstance(payload, dict):
+                raise SCMError("check_inventory_malformed")
+            batch = payload.get(key)
+            if (
+                not isinstance(batch, list)
+                or len(batch) > page_size
+                or not all(isinstance(item, dict) for item in batch)
+            ):
+                raise SCMError("check_inventory_malformed")
+            count = payload.get("total_count")
+            if "total_count" in payload and (type(count) is not int or count < 0):
+                raise SCMError("check_inventory_malformed")
+            if count is not None and count > page_size * max_pages:
+                raise SCMError("check_inventory_limit")
+            if page == 1:
+                expected_count = count
+            elif count != expected_count:
+                raise SCMError("check_inventory_changed")
+            for item in batch:
+                if key == "statuses":
+                    context = item.get("context")
+                    if not isinstance(context, str) or not context:
+                        raise SCMError("check_inventory_malformed")
+                    identity: str | int = context.casefold()
+                else:
+                    run_id = item.get("id")
+                    if type(run_id) is not int or run_id <= 0:
+                        raise SCMError("check_inventory_malformed")
+                    identity = run_id
+                if identity in identities:
+                    raise SCMError("check_inventory_changed")
+                identities.add(identity)
+            items.extend(batch)
+            has_next = "next" in response.links
+            if expected_count is not None and len(items) > expected_count:
+                raise SCMError("check_inventory_changed")
+            if expected_count == len(items):
+                if has_next:
+                    raise SCMError("check_inventory_incomplete")
+                return items
+            if len(batch) < page_size:
+                if has_next or expected_count is not None:
+                    raise SCMError("check_inventory_incomplete")
+                return items
+        raise SCMError("check_inventory_limit")
 
     async def _annotations(
         self, repository: str, runs_payload: dict[str, Any], failed: list[CheckRun]

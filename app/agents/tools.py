@@ -410,6 +410,7 @@ class ToolLoop:
         *,
         token_ceiling: int | None = None,
         task_id: str | None = None,
+        refresh_paths: list[str] | None = None,
     ) -> ToolLoopOutcome:
         if not self.has_tools:
             result = await self._router.complete(tier, request)
@@ -429,6 +430,79 @@ class ToolLoop:
         force_final = False
         stopped_reason = "final_answer"
         run_id = str(uuid4())
+
+        # Controller-selected recovery reads use the same confinement, hooks
+        # and call budget as model-selected reads. Never create a second reader
+        # from paths/roots supplied in checkpoint or model payloads.
+        if refresh_paths and self.has_tool("read_file"):
+            refresh_calls: list[ToolCall] = []
+            refresh_results: list[ToolResult] = []
+            for path in dict.fromkeys(refresh_paths):
+                if calls_made >= min(4, self._max_tool_calls) or (
+                    token_ceiling is not None and token_ceiling <= 0
+                ):
+                    break
+                calls_made += 1
+                call = ToolCall(
+                    id=f"refresh-{run_id}-{calls_made}",
+                    name="read_file",
+                    arguments={"path": path},
+                )
+                content, ok = await self._execute_with_hooks(
+                    call,
+                    ToolHookCall(
+                        run_id=run_id,
+                        ordinal=calls_made,
+                        tool="read_file",
+                        agent=self._agent_name,
+                        task_id=task_id,
+                    ),
+                )
+                refresh_calls.append(call)
+                refresh_results.append(
+                    ToolResult(
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content=content,
+                        is_error=not ok,
+                    )
+                )
+                trace.append(
+                    {
+                        "round": 0,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                        "ok": ok,
+                        "chars": len(content),
+                        "preview": content[: self._preview_chars],
+                        "source": "recovery_refresh",
+                    }
+                )
+            if refresh_calls:
+                force_final = calls_made >= self._max_tool_calls
+                if force_final:
+                    stopped_reason = "max_tool_calls"
+                messages.extend(
+                    [
+                        Message(
+                            role="assistant",
+                            content="Leituras de recuperação solicitadas pelo controlador.",
+                            tool_calls=refresh_calls,
+                        ),
+                        Message(
+                            role="user",
+                            tool_results=refresh_results,
+                            content=(
+                                "Leituras atuais dos arquivos envolvidos na tentativa anterior. "
+                                "Use as leituras bem-sucedidas para copiar código; erros de "
+                                "leitura e stdout/stderr de comandos não são código-fonte. "
+                                "A numeração de linhas não faz parte do arquivo. "
+                                "O grounding inicial pode estar desatualizado."
+                                + ("\n" + _FINAL_ANSWER_NOTE if force_final else "")
+                            ),
+                        ),
+                    ]
+                )
 
         while True:
             rounds += 1

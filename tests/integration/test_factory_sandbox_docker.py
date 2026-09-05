@@ -150,6 +150,12 @@ async def test_independent_checks_reject_base_and_accept_reference_fix(
                 "round(sum(prices), 2)", "round(sum(prices) * (1-discount), 2)"
             )
         )
+        (root / "tests/test_discount.py").write_text(
+            "import unittest\nfrom orders import total\n"
+            "class DiscountRegression(unittest.TestCase):\n"
+            " def test_discount_applied_once(self):\n"
+            "  self.assertEqual(total([10, 30], 0.25), 30)\n"
+        )
     elif case["hidden_case"] == "tests":
         (root / "tests/test_regression.py").write_text(
             "import unittest\nfrom orders import line_total\nclass Regression(unittest.TestCase):\n def test_zero(self): self.assertEqual(line_total(4,0),0)\n def test_fraction(self): self.assertEqual(line_total(1.25,3),3.75)\n def test_negative(self):\n  with self.assertRaises(ValueError): line_total(4,-1)\n"
@@ -169,6 +175,15 @@ async def test_independent_checks_reject_base_and_accept_reference_fix(
                 "content": path.read_text()
                 + "\nmodule.exports.uniqueTags = tags => [...new Set(tags.map(tag => tag.trim().toLowerCase()).filter(Boolean))];\n"
             },
+        )
+        (root / "tests/tags.test.cjs").write_text(
+            "const {test} = require('node:test');\n"
+            "const assert = require('node:assert/strict');\n"
+            "const {uniqueTags} = require('../catalog.cjs');\n"
+            "test('tags normalize and preserve first order', () => {\n"
+            " assert.deepEqual(uniqueTags([' Foo ', 'BAR', 'foo', ' ']), ['foo', 'bar']);\n"
+            " assert.deepEqual(uniqueTags([]), []);\n"
+            "});\n"
         )
     else:
         (root / "catalog.cjs").write_text(

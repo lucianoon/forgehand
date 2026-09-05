@@ -62,6 +62,14 @@ def _latest_build_validation(plan: list[Any]) -> dict[str, Any] | None:
     return None
 
 
+def _snapshot_interrupts(snapshot: Any) -> list[Any]:
+    interrupts = list(getattr(snapshot, "interrupts", ()) or ())
+    if not interrupts:
+        for task in getattr(snapshot, "tasks", ()) or ():
+            interrupts.extend(getattr(task, "interrupts", ()) or ())
+    return interrupts
+
+
 class WorkflowNotFound(LookupError):
     pass
 
@@ -76,6 +84,10 @@ class WorkflowLeaseLost(RuntimeError):
 
 class WorkflowCancelled(RuntimeError):
     pass
+
+
+class WorkflowResumeUncertain(RuntimeError):
+    """A legacy approval cannot safely be replayed after its worker was lost."""
 
 
 class WorkflowAlreadyTerminal(ValueError):
@@ -176,6 +188,9 @@ class WorkflowService:
             try:
                 await self._run_job_with_heartbeat(job)
             except asyncio.CancelledError:
+                # Shutdown interrupted execution. Leave the delivery leased so
+                # another worker can reclaim it; never ACK unfinished work.
+                failed = True
                 raise
             except WorkflowLeaseLost:
                 failed = True
@@ -183,6 +198,15 @@ class WorkflowService:
                     "Worker perdeu o lease do workflow %s; execução cancelada.",
                     job.workflow_id,
                 )
+            except WorkflowResumeUncertain:
+                failed = True
+                # Preserve the checkpoint and its human gate. A fresh explicit
+                # decision can enqueue a bound resume; never mark the graph failed.
+                await self._job_queue.fail(job, "resume_decision_unbound")
+                await self._publish_event(
+                    "workflow.resume_blocked", {"workflow_id": job.workflow_id}
+                )
+                logger.warning("Resume requires a fresh decision: %s", job.workflow_id)
             except WorkflowCancelled:
                 failed = True
                 await self._publish_event(
@@ -206,9 +230,65 @@ class WorkflowService:
                 if not failed:
                     await self._job_queue.acknowledge(job)
 
-    async def _invoke_job(self, job: Any) -> None:
+    async def _job_invocation(self, job: Any) -> tuple[bool, Any]:
         from langgraph.types import Command
 
+        config = self._config(job.workflow_id)
+        if job.kind == "start":
+            if job.attempt_count > 1:
+                snapshot = await self._app.aget_state(config)
+                if getattr(snapshot, "created_at", None) or snapshot.values:
+                    # None continues checkpointed work; a new payload restarts it.
+                    if _snapshot_interrupts(snapshot) or not snapshot.next:
+                        return False, None
+                    return True, None
+            return True, job.payload
+
+        payload = job.payload
+        if isinstance(payload, dict):
+            if (
+                type(payload.get("resume_version")) is not int
+                or payload["resume_version"] != 1
+                or not isinstance(payload.get("decision"), str)
+                or not payload["decision"].strip()
+            ):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            ids = payload.get("interrupt_ids")
+            if (
+                not isinstance(ids, list)
+                or not ids
+                or not all(isinstance(i, str) and i for i in ids)
+            ):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            snapshot = await self._app.aget_state(config)
+            if not (getattr(snapshot, "created_at", None) or snapshot.values):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            interrupts = _snapshot_interrupts(snapshot)
+            pending_ids = {item.id for item in interrupts}
+            matching = [identifier for identifier in ids if identifier in pending_ids]
+            if matching:
+                return True, Command(
+                    resume={identifier: payload["decision"] for identifier in matching}
+                )
+            if interrupts or not snapshot.next:
+                # The approval was consumed or the graph is now at a different
+                # human gate. An old job must never approve that new decision.
+                return False, None
+            return True, None
+        if not isinstance(payload, str) or not payload.strip():
+            raise WorkflowResumeUncertain(job.workflow_id)
+        if job.attempt_count > 1:
+            snapshot = await self._app.aget_state(config)
+            if (
+                getattr(snapshot, "created_at", None) or snapshot.values
+            ) and not _snapshot_interrupts(snapshot):
+                return bool(snapshot.next), None
+            # Old string jobs cannot identify which pending gate was approved.
+            # Preserve state and require an explicit fresh decision.
+            raise WorkflowResumeUncertain(job.workflow_id)
+        return True, Command(resume=payload)
+
+    async def _invoke_job(self, job: Any) -> None:
         # Span raiz do job: os spans de LLM do grafo aninham aqui via
         # contexto do OTel (contextvars sobrevivem ao fan-out paralelo).
         span = (
@@ -234,7 +314,15 @@ class WorkflowService:
                 client_id=job.owner_client_id,
             )
         ):
-            if manager and job.kind == "resume" and job.payload == "retry":
+            should_invoke, graph_input = await self._job_invocation(job)
+            if not should_invoke:
+                return
+            decision = (
+                job.payload.get("decision")
+                if isinstance(job.payload, dict) and job.payload.get("resume_version") == 1
+                else job.payload
+            )
+            if manager and job.kind == "resume" and decision == "retry":
                 retained = manager.journal.get(job.workflow_id)
                 if retained and retained.state in {
                     WorkspaceLifecycle.RELEASED,
@@ -253,12 +341,7 @@ class WorkflowService:
             if manager and self._build_runner is not None:
                 if not await self._build_runner.retry_cleanup(job.workflow_id):
                     raise WorkspaceBusy("sandbox_cleanup_pending")
-            if job.kind == "start":
-                await self._app.ainvoke(job.payload, self._config(job.workflow_id))
-            else:
-                await self._app.ainvoke(
-                    Command(resume=job.payload), self._config(job.workflow_id)
-                )
+            await self._app.ainvoke(graph_input, self._config(job.workflow_id))
 
     async def _reconcile_loop(self) -> None:
         while True:
@@ -602,7 +685,9 @@ class WorkflowService:
 
     # ------------------------------------------------------------------
     async def decide(self, workflow_id: str, decision: str) -> None:
-        status = await self.get(workflow_id)  # levanta WorkflowNotFound
+        await self.get(workflow_id)  # levanta WorkflowNotFound
+        snapshot = await self._app.aget_state(self._config(workflow_id))
+        interrupts = _snapshot_interrupts(snapshot)
         if decision == "retry" and self._workspace_manager is not None:
             lease = self._workspace_manager.journal.get(workflow_id)
             if lease and lease.state in {
@@ -612,7 +697,7 @@ class WorkflowService:
                 raise NoPendingDecision(
                     "Workspace expirado; crie uma nova ordem de trabalho."
                 )
-        if status["pending_decision"] is None:
+        if not interrupts:
             raise NoPendingDecision(
                 f"Workflow {workflow_id} não está aguardando decisão."
             )
@@ -624,7 +709,11 @@ class WorkflowService:
             project_id=access.project_id,
             owner_client_id=access.owner_client_id,
             kind="resume",
-            payload=decision,
+            payload={
+                "resume_version": 1,
+                "decision": decision,
+                "interrupt_ids": [item.id for item in interrupts],
+            },
         )
 
     async def cancel(self, workflow_id: str) -> None:
