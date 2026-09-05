@@ -60,6 +60,7 @@ def test_team_installation_crash_backup_and_restore(tmp_path, capsys):
     repository = probe / "repository"
     repository.mkdir(parents=True)
     (repository / "orders.py").write_text("def total(values):\n    return sum(values)\n")
+    (repository / ".gitignore").write_text("__pycache__/\n")
     (repository / ".env.example").write_text("PROJECT_EXAMPLE=fixture-only\n")
     (repository / ".env").write_text("PROJECT_FIXTURE=not-a-real-secret\n")
     (repository / "tests").mkdir()
