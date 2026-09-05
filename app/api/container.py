@@ -217,6 +217,7 @@ class LeaseBoundRuntimeFactory:
         judge = LLMJudge(
             self._router,
             validation_pipeline=pipeline,
+            require_build_evidence=True,
             tools=build_agent_tools(settings, lease.local_path, role="judge"),
             max_tool_calls=settings.agent_tools_max_calls_judge,
             hooks=self._hooks,

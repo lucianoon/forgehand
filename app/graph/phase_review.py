@@ -135,6 +135,10 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
             and not factory_ready_for_review(state)
         ):
             reason = f"factory_delivery_{state.delivery_result.ci_state}"
+        elif state.budget_blocked_reason and state.budget_blocked_reason.startswith(
+            "llm_call_failed"
+        ):
+            reason = "llm_call_failed"
         elif state.budget_exhausted:
             reason = "budget_exhausted"
         elif state.iterations_exhausted and state.tasks_needing_replan:
@@ -182,6 +186,7 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
                     for t in state.escalated_tasks
                 ],
                 "usage": state.usage,
+                "budget_blocked_reason": state.budget_blocked_reason,
                 "iteration": state.iteration,
                 "options": options,
             }
@@ -216,14 +221,16 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
         updates: dict[str, int | float] = {
             "max_iterations": budget.max_iterations + 1,
         }
-        if state.usage.get("tokens", 0) >= budget.max_tokens:
-            updates["max_tokens"] = int(state.usage["tokens"]) + max(
-                budget.max_tokens, int(state.usage["tokens"])
-            )
-        if state.usage.get("cost_usd", 0.0) >= budget.max_cost_usd:
-            updates["max_cost_usd"] = float(state.usage["cost_usd"]) + max(
-                budget.max_cost_usd, float(state.usage["cost_usd"])
-            )
+        used_tokens = int(
+            state.usage.get("tokens", 0) + state.usage.get("unconfirmed_tokens", 0)
+        )
+        used_cost = state.usage.get("cost_usd", 0.0) + state.usage.get(
+            "unconfirmed_cost_usd", 0.0
+        )
+        if state.budget_blocked_reason is not None or used_tokens >= budget.max_tokens:
+            updates["max_tokens"] = 2 * max(budget.max_tokens, used_tokens)
+        if state.budget_blocked_reason is not None or used_cost >= budget.max_cost_usd:
+            updates["max_cost_usd"] = 2 * max(budget.max_cost_usd, used_cost)
         if elapsed >= budget.max_wall_clock_seconds:
             updates["max_wall_clock_seconds"] = int(elapsed) + max(
                 60, budget.max_wall_clock_seconds // 4
@@ -232,15 +239,18 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
         for task in state.escalated_tasks:
             task_budget = task.budget
             budget_updates: dict[str, int | float] = {}
-            if task_budget.consumed_tokens >= task_budget.max_tokens:
-                budget_updates["max_tokens"] = task_budget.consumed_tokens + max(
-                    task_budget.max_tokens, task_budget.consumed_tokens
-                )
-            if task_budget.consumed_cost_usd >= task_budget.max_cost_usd:
-                budget_updates["max_cost_usd"] = task_budget.consumed_cost_usd + max(
-                    task_budget.max_cost_usd,
-                    task_budget.consumed_cost_usd,
-                )
+            task_tokens = task_budget.consumed_tokens + task_budget.unconfirmed_tokens
+            task_cost = task_budget.consumed_cost_usd + task_budget.unconfirmed_cost_usd
+            if (
+                state.budget_blocked_reason is not None
+                or task_tokens >= task_budget.max_tokens
+            ):
+                budget_updates["max_tokens"] = 2 * max(task_budget.max_tokens, task_tokens)
+            if (
+                state.budget_blocked_reason is not None
+                or task_cost >= task_budget.max_cost_usd
+            ):
+                budget_updates["max_cost_usd"] = 2 * max(task_budget.max_cost_usd, task_cost)
             retryable_escalations.append(
                 task.model_copy(
                     update={
@@ -254,6 +264,8 @@ def build_review_nodes(deps: NodeDependencies) -> dict[str, Any]:
             "budget": budget.model_copy(update=updates),
             "plan": retryable_escalations,
             "human_decision": None,
+            "budget_blocked_reason": None,
+            "error": None,
             "phase": WorkflowPhase.REPLANNING,
         }
 

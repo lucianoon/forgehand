@@ -33,6 +33,9 @@ from app.graph.contracts import (
     UsageReport,
 )
 from app.graph.state import WorkflowPhase, WorkflowState
+from app.infrastructure.llm_budget import (
+    CallBudget, active_call_budget, call_budget_scope,
+)
 from app.infrastructure.tracing import current_trace_id
 from app.models.build_execution import BuildOutcome, BuildRunResult
 from app.models.factory import FactoryStage
@@ -76,6 +79,7 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
         # tarefa por vez evita que duas mutações concorrentes contaminem a
         # evidência ou disputem o mesmo sandbox do workflow.
         dispatchable = ready[:1] if state.work_order is not None else ready
+        selected_tasks: list[AgentTask] = []
         for t in dispatchable:
             selected_registry = deps.active_registry(state.workspace)
             dispatch_policy = getattr(selected_registry, "dispatch_policy", None)
@@ -85,6 +89,18 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
                 if current >= limit:
                     continue
                 dispatched_by_agent[agent_name] = current + 1
+            selected_tasks.append(t)
+        if not selected_tasks:
+            return "human_gate"
+        token_allowance = max(
+            0, state.budget.max_tokens - int(state.usage.get("tokens", 0))
+            - int(state.usage.get("unconfirmed_tokens", 0)),
+        ) // len(selected_tasks)
+        cost_allowance = max(
+            0.0, state.budget.max_cost_usd - state.usage.get("cost_usd", 0.0)
+            - state.usage.get("unconfirmed_cost_usd", 0.0),
+        ) / len(selected_tasks)
+        for t in selected_tasks:
             # só dependências DIRETAS — mantém o contexto (e os tokens) limitados
             dep_results = {
                 str(d): results_by_id[d] for d in t.dependencies if d in results_by_id
@@ -105,6 +121,8 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
                         factory_stage=state.factory_stage,
                         build_strategy=state.build_strategy,
                         owner_client_id=state.owner_client_id,
+                        token_allowance=token_allowance,
+                        cost_allowance_usd=cost_allowance,
                     ),
                 )
             )
@@ -235,6 +253,9 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
     ) -> dict[str, Any]:
         """Tentativa que não chegou a produzir resultado: budget ou exceção."""
         task = payload.task
+        call_budget = active_call_budget()
+        tokens = call_budget.tokens if call_budget is not None else 0
+        cost = call_budget.cost_usd if call_budget is not None else 0.0
         attempt = TaskAttempt(
             attempt_number=attempt_number,
             agent_name=task.assigned_agent or "unknown",
@@ -243,6 +264,8 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
             finished_at=datetime.now(timezone.utc),
             outcome=TaskStatus.FAILED,
             failure_reason=reason,
+            tokens_used=tokens,
+            cost_usd=cost,
             trace_id=current_trace_id(),
             factory_stage=payload.factory_stage,
             build_strategy=payload.build_strategy,
@@ -250,6 +273,7 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
         failed = task.model_copy(
             update={
                 "attempts": [*task.attempts, attempt],
+                "budget": task.budget.charge(tokens, cost),
                 "updated_at": datetime.now(timezone.utc),
             }
         )
@@ -379,9 +403,24 @@ def build_execution_nodes(deps: NodeDependencies) -> dict[str, Any]:
         for task in state.plan:
             if task.status != TaskStatus.RUNNING:
                 continue
-            judged, evaluation, judge_usage = await judge_task(
-                task, state.context, deps.active_judge(state.workspace)
+            remaining = CallBudget(
+                max_tokens=max(0, task.budget.max_tokens - task.budget.consumed_tokens
+                               - task.budget.unconfirmed_tokens),
+                max_cost_usd=max(0.0, task.budget.max_cost_usd - task.budget.consumed_cost_usd
+                                - task.budget.unconfirmed_cost_usd),
             )
+            # Old checkpoints can reach the fallback without execute_task's
+            # scope. Reserve against both this task and the surrounding workflow.
+            with call_budget_scope(remaining):
+                judged, evaluation, judge_usage = await judge_task(
+                    task, state.context, deps.active_judge(state.workspace)
+                )
+            judged = judged.model_copy(update={"budget": task.budget.charge(
+                max(remaining.tokens, judge_usage.tokens),
+                max(remaining.cost_usd, judge_usage.cost_usd),
+                unconfirmed_tokens=remaining.unconfirmed_tokens,
+                unconfirmed_cost_usd=remaining.unconfirmed_cost_usd,
+            )})
             updates.append(judged)
             if evaluation is not None:
                 evaluations.append(evaluation)

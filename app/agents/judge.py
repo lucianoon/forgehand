@@ -34,6 +34,8 @@ from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import (
     ObjectiveValidationPipeline,
     ObjectiveValidator,
+    ValidationSignal,
+    build_validation_signals,
 )
 from app.graph.nodes import JudgingOutcome, UsageReport
 from app.models.task import AcceptanceCriterion, AgentTask, EvaluationResult
@@ -55,7 +57,12 @@ CRITÉRIOS AVALIADOS; em required_changes, instruções ACIONÁVEIS para o \
 executor corrigir — serão anexadas à próxima tentativa;
 - approved=true somente se TODOS os critérios avaliados pontuam >= 0.7;
 - avalie também: correção aparente, segurança, manutenibilidade e \
-consistência interna entre os arquivos;
+consistência interna entre os arquivos, sempre dentro dos critérios listados;
+- julgue o contrato desta tarefa incremental. Não invente um requisito de \
+criar testes quando o critério exige comportamento e essa implementação pode \
+ser demonstrada pelo código. Exija testes novos quando o contrato desta tarefa \
+pedir cobertura ou regressão. Não trate aprovação local como aprovação da \
+entrega: tarefas dependentes, validação integrada e gates finais continuam obrigatórios;
 - critérios objetivos (testes, lint, tipos, arquivos criados/alterados, \
 conteúdo, validade de citations) já foram verificados por código e NÃO estão \
 na sua lista; não os julgue nem os mencione em failures. Quando um critério \
@@ -99,6 +106,7 @@ class LLMJudge:
         max_tool_calls: int = 4,
         independence: str = "bindings",
         critical_quorum: int = 1,
+        require_build_evidence: bool = False,
         hooks: ToolHookDispatcher | None = None,
     ):
         self._router = router
@@ -115,6 +123,7 @@ class LLMJudge:
         # independência. Tarefas críticas recebem `critical_quorum` vereditos.
         self._independence = independence
         self._critical_quorum = max(1, critical_quorum)
+        self._require_build_evidence = require_build_evidence
         self._validation_pipeline = validation_pipeline or ObjectiveValidationPipeline(
             validators or []
         )
@@ -175,7 +184,14 @@ class LLMJudge:
 
         # Sinais objetivos — veto estrutural sobre a opinião do LLM
         signals = await self._validation_pipeline.validate(task)
-        by_name = {s.name: s for s in signals}
+        signals.extend(build_validation_signals(task, required=self._require_build_evidence))
+        # An additional successful validator must never erase a failure from
+        # another source with the same signal name.
+        by_name: dict[str, ValidationSignal] = {}
+        for signal in signals:
+            previous = by_name.get(signal.name)
+            if previous is None or previous.passed is not False:
+                by_name[signal.name] = signal
         apply_failures = self._apply_failures(task)
         objective_ok = (
             all(s.passed is not False for s in signals) and not apply_failures

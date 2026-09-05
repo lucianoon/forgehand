@@ -217,6 +217,26 @@ def test_missing_evidence_or_partial_acceptance_cannot_publish():
         factory_delivery_config(state)
 
 
+def test_approved_implementation_cannot_publish_before_dependent_regression_tests():
+    state = approved_state()
+    implementation = state.plan[0]
+    regression = AgentTask(
+        title="Adicionar testes de regressão",
+        description="Cobrir desconto zero, parcial, integral e lista vazia",
+        capability=Capability.TESTING,
+        acceptance_criteria=["Cobertura de todos os casos solicitados"],
+        dependencies=[implementation.id],
+    )
+    state.plan.append(regression)
+    with pytest.raises(ValueError, match="requires_all_tasks_approved"):
+        factory_delivery_config(state)
+    regression.status = TaskStatus.COMPLETED
+    with pytest.raises(ValueError, match="validation_missing_or_failed"):
+        factory_delivery_config(state)
+    regression.attempts = [implementation.attempts[-1].model_copy(deep=True)]
+    assert factory_delivery_config(state).repository == "acme/widget"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "paths,expected", [(["b.py"], 1), (["unknown.py"], 0), ([], 0)]

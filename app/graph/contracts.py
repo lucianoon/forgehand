@@ -109,6 +109,8 @@ class ExecutionPayload(BaseModel):
     factory_stage: FactoryStage | None = None
     build_strategy: BuildProfileSelection | None = None
     owner_client_id: str = ""
+    token_allowance: int | None = Field(default=None, ge=0)
+    cost_allowance_usd: float | None = Field(default=None, ge=0)
 
 
 class UsageReport(BaseModel):

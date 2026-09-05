@@ -182,7 +182,7 @@ class LLMExecutor:
         total_cost = 0.0
         last_model = "unknown"
         payload: dict[str, Any] = {}
-        cumulative_workspace: dict[str, Any] | None = None
+        runtime_task = task
         autocorrect_iterations: list[dict[str, Any]] = []
         stopped_reason = "completed_without_runtime"
         max_rounds = self._max_autocorrect_rounds if strategy.allow_autocorrect else 0
@@ -231,15 +231,12 @@ class LLMExecutor:
             self._ensure_grounded_citations(task, context, payload)
             if self._workspace_runtime is not None:
                 payload.update(
-                    await self._workspace_runtime.apply(task, payload, strategy)
+                    await self._workspace_runtime.apply(runtime_task, payload, strategy)
                 )
-                # Uma rodada de autocorreção sem operações devolvia um workspace
-                # vazio e apagava os arquivos aplicados na rodada anterior — a
-                # entrega (PR) publicaria nada. A evidência é cumulativa.
-                cumulative_workspace = self._merge_workspace_evidence(
-                    cumulative_workspace, payload.get("workspace")
-                )
-                payload["workspace"] = cumulative_workspace
+                # The runtime owns reconciliation against its configured root.
+                # Inner corrections and checkpointed graph retries use the same
+                # task-result boundary, without replaying previous operations.
+                runtime_task = task.model_copy(update={"result": payload})
 
             iteration_record = self._build_autocorrect_iteration(
                 iteration_number=iteration_index + 1,
@@ -414,7 +411,9 @@ class LLMExecutor:
         current_ws = dict(current) if isinstance(current, dict) else {}
         if not previous:
             return current_ws
-        merged = {**previous, **current_ws}
+        # Only artifact evidence carries over. Checks, errors and snapshots
+        # must always describe this attempt, even when it has no operations.
+        merged = dict(current_ws)
 
         def str_list(source: dict[str, Any], key: str) -> list[str]:
             value = source.get(key)
@@ -445,6 +444,15 @@ class LLMExecutor:
         for item in path_items(current_ws, "file_diffs"):
             path = item["path"]
             net = dict(item)
+            if "before_content" in previous_diffs.get(path, {}):
+                net["before_content"] = previous_diffs[path]["before_content"]
+            elif path in previous_diffs:
+                if previous_diffs[path].get("change_type") == "created":
+                    net["before_content"] = None
+                else:
+                    # An old checkpoint has no original bytes. The current
+                    # round's baseline must not masquerade as task-start data.
+                    net.pop("before_content", None)
             before = previous_diffs.get(path, {}).get("change_type")
             now = item.get("change_type")
             if before == "created" and now in {"modified", "unchanged"}:
