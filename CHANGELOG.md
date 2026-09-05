@@ -68,6 +68,50 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- Decisões reenviadas distinguem interrupts sequenciais dentro do mesmo nó:
+  o envelope v2 inclui checkpoint, task e posição persistida da aprovação.
+  IDs sozinhos podem ser reutilizados pelo LangGraph; envelopes antigos
+  ambíguos preservam o gate e pedem uma decisão nova. Posições de subgrafos
+  não resolvidas são recusadas, sem assumir que representam o primeiro gate.
+
+- Qualificação independente passa a conferir a identidade completa do PR antes
+  e depois da execução, verificar ancestralidade da base e inventariar o diff
+  diretamente dos commits publicados. Registra SHA verificado e hashes do
+  verificador/perfil; saída zero sem conclusão explícita não comprova sucesso.
+- CI pagina todos os check runs e statuses atuais até o limite documentado,
+  rejeitando inventários incompletos ou inconsistentes. A qualificação exige
+  pelo menos um check realmente concluído com sucesso e relê CI após o build.
+- Verificadores Python/Node ampliam casos de borda e preservação de comportamento;
+  controles locais executam implementações corretas e defeitos conhecidos em
+  processos reais, sem LLM. As tarefas que pedem regressões passam a verificar
+  que os testes entregues detectam uma mutação do comportamento solicitado.
+  Os novos critérios ainda exigem uma rodada completa de qualificação com LLM.
+
+- Workers interrompidos no shutdown não confirmam jobs incompletos. Após perda
+  de processo/lease, jobs `start` continuam o checkpoint pendente sem reenviar
+  o pedido inicial; conclusões e gates já persistidos não são reexecutados.
+- Decisões humanas na fila passam a carregar os IDs dos interrupts aprovados:
+  uma reentrega não reutiliza uma aprovação num gate posterior. Mensagens
+  legadas ambíguas ou malformadas preservam o checkpoint e exigem nova decisão.
+  API e workers devem ser atualizados juntos (ver `docs/worker-recovery.md`).
+- Testes PostgreSQL incluem SIGKILL em processos reais, antes do primeiro
+  checkpoint, durante execução e entre conclusão/gate e confirmação na fila.
+  O antigo teste de restart foi descrito corretamente como recriação de
+  componentes no mesmo processo.
+
+- Grounding e busca passam a descobrir fontes JavaScript/TypeScript, inclusive
+  `.cjs` e `.mjs`: os fixtures Node antes forneciam README sem implementação
+  ou testes. Em autocorreções e novas tentativas, o executor relê até quatro
+  arquivos envolvidos via `read_file`, priorizando operações que falharam e
+  arquivos recentes. As leituras respeitam hooks, confinamento e teto de calls.
+  Regressão com Node real cobre correção após teste com `expect` indisponível;
+  isso valida o contexto de recuperação, não uma nova qualificação com LLM.
+
+- Benchmark: first pass exige conclusão bem-sucedida, inclusive na agregação
+  de resultados importados. O custo por conclusão inclui o gasto de todos os
+  casos e passa a ser `null` quando não há conclusões (antes era zero).
+  Uma suíte vazia sempre reprova o gate, mesmo com limites de taxa zero.
+
 - Evidência cumulativa da autocorreção passa a ser relativa ao início da
   tarefa: arquivo criado na rodada 1 e editado na rodada 2 continua `created`
   (antes virava `modified` e reprovava `file_created`); criado e removido na

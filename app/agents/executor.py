@@ -42,6 +42,11 @@ informe `occurrence`;
   - remover arquivo: op=delete;
 - não edite trechos que você não viu nas evidências: se o arquivo alvo não \
 está no grounding, registre isso em notes em vez de adivinhar o conteúdo;
+- leituras atuais de read_file prevalecem sobre o grounding inicial para \
+editar. Copie somente o código, sem os números de linha. stdout/stderr e \
+saída TAP são diagnósticos, nunca trechos de código para search;
+- ao editar testes, preserve o framework e os imports observados nos arquivos; \
+não presuma que expect, assert ou outro símbolo está disponível;
 - os acceptance_criteria são o contrato: o judge vai reprovar qualquer \
 critério não atendido. Critérios marcados com [tipo] são verificados por \
 código (testes, lint, arquivos criados/alterados, conteúdo, citations), sem \
@@ -183,11 +188,12 @@ class LLMExecutor:
         max_rounds = self._max_autocorrect_rounds if strategy.allow_autocorrect else 0
 
         cache_prefix = build_grounding_prefix(context)
+        refresh_paths = self._recovery_paths(task.result)
         for iteration_index in range(max_rounds + 1):
-            remaining_tokens = max(
-                1,
-                task.budget.max_tokens - task.budget.consumed_tokens - total_tokens,
+            available_tokens = (
+                task.budget.max_tokens - task.budget.consumed_tokens - total_tokens
             )
+            remaining_tokens = max(1, available_tokens)
             loop_outcome = await self._tool_loop.run(
                 self.tier,
                 CompletionRequest(
@@ -210,6 +216,7 @@ class LLMExecutor:
                 ),
                 token_ceiling=remaining_tokens,
                 task_id=str(task.id),
+                refresh_paths=refresh_paths if available_tokens > 0 else None,
             )
             result = loop_outcome.result
             total_tokens += loop_outcome.tokens
@@ -257,6 +264,7 @@ class LLMExecutor:
                     stopped_reason = "max_autocorrect_rounds_exhausted"
                 break
             current_iteration_feedback = self._feedback_from_payload(payload)
+            refresh_paths = self._recovery_paths(payload)
 
         workspace = payload.get("workspace")
         if isinstance(workspace, dict):
@@ -331,6 +339,35 @@ class LLMExecutor:
             if focus:
                 user_content += f"\n\n{focus}"
         return user_content
+
+    @staticmethod
+    def _recovery_paths(payload: Any) -> list[str]:
+        """Prefer failed edit targets, then files touched by the prior attempt.
+
+        Paths are hints only. The configured read_file tool remains the sole
+        authority for access, suppression and output size. No path is inferred
+        from command output and no checkpoint workspace_root is trusted.
+        """
+        if not isinstance(payload, dict):
+            return []
+        workspace = payload.get("workspace")
+        if not isinstance(workspace, dict):
+            return []
+        paths: list[str] = []
+        for key in ("apply_errors", "operation_history"):
+            items = workspace.get(key)
+            if isinstance(items, list):
+                if key == "operation_history":
+                    items = list(reversed(items))
+                paths.extend(
+                    item["path"]
+                    for item in items
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                )
+        applied = workspace.get("applied_files")
+        if isinstance(applied, list):
+            paths.extend(path for path in reversed(applied) if isinstance(path, str))
+        return list(dict.fromkeys(path for path in paths if path.strip()))
 
     @staticmethod
     def _build_autocorrect_iteration(

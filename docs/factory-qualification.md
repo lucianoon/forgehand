@@ -38,6 +38,22 @@ Provisioning rejects a moved base before planning or model calls.
 
 ## Mechanical validation (no LLM charges)
 
+Run the trusted verifier controls with local Python and Node.js, without Docker,
+network calls or an LLM:
+
+```sh
+uv run pytest -q tests/integration/test_factory_verifier_controls.py
+```
+
+These controls copy the versioned fixtures, reject unchanged baselines and
+plausible incorrect implementations, and accept the correct reference for each
+case. They also check that successful early process exits lack completion
+evidence and that verifier execution leaves the original fixtures and copied
+production files unchanged. They are regression controls for the verifiers,
+not an environment for executing untrusted generated code on the host.
+
+The separate container integration suite requires the pinned images:
+
 ```sh
 docker pull python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 docker pull node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
@@ -90,11 +106,59 @@ total budget, monitors usage and cancels nonterminal cases on timeout or budget
 exhaustion. Provider metering can overshoot within an in-flight model request;
 use provider-side spending limits as an additional hard billing control.
 
-For each ready PR it verifies the remote head, re-reads CI, inventories changed
-paths (including rename sources), and clones the **published SHA** into a fresh
-sandbox. Independent checks are added only after the agent finishes and are not
-part of the repository supplied to the agent. JSON and Markdown reports include
-metrics and remote branch/PR inventory. Remote artifacts are never deleted.
+## Independent publication evidence
+
+Each ready PR is qualified against one published commit and the case's pinned
+baseline. The runner does not inherit success from an earlier verification:
+
+1. Verify that the PR is open and unmerged. Its head repository, branch and SHA
+   must match the recorded delivery; its base repository, branch and SHA must
+   match the approved fixture repository and pinned case baseline. A fork,
+   retargeted PR, moved head or moved base does not satisfy this identity check.
+2. Read CI for that exact head SHA. Both check runs and current commit-status
+   contexts are paginated, up to 3,000 entries per inventory. Incomplete,
+   malformed, changing or oversized inventories fail verification rather than
+   being treated as green. Qualification requires at least one completed check
+   or status with conclusion `success`; a collection containing only neutral or
+   skipped checks cannot qualify a PR. This extra requirement belongs to the
+   qualification gate, not a general ban on neutral or skipped CI results.
+3. Clone the **published SHA** into a fresh workspace and require the pinned
+   baseline to be its ancestor. Inventory changed paths from the immutable
+   local `base..head` Git objects, with rename detection disabled so both the
+   deleted source and added destination of a rename are checked. The inventory
+   must be nonempty and every path must match the case's allowed scopes. GitHub's
+   PR file listing is not the source of this scope decision.
+4. Add the independent verifier only after the agent finishes, then run it in
+   the pinned Docker profile. The agent's repository does not contain that
+   verifier. A successful verification needs one successful test phase, exit
+   code zero, complete output, successful cleanup and the final stdout line
+   `FORGEHAND_VERIFIER_OK`. A preexisting file or symlink at the reserved verifier
+   path is rejected. The marker distinguishes completed checks from accidental
+   `SystemExit(0)` or `process.exit(0)` during an import. It is not an adversarial
+   attestation: code running in the same process could forge the marker or alter
+   the verifier's runtime. Discount-repair and tag-feature cases also run the
+   submitted tests on the candidate and on a targeted production mutation. The
+   candidate's tests must pass normally and detect the reintroduced defect;
+   absent or irrelevant tests cannot satisfy the requested regression. Mutation
+   subprocesses are bounded, and spawn errors, timeouts or interrupted processes
+   do not count as a successful mutation check. Production files are restored
+   after each mutation, including when verification fails.
+5. Read CI again and revalidate the PR's full publication identity after the
+   independent checks finish. Only then record the verified commit SHA and
+   independent-check success. A head/base change, closed or merged PR, or a
+   newly pending/failing CI result invalidates the qualification attempt.
+
+JSON reports retain `changed_paths`, `verified_commit_sha`, `verifier_sha256`
+and `verification_profile_digest` alongside case outcomes and metrics. The
+verifier hash identifies the exact script bytes; the profile fingerprint
+identifies the execution configuration, including its pinned image and command.
+These fields make evidence comparable without implying that an older run used
+the current verifier. JSON and Markdown reports also retain the remote
+branch/PR inventory; remote artifacts are never deleted.
+
+These reads are bounded observations, not an atomic GitHub transaction. A PR
+can change after the final check. Any merge or deployment decision must verify
+its own current publication and CI state.
 
 The release gate requires exactly five distinct cases, at least four green PRs
 with independent checks and path scope passing, a successful sandbox preflight,
@@ -111,11 +175,18 @@ It does not run on push, create fixture repositories, or merge PRs.
 
 ## Current result and limitations
 
-The local mechanical suite and Docker checks pass (505 Python tests, 3 external
-service skips, and 4 dashboard tests on 2026-09-03). The operator approved
-`lucianoon/forgehand-fixture-python`, `lucianoon/forgehand-fixture-node`, and a
-USD 5 aggregate pilot budget. Real model calls and fixture PRs are recorded in
-the dated report. The release gate has **not** passed; factory mode remains opt-in.
+The latest complete historical live run passed its then-current release gate
+with **4/5 independently verified green PRs**, as recorded in
+[the dated live report](factory-live-results-2026-09-03.md). The later targeted
+Node recheck failed and does not change that complete-round result. The approved
+pilot used `lucianoon/forgehand-fixture-python`,
+`lucianoon/forgehand-fixture-node`, and a USD 5 aggregate budget.
+
+The stricter publication, CI and verifier criteria described here have local
+regression coverage but have **not been requalified in a new complete run with
+a real LLM**. The historical 4/5 result must not be reinterpreted as passing
+these new criteria, and local mechanical checks do not establish a new model
+success rate. Factory mode remains disabled by default and opt-in for pilots.
 
 On the local macOS Docker Desktop 4.89.0 / Engine 29.7.2 installation, Apple
 Virtualization with VirtioFS reproducibly returned stale Node source after a
@@ -126,8 +197,13 @@ Keep `test_node_observes_updated_file_between_builds` enabled during Docker
 qualification. The preflight also rejects stale file visibility before any
 paid work starts. The default factory flag is unchanged.
 
-The live workflow uses in-memory queue/checkpoint storage on one runner. Local
-tests cover serialized checkpoint resume in a rebuilt graph; Postgres CI tests
-cover the existing durable backend. A multi-host deployment additionally needs
-shared POSIX-lock-capable workspace storage and an operational recovery policy.
+The historical live workflow used in-memory queue/checkpoint storage on one
+runner. The durable backend now has PostgreSQL tests that kill a worker process
+with SIGKILL and resume its queued work in another process; see
+[worker recovery](worker-recovery.md) for checkpoint behavior, approval identity,
+deployment compatibility and limits. Those tests use deterministic graph nodes,
+not paid model calls or SCM publication. An external effect performed before a
+node checkpoint can still be repeated; this is not a general exactly-once
+publication guarantee. A multi-host deployment additionally needs shared
+POSIX-lock-capable workspace storage and an operational recovery policy.
 No automatic enablement, merge, deployment, or remote cleanup is implemented.

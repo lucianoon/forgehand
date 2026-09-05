@@ -15,6 +15,14 @@ from typing import Any
 
 _TEXT_EXTENSIONS = {
     ".py",
+    ".js",
+    ".cjs",
+    ".mjs",
+    ".jsx",
+    ".ts",
+    ".cts",
+    ".mts",
+    ".tsx",
     ".md",
     ".toml",
     ".yaml",
