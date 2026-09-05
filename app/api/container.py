@@ -8,6 +8,7 @@ transporte mockado sem tocar em variáveis de ambiente.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
@@ -32,6 +33,7 @@ from app.agents.mcp_tools import discover_mcp_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.factory.build_strategy import BuildProfileRegistry
+from app.factory.git_auth import GitHubRepositoryAccess
 from app.factory.sandbox import DockerBuildRunner, DockerCLI
 from app.factory.workspace import LocalGitWorkspaceManager
 from app.graph.workflow import build_serde, build_workflow
@@ -39,7 +41,12 @@ from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audi
 from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.web_references import WebReferenceCollector
-from app.infrastructure.scm import GitHubDeliveryService
+from app.infrastructure.scm import (
+    GitHubAppTokenProvider,
+    GitHubDeliveryService,
+    TokenProvider,
+    build_token_provider_from_env,
+)
 from app.infrastructure.settings import Settings
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
@@ -80,11 +87,33 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
 
 class Container:
     def __init__(self, service: WorkflowService, job_queue: Any, audit_log: Any,
-                 product_studio: ProductStudio | None = None):
+                 product_studio: ProductStudio | None = None,
+                 repository_token_provider: TokenProvider | None = None):
         self.workflow_service = service
         self.job_queue = job_queue
         self.audit_log = audit_log
         self.product_studio = product_studio
+        # This provider belongs only to checkout; publication owns its own providers.
+        self._repository_token_provider = repository_token_provider
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
+
+    async def shutdown(self) -> None:
+        """Stop workflows before releasing credentials used by their checkout."""
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            try:
+                await self.workflow_service.shutdown()
+            finally:
+                try:
+                    if isinstance(
+                        self._repository_token_provider, GitHubAppTokenProvider
+                    ):
+                        await self._repository_token_provider.close()
+                finally:
+                    self._repository_token_provider = None
+                    self._shutdown_complete = True
 
 
 class LeaseBoundRuntimeFactory:
@@ -308,10 +337,18 @@ def build_container(
             )
         )
 
+    repository_token_provider = (
+        build_token_provider_from_env() if settings.factory_mode_enabled else None
+    )
+    repository_access = (
+        GitHubRepositoryAccess(repository_token_provider)
+        if repository_token_provider is not None else None
+    )
     workspace_manager = (
         LocalGitWorkspaceManager(
             settings.factory_workspace_root,
             approved_hosts=settings.factory_approved_scm_hosts,
+            repository_access=repository_access,
         )
         if settings.factory_mode_enabled
         else None
@@ -438,6 +475,7 @@ def build_container(
         selected_audit_log,
         ProductStudio(router, ProductStore(settings.product_studio_database))
         if settings.product_studio_enabled else None,
+        repository_token_provider=repository_token_provider,
     )
 
 

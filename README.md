@@ -133,6 +133,7 @@ Para usar a chave OpenAI em `.env.local`, consulte [OpenAI direto](docs/openai.m
 Integrações e produto:
 
 - [`docs/integrations.md`](docs/integrations.md) — GitHub/PR, sandbox, webhooks, benchmark e RBAC;
+- [`docs/private-repositories.md`](docs/private-repositories.md) — checkout privado, credenciais e retomada;
 - [`docs/security-model.md`](docs/security-model.md) — fronteiras, controles e riscos residuais;
 - [`docs/go-to-market.md`](docs/go-to-market.md) — design partner, piloto, demo e métricas de ROI.
 - [`docs/production-runbook.md`](docs/production-runbook.md) — deploy, alertas, incidente e rollback.

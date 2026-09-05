@@ -28,8 +28,9 @@ These commands print the local path and SHA. Expected commits:
 An operator must approve and seed two **dedicated public fixture repositories**
 from these generated repositories before live qualification. The commands above
 do not create GitHub repositories, push, or delete remote artifacts. Public
-fixtures are currently required because the workspace Git transport does not
-provide an authenticated private-repository credential helper.
+fixtures keep the existing benchmark reproducible and inspectable. Authenticated
+checkout is now supported; see [private repositories](private-repositories.md).
+A private pilot needs its own explicitly approved fixture and credentials.
 
 The five cases in `cases.json` cover discount repair, tag normalization, useful
 regression tests, shared tax calculation, and executable currency documentation.
