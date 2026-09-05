@@ -94,9 +94,9 @@ Use `decide` para responder a uma decisão pendente e `wait` para acompanhar.
 `--json` mantém o estado completo para scripts. O comando `run` continua usando
 o fluxo genérico anterior, sem converter solicitações existentes em publicação.
 
-## Alcance desta entrega
+## Repositórios privados
 
-Este incremento conecta a CLI à fábrica já existente; não adiciona autenticação
-Git para clonar repositórios privados. O transporte padrão de checkout ainda
-precisa dessa capacidade antes de pilotos com código privado de equipes.
-A publicação via API GitHub e o checkout Git são operações distintas.
+O checkout da fábrica aceita a credencial GitHub configurada no servidor.
+Veja [checkout privado](private-repositories.md) para permissões, renovação,
+retomada e limites de isolamento entre equipes. O token GitHub não é enviado
+pela CLI nem incluído na ordem de trabalho.

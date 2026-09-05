@@ -7,6 +7,10 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- Checkout privado no modo fábrica com PAT ou GitHub App, renovação pelo
+  provedor, acesso revalidado na retomada e tokens restritos ao processo Git
+  remoto. Inclui TLS/redirects, validação do cache e testes de Git HTTPS real.
+
 - CLI de entrega por PR: `deliver` aceita repositório/pedido ou issue, critérios,
   orçamento explícito, base/perfil/limites, chave de idempotência e prévia
   `--dry-run`. `wait` retoma acompanhamento sem criar outra execução. O estado

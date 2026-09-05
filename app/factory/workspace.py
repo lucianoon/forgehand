@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
 
+from app.factory.git_auth import GitAuthentication, GitHubRepositoryAccess
 from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
 from app.infrastructure.posix import kill_process_group
 
@@ -94,6 +95,7 @@ class SafeGitRunner:
         *,
         cwd: str | Path | None = None,
         check: bool = True,
+        authentication: GitAuthentication | None = None,
     ) -> GitCommandResult:
         if not args or any("\x00" in arg for arg in args):
             raise ValueError("Argumentos Git inválidos.")
@@ -110,6 +112,43 @@ class SafeGitRunner:
                 "GIT_CONFIG_GLOBAL": os.devnull,
             }
         )
+        # Stop discovery before an ancestor checkout can inject Git config.
+        environment["GIT_CEILING_DIRECTORIES"] = str(working_directory.parent)
+        command = args[2:] if args[0] == "--git-dir" else args
+        remote_https = (
+            bool(command)
+            and command[0] in {"clone", "fetch", "ls-remote"}
+            and any(arg.startswith("https://") for arg in command[1:])
+        )
+        if remote_https:
+            if (working_directory / ".git").exists() or (
+                (working_directory / "HEAD").exists()
+                and (working_directory / "objects").is_dir()
+                and (working_directory / "refs").is_dir()
+            ):
+                raise ValueError(
+                    "Transporte remoto exige diretório de controle sem repositório."
+                )
+            # Anonymous retries must not use redirects to authorize cached private data.
+            environment.update(
+                {
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.followRedirects",
+                    "GIT_CONFIG_VALUE_0": "false",
+                }
+            )
+        if authentication is not None:
+            if (
+                not command
+                or command[0] not in {"clone", "fetch", "ls-remote"}
+                or authentication.source not in command
+                or any(arg == "-c" or arg.startswith("--config") for arg in command)
+                or (working_directory / ".git").exists()
+            ):
+                raise ValueError(
+                    "Credencial permitida somente para transporte Git remoto."
+                )
+            environment.update(authentication.environment())
         process = await asyncio.create_subprocess_exec(
             self._git,
             *args,
@@ -131,15 +170,18 @@ class SafeGitRunner:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             raise TimeoutError(f"git excedeu {self._timeout:g}s") from None
+
+        def safe_output(value: bytes) -> str:
+            decoded = value.decode("utf-8", errors="replace")
+            if authentication is not None:
+                decoded = authentication.redact(decoded)
+            return self.redact(decoded)[: self._max_output]
+
         result = GitCommandResult(
             argv=(self._git, *args),
             exit_code=process.returncode or 0,
-            stdout=self.redact(
-                stdout_bytes.decode("utf-8", errors="replace")[: self._max_output]
-            ),
-            stderr=self.redact(
-                stderr_bytes.decode("utf-8", errors="replace")[: self._max_output]
-            ),
+            stdout=safe_output(stdout_bytes),
+            stderr=safe_output(stderr_bytes),
         )
         if check and result.exit_code != 0:
             raise GitCommandError(result)
@@ -168,6 +210,7 @@ class LocalGitWorkspaceManager:
         runner: SafeGitRunner | None = None,
         repository_url_resolver: Callable[[RepositoryTarget], str] | None = None,
         allow_local_repositories: bool = False,
+        repository_access: GitHubRepositoryAccess | None = None,
     ) -> None:
         self._root = Path(root).expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
@@ -179,6 +222,7 @@ class LocalGitWorkspaceManager:
         self._runner = runner or SafeGitRunner(self._root)
         self._resolve_url = repository_url_resolver or self._default_url
         self._allow_local = allow_local_repositories
+        self._repository_access = repository_access
         self._locks: dict[str, asyncio.Lock] = {}
         self.journal = WorkspaceJournal(self._root / "control")
 
@@ -212,7 +256,7 @@ class LocalGitWorkspaceManager:
             return await self.reconstruct(existing)
         self._validate_ref(order.repository.base_ref)
         source = self._resolve_url(order.repository)
-        self._validate_source(source)
+        self._validate_source(source, order.repository)
         cache = self._cache_path(order.repository)
         workspace = (self._workspace_root / workflow_id).resolve()
         branch = f"forgehand/{workflow_id}"
@@ -221,28 +265,33 @@ class LocalGitWorkspaceManager:
             order.repository.full_name.lower(), asyncio.Lock()
         )
         async with lock:
+            await self._validate_cache(cache, source)
             if not cache.exists():
-                await self._runner.run(
+                await self._run_remote(
                     [
                         "clone",
                         "--bare",
                         "--no-tags",
                         source,
                         str(cache),
-                    ]
+                    ],
+                    order.repository,
+                    source,
                 )
-            await self._materialize_partial_cache(cache)
+            await self._materialize_partial_cache(cache, order.repository, source)
             remote_ref = f"refs/remotes/origin/{order.repository.base_ref}"
-            await self._runner.run(
+            await self._run_remote(
                 [
                     "--git-dir",
                     str(cache),
                     "fetch",
                     "--prune",
                     "--no-tags",
-                    "origin",
+                    source,
                     f"+refs/heads/{order.repository.base_ref}:{remote_ref}",
-                ]
+                ],
+                order.repository,
+                source,
             )
             resolved = await self._runner.run(
                 ["--git-dir", str(cache), "rev-parse", "--verify", remote_ref]
@@ -275,7 +324,9 @@ class LocalGitWorkspaceManager:
 
         return self.transition(lease, WorkspaceLifecycle.READY)
 
-    async def _materialize_partial_cache(self, cache: Path) -> None:
+    async def _materialize_partial_cache(
+        self, cache: Path, repository: RepositoryTarget, source: str
+    ) -> None:
         partial = await self._runner.run(
             ["--git-dir", str(cache), "config", "--get", "remote.origin.promisor"],
             check=False,
@@ -284,7 +335,7 @@ class LocalGitWorkspaceManager:
             return
         # Local clones do not inherit the remote's lazy-fetch configuration.
         # Repair legacy blobless caches before handing objects to a checkout.
-        await self._runner.run(
+        await self._run_remote(
             [
                 "--git-dir",
                 str(cache),
@@ -292,9 +343,11 @@ class LocalGitWorkspaceManager:
                 "--refetch",
                 "--no-filter",
                 "--no-tags",
-                "origin",
+                source,
                 "+refs/heads/*:refs/remotes/origin/*",
-            ]
+            ],
+            repository,
+            source,
         )
         await self._runner.run(
             [
@@ -314,11 +367,22 @@ class LocalGitWorkspaceManager:
         if lease.state in {WorkspaceLifecycle.RELEASED, WorkspaceLifecycle.RELEASING}:
             raise ValueError("Workspace já liberado; crie outra ordem de trabalho.")
         workspace = self._lease_workspace_path(lease)
+        self._validate_ref(lease.repository.base_ref)
+        source = self._resolve_url(lease.repository)
+        self._validate_source(source, lease.repository)
+        await self._validate_cache(self._cache_path(lease.repository), source)
+        if urlsplit(source).scheme == "https":
+            # Cache is not evidence of current access. Probe even without credentials.
+            await self._run_remote(
+                ["ls-remote", source, "HEAD"], lease.repository, source
+            )
         if lease.state in {
             WorkspaceLifecycle.REQUESTED,
             WorkspaceLifecycle.PROVISIONING,
         }:
-            await self._materialize_partial_cache(self._cache_path(lease.repository))
+            await self._materialize_partial_cache(
+                self._cache_path(lease.repository), lease.repository, source
+            )
             # Only a journaled pre-execution checkout may be rebuilt. Approved
             # work is never discarded because of a missing directory.
             if workspace.exists():
@@ -368,7 +432,7 @@ class LocalGitWorkspaceManager:
     def _default_url(self, repository: RepositoryTarget) -> str:
         return f"https://{repository.scm_host}/{repository.full_name}.git"
 
-    def _validate_source(self, source: str) -> None:
+    def _validate_source(self, source: str, repository: RepositoryTarget) -> None:
         parsed = urlsplit(source)
         if parsed.scheme == "https":
             host = (parsed.hostname or "").lower().rstrip(".")
@@ -376,10 +440,72 @@ class LocalGitWorkspaceManager:
                 raise ValueError("Host do repositório não está aprovado.")
             if parsed.username or parsed.password or parsed.port is not None:
                 raise ValueError("URL do repositório contém autoridade insegura.")
+            if (
+                source != self._default_url(repository)
+                or parsed.query
+                or parsed.fragment
+                or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository.full_name)
+                is None
+                or any(part in {".", ".."} for part in repository.full_name.split("/"))
+            ):
+                raise ValueError("URL do repositório não corresponde à ordem.")
             return
         if self._allow_local and not parsed.scheme:
             return
         raise ValueError("Repositório deve usar HTTPS em host aprovado.")
+
+    async def _run_remote(
+        self, args: list[str], repository: RepositoryTarget, source: str
+    ) -> GitCommandResult:
+        authentication = None
+        if self._repository_access is not None and urlsplit(source).scheme == "https":
+            authentication = await self._repository_access.for_repository(
+                repository, source
+            )
+        return await self._runner.run(args, authentication=authentication)
+
+    async def _validate_cache(self, cache: Path, source: str) -> None:
+        if cache.is_symlink():
+            raise ValueError("Cache Git não pode ser link simbólico.")
+        if not cache.exists() or urlsplit(source).scheme != "https":
+            return
+        # Managed caches are standalone bare repositories, never linked worktrees.
+        # Otherwise Git reads common/config while the validator inspects cache/config.
+        common = cache / "commondir"
+        if common.exists() or common.is_symlink():
+            raise ValueError("Cache Git não pode usar diretório comum externo.")
+        config = cache / "config"
+        if config.is_symlink() or not config.is_file() or config.stat().st_size > 8192:
+            raise ValueError("Configuração do cache Git inválida.")
+        result = await self._runner.run(
+            ["config", "--file", str(config), "--no-includes", "--null", "--list"]
+        )
+        allowed = {
+            "core.repositoryformatversion",
+            "core.filemode",
+            "core.bare",
+            "core.logallrefupdates",
+            "core.ignorecase",
+            "core.precomposeunicode",
+            "remote.origin.url",
+            "remote.origin.fetch",
+            "remote.origin.tagopt",
+            "remote.origin.promisor",
+            "remote.origin.partialclonefilter",
+            "extensions.partialclone",
+            "extensions.objectformat",
+        }
+        origins = []
+        for entry in result.stdout.split("\0"):
+            if not entry:
+                continue
+            key, _, value = entry.partition("\n")
+            if key not in allowed:
+                raise ValueError("Configuração do cache Git não é permitida.")
+            if key == "remote.origin.url":
+                origins.append(value)
+        if origins != [source] or not result.stdout.endswith("\0"):
+            raise ValueError("Origem do cache Git não corresponde à ordem.")
 
     def _cache_path(self, repository: RepositoryTarget) -> Path:
         digest = hashlib.sha256(

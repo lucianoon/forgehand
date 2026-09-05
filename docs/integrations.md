@@ -16,7 +16,8 @@ devolvidas pela API):
 - **Token estático**: `GITHUB_TOKEN`, com permissão de conteúdo, refs, pull
   requests e leitura de checks.
 
-Se ambos existirem, a App tem prioridade.
+Se ambos existirem, a App tem prioridade. O modo fábrica também usa essas
+credenciais no [checkout de repositórios privados](private-repositories.md).
 
 ### Entrega como etapa do workflow
 

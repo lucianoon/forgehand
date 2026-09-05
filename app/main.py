@@ -44,11 +44,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         memory=memory,
                         tracer=tracer,
                     )
-                    app.state.container.workflow_service.start_workers()
                     try:
+                        app.state.container.workflow_service.start_workers()
                         yield
                     finally:
-                        await app.state.container.workflow_service.shutdown()
+                        await app.state.container.shutdown()
 
 
 def create_app() -> FastAPI:
