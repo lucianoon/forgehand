@@ -74,6 +74,8 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
         # import tardio: dependência opcional (extra [postgres])
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
 
         async with AsyncPostgresSaver.from_conn_string(
             settings.database_url, serde=build_serde()
@@ -99,7 +101,17 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
                 await connection.execute(
                     "SELECT pg_advisory_unlock(hashtext(current_schema() || ':forgehand-checkpointer-setup'))"
                 )
-            yield saver
+        # Migration locks belong to the dedicated setup connection above. The
+        # runtime borrows checked connections so a database restart does not
+        # poison the saver for the lifetime of the API/worker process.
+        async with AsyncConnectionPool[AsyncConnection[dict[str, Any]]](
+            settings.database_url, min_size=1, max_size=2, open=False,
+            timeout=5, check=AsyncConnectionPool.check_connection,
+            kwargs={"autocommit": True, "prepare_threshold": 0,
+                    "row_factory": dict_row, "connect_timeout": 5},
+        ) as pool:
+            await pool.wait(timeout=5)
+            yield AsyncPostgresSaver(pool, serde=build_serde())
     else:
         from langgraph.checkpoint.memory import MemorySaver
 

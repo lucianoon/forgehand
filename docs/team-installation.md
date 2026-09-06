@@ -10,6 +10,11 @@ certificados TLS, PostgreSQL client 16, checkpointer PostgreSQL e autenticação
 GitHub App. API e workers usam a mesma imagem, revisão, perfis e arquivo de
 configuração. As dependências Python são instaladas de `uv.lock`, com hashes.
 
+Use o [runbook operacional](production-runbook.md) para atualização coordenada,
+monitoramento, rollback e medição de recuperação. Registre a liberação em
+[aceite do piloto](pilot-readiness.md): executar o Compose não equivale a qualificar
+uma implantação de produção.
+
 ## Preparar o host e a configuração
 
 Requisitos: Linux/POSIX, Docker Engine local, Compose 2.24 ou mais recente, e
@@ -105,6 +110,7 @@ Execute no checkout correspondente à revisão informada:
 
 ```bash
 export TEAM_ENV_FILE=/etc/forgehand/team.env
+export COMPOSE_PROJECT_NAME=forgehand-team
 docker compose --env-file "$TEAM_ENV_FILE" -f docker-compose.team.yml config --quiet
 docker compose --env-file "$TEAM_ENV_FILE" -f docker-compose.team.yml build api
 docker compose --env-file "$TEAM_ENV_FILE" -f docker-compose.team.yml up -d --no-build --scale worker=2
@@ -128,6 +134,11 @@ antes e omita `build`. O build instala o client 16 a partir do
 [repositório oficial PostgreSQL](https://www.postgresql.org/download/linux/debian/).
 As bases e pacotes APT recebem patches nos próximos builds: guarde o digest da
 imagem resultante junto da revisão usada no ensaio, não apenas a tag das bases.
+
+Preserve `COMPOSE_PROJECT_NAME` em todos os terminais de operação ou forneça o mesmo
+`-p forgehand-team` em cada comando. O nome do projeto seleciona o volume PostgreSQL;
+executar de outro diretório sem preservá-lo pode criar outra instalação. Registre
+o nome efetivo e nunca altere esse valor durante atualização ou recuperação.
 
 `INSTALLATION_EXPECTED_WORKERS=2` corresponde aos dois processos; cada processo tem
 `WORKFLOW_WORKER_CONCURRENCY=1`. Para alterar capacidade, altere a contagem esperada
