@@ -26,7 +26,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.infrastructure.llm_budget import active_call_budget
+from app.infrastructure.llm_budget import CallBudget, active_call_budget
 
 logger = logging.getLogger("forgehand.providers")
 
@@ -297,10 +297,12 @@ class LLMProvider(ABC):
 
         for attempt in range(self._max_retries + 1):
             budget = active_call_budget()
-            estimate = self.estimate_request_usage(request)
+            attempt_request = self._fit_output_to_budget(request, budget)
+            estimate = self.estimate_request_usage(attempt_request)
             reservation = (
                 budget.reserve(
-                    estimate.total_tokens, self._reservation_cost_for(request.model, estimate)
+                    estimate.total_tokens,
+                    self._reservation_cost_for(attempt_request.model, estimate),
                 )
                 if budget is not None else None
             )
@@ -314,8 +316,8 @@ class LLMProvider(ABC):
             try:
                 try:
                     result = await asyncio.wait_for(
-                        self._do_complete(request),
-                        timeout=request.timeout_seconds,
+                        self._do_complete(attempt_request),
+                        timeout=attempt_request.timeout_seconds,
                     )
                 except BaseException:
                     if reservation is not None:
@@ -364,6 +366,36 @@ class LLMProvider(ABC):
 
         assert last_error is not None
         raise last_error
+
+    def _fit_output_to_budget(
+        self, request: CompletionRequest, budget: CallBudget | None,
+    ) -> CompletionRequest:
+        """Reduce only the output ceiling; admission still reserves the whole input.
+
+        Recompute for each call/retry as tool history and outstanding reservations
+        change. There is no await between this calculation and reserve(), so other
+        calls cannot spend the same allowance. The caller's request stays intact.
+        """
+        if budget is None:
+            return request
+        available_tokens, available_cost = budget.remaining_allowance()
+        estimate = self.estimate_request_usage(request)
+        upper = min(request.max_tokens, available_tokens - estimate.input_tokens)
+        lower = 0
+        # Search integer output limits using exactly the admission price function,
+        # including cache-write rates and conservative unknown-model pricing.
+        while lower < upper:
+            candidate = (lower + upper + 1) // 2
+            usage = estimate.model_copy(update={"output_tokens": candidate})
+            if self._reservation_cost_for(request.model, usage) <= available_cost:
+                lower = candidate
+            else:
+                upper = candidate - 1
+        if lower < 1 or lower == request.max_tokens:
+            # No useful output fits: normal reserve() records the blocking reason
+            # and refuses the call. Never lower input estimates or expand budgets.
+            return request
+        return request.model_copy(update={"max_tokens": lower})
 
     def _cost_for(self, model: str, usage: Usage) -> float:
         pricing = self._pricing.get(model)

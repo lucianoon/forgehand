@@ -17,6 +17,7 @@ from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
 from app.factory.lifecycle import inherited_lock_fds
 from app.infrastructure.posix import kill_process_group
+from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator, modified_python_tests
 
 
 class CommandRunner(Protocol):
@@ -454,6 +455,7 @@ class LocalWorkspaceRuntime:
                 await self._run_command_feedback(
                     task,
                     applied_files=applied_files,
+                    evidence=evidence,
                 )
             )
         for signal in command_feedback:
@@ -580,6 +582,7 @@ class LocalWorkspaceRuntime:
         task: AgentTask,
         *,
         applied_files: list[str],
+        evidence: dict[str, Any],
     ) -> list[ValidationSignal]:
         signals: list[ValidationSignal] = []
         for runner in self._validation_pipeline.validators_for_capability(
@@ -590,7 +593,12 @@ class LocalWorkspaceRuntime:
                 continue
             signal = await run(
                 capability=task.capability,
-                applied_files=applied_files,
+                # Static source inspection excludes known deletions/unchanged
+                # files. Command validators must still run after delete-only
+                # edits, using their original applied-path contract.
+                applied_files=(modified_python_tests(evidence)
+                               if isinstance(runner, PythonTestIntegrityValidator)
+                               else applied_files),
             )
             if signal is not None:
                 signals.append(signal)

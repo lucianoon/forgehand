@@ -39,6 +39,7 @@ from app.factory.workspace import LocalGitWorkspaceManager
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audit_event
 from app.infrastructure.memory import InMemoryProjectMemory
+from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.web_references import WebReferenceCollector
 from app.infrastructure.scm import (
@@ -660,9 +661,11 @@ def build_objective_validation_pipeline(
             capability = Capability(raw_capability)
         except ValueError:
             continue
-        capability_pipelines[capability] = validator_names
+        capability_pipelines[capability] = list(dict.fromkeys([
+            *validator_names, PythonTestIntegrityValidator.name,
+        ]))
     return ObjectiveValidationPipeline(
-        validators,
+        [*validators, PythonTestIntegrityValidator(settings.executor_workspace_root)],
         capability_pipelines=capability_pipelines,
     )
 

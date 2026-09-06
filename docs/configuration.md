@@ -242,6 +242,14 @@ máximo de tokens de saída solicitado. É conservadora e pode parar antes do
 limite medido. O custo usa os preços configurados, considerando o maior preço
 de entrada/cache, sem presumir cache hit. Não é um teto exato de faturamento.
 
+Antes de cada chamada, o provider reduz o máximo de saída quando isso permite
+reservar a entrada completa dentro do saldo de tokens e custo. O cálculo
+considera tarefa, workflow, chamadas em andamento e consumo não confirmado.
+O pedido original e os orçamentos não aumentam; se nem a entrada mais um token
+de saída couber, a chamada continua bloqueada. Esse ajuste evita interromper
+prematuramente uma rodada de ferramentas por um teto de resposta desnecessariamente
+alto, mas não garante que a resposta menor será suficiente para concluir a tarefa.
+
 O saldo global é dividido entre as tarefas do mesmo fan-out; executor e judge
 compartilham também o saldo da tarefa. O gate registra `budget_blocked_reason`
 quando o próximo pedido não cabe. Uma decisão explícita `retry` amplia os
