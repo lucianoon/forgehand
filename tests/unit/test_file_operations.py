@@ -4,6 +4,7 @@ runtime; conteúdo final na publicação de PR; veto do judge em falha de apply.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,6 @@ from app.infrastructure.workspace_runtime import (
     LocalWorkspaceRuntime,
     OperationApplyError,
     find_replace_span,
-    normalize_operations,
 )
 from app.models.task import AgentTask, Capability
 from app.providers.base import CompletionResult, Usage
@@ -59,19 +59,6 @@ def test_execution_output_still_accepts_legacy_files_payload():
     )
     assert output.files[0].path == "a.py"
     assert output.operations == []
-
-
-def test_normalize_operations_merges_legacy_and_new():
-    ops = normalize_operations(
-        {
-            "files": [{"path": "a.py", "content": "x"}],
-            "operations": [{"op": "delete", "path": "b.py"}],
-        }
-    )
-    assert ops == [
-        {"op": "create", "path": "a.py", "content": "x"},
-        {"op": "delete", "path": "b.py"},
-    ]
 
 
 # --------------------------------------------------------------------------
@@ -222,6 +209,85 @@ async def test_runtime_replace_on_missing_file_is_apply_error(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_create_cannot_replace_existing_tests_even_with_passing_checks(tmp_path: Path):
+    target = tmp_path / "test_orders.py"
+    original = "def test_quantity():\n    assert 4 * 3 == 12\n"
+    target.write_text(original)
+    current = _task()
+    metadata = await _runtime(tmp_path).apply(current, {
+        "operations": [{
+            "op": "create", "path": target.name,
+            "content": "def test_discount():\n    assert 1 == 1\n",
+            # A model-supplied field cannot opt into legacy overwrite behavior.
+            "legacy_full_file": True,
+        }],
+    })
+    workspace = metadata["workspace"]
+    assert target.read_text() == original
+    assert workspace["published_files"] == []
+    assert workspace["applied_files"] == []
+    assert workspace["apply_errors"][0]["operation"] == "create"
+    assert "replace" in workspace["apply_errors"][0]["error"]
+    workspace["command_feedback"].append({"name": "pytest", "passed": True})
+    current.result = {"summary": "Added regression", **metadata}
+    judgment = await LLMJudge(ApprovingRouter()).evaluate(current, {})
+    assert judgment.evaluation.approved is False
+    assert "apply" in judgment.evaluation.validated_by
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_create_is_a_no_write_success(tmp_path: Path):
+    target = tmp_path / "new.py"
+    operation = {"op": "create", "path": target.name, "content": "value = 1\n"}
+    first = await _runtime(tmp_path).apply(_task(), {"operations": [operation]})
+    assert first["workspace"]["file_diffs"][0]["change_type"] == "created"
+    os.utime(target, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+    before = target.stat().st_mtime_ns
+
+    repeated = await _runtime(tmp_path).apply(_task(), {"operations": [operation]})
+
+    assert target.read_text() == operation["content"]
+    assert target.stat().st_mtime_ns == before
+    assert repeated["workspace"]["apply_errors"] == []
+    assert repeated["workspace"]["file_diffs"][0]["changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_full_file_update_does_not_relax_following_create(tmp_path: Path):
+    target = tmp_path / "existing.py"
+    target.write_text("original\n")
+    metadata = await _runtime(tmp_path).apply(_task(), {
+        "files": [{"path": target.name, "content": "legacy update\n"}],
+        "operations": [{
+            "op": "create", "path": target.name, "content": "accidental overwrite\n",
+        }],
+    })
+    assert target.read_text() == "legacy update\n"
+    workspace = metadata["workspace"]
+    assert workspace["published_files"] == [
+        {"path": target.name, "content": "legacy update\n"},
+    ]
+    assert workspace["file_diffs"][0]["before_content"] == "original\n"
+    assert len(workspace["apply_errors"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_delete_then_create_retains_original_baseline(tmp_path: Path):
+    target = tmp_path / "existing.py"
+    target.write_text("original\n")
+    metadata = await _runtime(tmp_path).apply(_task(), {"operations": [
+        {"op": "delete", "path": target.name},
+        {"op": "create", "path": target.name, "content": "replacement\n"},
+    ]})
+    workspace = metadata["workspace"]
+    assert target.read_text() == "replacement\n"
+    assert workspace["apply_errors"] == []
+    assert workspace["deleted_paths"] == []
+    assert workspace["file_diffs"][0]["before_content"] == "original\n"
+    assert workspace["file_diffs"][0]["change_type"] == "modified"
+
+
+@pytest.mark.asyncio
 async def test_runtime_still_blocks_path_traversal_for_operations(tmp_path: Path):
     with pytest.raises(ValueError, match="fora do workspace"):
         await _runtime(tmp_path).apply(
@@ -302,6 +368,40 @@ async def test_executor_retries_with_apply_feedback_and_succeeds(tmp_path: Path)
     assert workspace["autocorrect"]["stopped_reason"] == "checks_passed_or_skipped"
     # payload sem `files` legado quando o modelo respondeu com operations
     assert "files" not in outcome["result"]
+
+
+@pytest.mark.asyncio
+async def test_executor_corrects_create_to_replace_without_losing_existing_test(tmp_path: Path):
+    target = tmp_path / "test_orders.py"
+    original = "def test_quantity():\n    assert 4 * 3 == 12\n"
+    regression = "\ndef test_discount():\n    assert 1 == 1\n"
+    target.write_text(original)
+    router = SequentialRouter([
+        {"summary": "Add regression", "operations": [{
+            "op": "create", "path": target.name, "content": regression,
+        }]},
+        {"summary": "Preserve existing tests", "operations": [{
+            "op": "replace", "path": target.name,
+            "search": "    assert 4 * 3 == 12\n",
+            "replace": "    assert 4 * 3 == 12\n" + regression,
+        }]},
+    ])
+    executor = LLMExecutor(
+        router, agent_name="quality_executor", workspace_runtime=_runtime(tmp_path),
+        max_autocorrect_rounds=1,
+    )
+
+    outcome = await executor.execute(_task(), {})
+
+    assert target.read_text() == original + regression
+    assert len(router.requests) == 2
+    assert "apply: failed" in router.requests[1].messages[0].content
+    workspace = outcome["result"]["workspace"]
+    assert workspace["apply_errors"] == []
+    assert workspace["file_diffs"][0]["before_content"] == original
+    assert workspace["published_files"] == [
+        {"path": target.name, "content": original + regression},
+    ]
 
 
 # --------------------------------------------------------------------------

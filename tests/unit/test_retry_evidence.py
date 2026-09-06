@@ -71,6 +71,28 @@ async def test_graph_retry_retains_first_edit_for_criteria_and_publication(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("external_edit", [False, True])
+async def test_checkpoint_create_replay_preserves_current_content_and_evidence(
+    tmp_path, external_edit
+):
+    current = task()
+    operation = {"op": "create", "path": "orders.py", "content": "return amount\n"}
+    first = await execute(tmp_path, current, [operation])
+    expected = "return updated_amount\n" if external_edit else operation["content"]
+    if external_edit:
+        (tmp_path / "orders.py").write_text(expected)
+
+    second = await execute(tmp_path, checkpoint_retry(current, first), [operation])
+
+    workspace = second["result"]["workspace"]
+    assert (tmp_path / "orders.py").read_text() == expected
+    assert bool(workspace["apply_errors"]) is external_edit
+    assert workspace["file_diffs"][0]["change_type"] == "created"
+    assert workspace["file_diffs"][0]["before_content"] is None
+    assert workspace["published_files"] == [{"path": "orders.py", "content": expected}]
+
+
+@pytest.mark.asyncio
 async def test_retry_reads_current_bytes_and_revalidates_even_without_operations(tmp_path):
     class Runner:
         calls = 0
@@ -118,9 +140,13 @@ async def test_retry_deletions_never_resurrect_prior_content(
     target = tmp_path / "orders.py"
     if initially_exists:
         target.write_text("original\n")
-    first = await execute(tmp_path, current, [{
-        "op": "create", "path": "orders.py", "content": "return amount\n",
-    }])
+    initial_operation = (
+        {"op": "replace", "path": "orders.py", "search": "original\n",
+         "replace": "return amount\n"}
+        if initially_exists else
+        {"op": "create", "path": "orders.py", "content": "return amount\n"}
+    )
+    first = await execute(tmp_path, current, [initial_operation])
     if not deleted_by_operation:
         target.unlink()
     second = await execute(
