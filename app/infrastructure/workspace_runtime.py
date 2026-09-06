@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -184,25 +185,35 @@ class OperationApplyError(ValueError):
     do workspace) continuam sendo ValueError comum e abortam a tarefa."""
 
 
-def normalize_operations(result_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """`operations` novo + `files` legado (arquivo inteiro → op=create), na
-    ordem: legado primeiro, depois as operações — um payload não deveria
-    misturar os dois, mas se misturar o replace vê o arquivo já criado."""
-    operations: list[dict[str, Any]] = []
+@dataclass(frozen=True)
+class _WorkspaceOperation:
+    payload: dict[str, Any]
+    legacy_full_file: bool = False
+
+
+def normalize_operations(result_payload: dict[str, Any]) -> list[_WorkspaceOperation]:
+    """Keep legacy full-file writes distinct from the model's create operation.
+
+    Legacy files run first. Their compatibility flag belongs to this internal
+    wrapper, never to a field supplied in an operation payload.
+    """
+    operations: list[_WorkspaceOperation] = []
     legacy = result_payload.get("files")
     if isinstance(legacy, list):
         for artifact in legacy:
             if isinstance(artifact, dict):
                 operations.append(
-                    {
+                    _WorkspaceOperation({
                         "op": "create",
                         "path": artifact.get("path"),
                         "content": artifact.get("content"),
-                    }
+                    }, legacy_full_file=True)
                 )
     declared = result_payload.get("operations")
     if isinstance(declared, list):
-        operations.extend(item for item in declared if isinstance(item, dict))
+        operations.extend(
+            _WorkspaceOperation(item) for item in declared if isinstance(item, dict)
+        )
     return operations
 
 
@@ -370,12 +381,15 @@ class LocalWorkspaceRuntime:
         published: dict[str, str] = {}
         originals: dict[str, str | None] = {}
         deleted_paths: list[str] = []
-        for operation in operations:
+        for normalized in operations:
+            operation = normalized.payload
             op = operation.get("op")
             path = self._resolve_artifact_path(operation.get("path"))
             relative_path = path.relative_to(self._root).as_posix()
             try:
-                before, after = self._apply_operation(op, path, operation)
+                before, after = self._apply_operation(
+                    op, path, operation, legacy_full_file=normalized.legacy_full_file
+                )
             except OperationApplyError as exc:
                 apply_errors.append(
                     {"path": relative_path, "operation": op, "error": str(exc)}
@@ -635,7 +649,7 @@ class LocalWorkspaceRuntime:
 
     @staticmethod
     def _apply_operation(
-        op: Any, path: Path, operation: dict[str, Any]
+        op: Any, path: Path, operation: dict[str, Any], *, legacy_full_file: bool = False
     ) -> tuple[str | None, str | None]:
         """Executa uma operação e devolve (before, after). after=None é remoção."""
         before = path.read_text(encoding="utf-8") if path.exists() else None
@@ -643,8 +657,24 @@ class LocalWorkspaceRuntime:
             content = operation.get("content")
             if not isinstance(content, str):
                 raise ValueError(f"Operação create em {path.name} sem content.")
+            if before is not None and not legacy_full_file:
+                if path.read_bytes() == content.encode("utf-8"):
+                    return before, before
+                raise OperationApplyError(
+                    "arquivo já existe com conteúdo diferente; leia o arquivo atual "
+                    "e use op=replace para uma alteração localizada."
+                )
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            if legacy_full_file:
+                path.write_text(content, encoding="utf-8")
+            else:
+                try:
+                    with path.open("x", encoding="utf-8") as created:
+                        created.write(content)
+                except FileExistsError as exc:
+                    raise OperationApplyError(
+                        "arquivo passou a existir; leia o arquivo atual e use op=replace."
+                    ) from exc
             return before, content
         if op == "replace":
             if before is None:

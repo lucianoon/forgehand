@@ -347,6 +347,10 @@ O executor devolve `operations`, aplicadas em ordem pelo workspace runtime:
 | `replace` | `path`, `search`, `replace`, `occurrence?` | trecho de arquivo existente |
 | `delete` | `path` | remover arquivo |
 
+`create` não sobrescreve um arquivo existente. Se o conteúdo já for idêntico,
+a repetição termina sem gravar novamente; conteúdo diferente gera uma falha
+`apply`, preservando o arquivo e orientando o executor a usar `replace`.
+
 `search` precisa ser um trecho literal e único do arquivo atual; se aparecer
 mais de uma vez o executor deve ampliar o trecho ou informar `occurrence`
 (1 = primeira). O casamento é exato e, para trechos multilinha, tolera CRLF e
@@ -358,7 +362,9 @@ autocorrect e veta a aprovação do judge até ser corrigida.
 O runtime também grava `workspace.published_files` (conteúdo final de cada
 arquivo tocado) e `workspace.deleted_paths`; é isso que
 `POST /workflows/{id}/pull-request` publica. Payloads antigos com `files`
-(arquivo inteiro) continuam aceitos e são tratados como `create`.
+(arquivo inteiro) continuam aceitos em um caminho interno de compatibilidade
+que permite substituir o conteúdo completo. Essa exceção não pertence ao
+`create` de `operations` e não é oferecida no schema enviado ao modelo.
 
 Para que o executor consiga editar qualquer ponto de um arquivo, ele precisa
 O grounding é por relevância: um arquivo só entra se alguma palavra do pedido
