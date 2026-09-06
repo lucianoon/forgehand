@@ -70,9 +70,12 @@ async def test_node_observes_updated_file_between_builds(tmp_path):
     from app.infrastructure.workspace_runtime import LocalWorkspaceRuntime
 
     LocalWorkspaceRuntime._apply_operation(
-        "create",
+        "replace",
         tmp_path / "catalog.cjs",
-        {"content": "module.exports = {};\nmodule.exports.value = 2;\n"},
+        {
+            "search": "module.exports = {};",
+            "replace": "module.exports = {};\nmodule.exports.value = 2;",
+        },
     )
     after = await runner.run(lease, selected)
     assert json.loads(after.phases[0].stdout) == {"value": 2}, after.model_dump_json()
@@ -169,11 +172,12 @@ async def test_independent_checks_reject_base_and_accept_reference_fix(
 
         path = root / "catalog.cjs"
         LocalWorkspaceRuntime._apply_operation(
-            "create",
+            "replace",
             path,
             {
-                "content": path.read_text()
-                + "\nmodule.exports.uniqueTags = tags => [...new Set(tags.map(tag => tag.trim().toLowerCase()).filter(Boolean))];\n"
+                "search": "module.exports = { retail, wholesale };",
+                "replace": "module.exports = { retail, wholesale };\n\n"
+                "module.exports.uniqueTags = tags => [...new Set(tags.map(tag => tag.trim().toLowerCase()).filter(Boolean))];",
             },
         )
         (root / "tests/tags.test.cjs").write_text(
