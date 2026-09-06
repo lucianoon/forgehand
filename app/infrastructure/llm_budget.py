@@ -30,6 +30,16 @@ class CallBudget:
     blocked_reason: str | None = None
     parent: CallBudget | None = None
 
+    def remaining_allowance(self) -> tuple[int, float]:
+        """Allowance available to this call, including all enclosing budgets."""
+        tokens = self.max_tokens - self.tokens - self.unconfirmed_tokens - self.reserved_tokens
+        cost = (self.max_cost_usd - self.cost_usd - self.unconfirmed_cost_usd
+                - self.reserved_cost_usd)
+        if self.parent is not None:
+            parent_tokens, parent_cost = self.parent.remaining_allowance()
+            tokens, cost = min(tokens, parent_tokens), min(cost, parent_cost)
+        return tokens, cost
+
     def reserve(self, tokens: int, cost_usd: float) -> Reservation:
         if self.blocked_reason is not None:
             raise BudgetAdmissionError(self.blocked_reason)
