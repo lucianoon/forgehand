@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
 from app.infrastructure.installation import installation_descriptor, local_installation_checks
-from app.infrastructure.workflow_queue import WorkflowAccessContext
+from app.infrastructure.workflow_queue import WorkflowAccessContext, is_database_unavailable
 from app.models.factory import WorkOrder
 from app.models.factory import WorkspaceLifecycle, WorkspaceRetention
 from app.factory.lifecycle import WorkspaceBusy
@@ -194,61 +194,75 @@ class WorkflowService:
 
     async def _worker_loop(self, index: int) -> None:
         worker_id = f"{self._worker_id_prefix}:worker-{index}"
+        retry_delay = max(self._settings.workflow_queue_poll_interval_seconds, 0.1)
         while True:
-            failed = False
-            self._refresh_installation()
-            await self._job_queue.touch_worker(worker_id)
-            job = await self._job_queue.dequeue(
-                worker_id=worker_id,
-                poll_interval_seconds=self._settings.workflow_queue_poll_interval_seconds,
-            )
-            if job is None:
-                continue
-            self._running[job.workflow_id] = f"worker-{index}"
             try:
-                await self._run_job_with_heartbeat(job)
-            except asyncio.CancelledError:
-                # Shutdown interrupted execution. Leave the delivery leased so
-                # another worker can reclaim it; never ACK unfinished work.
-                failed = True
-                raise
-            except WorkflowLeaseLost:
-                failed = True
-                logger.warning(
-                    "Worker perdeu o lease do workflow %s; execução cancelada.",
-                    job.workflow_id,
+                failed = False
+                self._refresh_installation()
+                await self._job_queue.touch_worker(worker_id)
+                job = await self._job_queue.dequeue(
+                    worker_id=worker_id,
+                    poll_interval_seconds=self._settings.workflow_queue_poll_interval_seconds,
                 )
-            except WorkflowResumeUncertain:
-                failed = True
-                # Preserve the checkpoint and its human gate. A fresh explicit
-                # decision can enqueue a bound resume; never mark the graph failed.
-                await self._job_queue.fail(job, "resume_decision_unbound")
-                await self._publish_event(
-                    "workflow.resume_blocked", {"workflow_id": job.workflow_id}
-                )
-                logger.warning("Resume requires a fresh decision: %s", job.workflow_id)
-            except WorkflowCancelled:
-                failed = True
-                await self._publish_event(
-                    "workflow.cancelled", {"workflow_id": job.workflow_id}
-                )
+                retry_delay = max(self._settings.workflow_queue_poll_interval_seconds, 0.1)
+                if job is None:
+                    continue
+                self._running[job.workflow_id] = f"worker-{index}"
+                try:
+                    await self._run_job_with_heartbeat(job)
+                except asyncio.CancelledError:
+                    # Shutdown interrupted execution. Leave the delivery leased so
+                    # another worker can reclaim it; never ACK unfinished work.
+                    failed = True
+                    raise
+                except WorkflowLeaseLost:
+                    failed = True
+                    logger.warning(
+                        "Worker perdeu o lease do workflow %s; execução cancelada.",
+                        job.workflow_id,
+                    )
+                except WorkflowResumeUncertain:
+                    failed = True
+                    # Preserve the checkpoint and its human gate. A fresh explicit
+                    # decision can enqueue a bound resume; never mark the graph failed.
+                    await self._job_queue.fail(job, "resume_decision_unbound")
+                    await self._publish_event(
+                        "workflow.resume_blocked", {"workflow_id": job.workflow_id}
+                    )
+                    logger.warning("Resume requires a fresh decision: %s", job.workflow_id)
+                except WorkflowCancelled:
+                    failed = True
+                    await self._publish_event(
+                        "workflow.cancelled", {"workflow_id": job.workflow_id}
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed = True
+                    if is_database_unavailable(exc):
+                        raise
+                    await self._mark_failed(job.workflow_id, exc)
+                    await self._job_queue.fail(job, type(exc).__name__)
+                    await self._publish_event(
+                        "workflow.failed",
+                        {"workflow_id": job.workflow_id, "error": type(exc).__name__},
+                    )
+                else:
+                    self._failures.pop(job.workflow_id, None)
+                    await self._publish_event(
+                        "workflow.processed", {"workflow_id": job.workflow_id}
+                    )
+                finally:
+                    self._running.pop(job.workflow_id, None)
+                    if not failed:
+                        await self._job_queue.acknowledge(job)
             except Exception as exc:  # noqa: BLE001
-                failed = True
-                await self._mark_failed(job.workflow_id, exc)
-                await self._job_queue.fail(job, type(exc).__name__)
-                await self._publish_event(
-                    "workflow.failed",
-                    {"workflow_id": job.workflow_id, "error": type(exc).__name__},
-                )
-            else:
-                self._failures.pop(job.workflow_id, None)
-                await self._publish_event(
-                    "workflow.processed", {"workflow_id": job.workflow_id}
-                )
-            finally:
-                self._running.pop(job.workflow_id, None)
-                if not failed:
-                    await self._job_queue.acknowledge(job)
+                if not is_database_unavailable(exc):
+                    raise
+                # Keep consumers alive, but do not replay the failed database
+                # statement or invoke the graph immediately. Any acquired job
+                # remains leased and normal checkpoint recovery owns re-delivery.
+                logger.warning("Worker aguardando PostgreSQL: %s", type(exc).__name__)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
 
     async def _interrupt_positions(self, snapshot: Any) -> dict[str, _ResumePosition]:
         """Bind a gate to its task-local persisted resume ordinal, not just its ID.

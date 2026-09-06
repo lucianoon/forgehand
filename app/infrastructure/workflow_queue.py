@@ -17,6 +17,15 @@ JobKind = Literal["start", "resume"]
 JobStatus = Literal["queued", "processing", "done", "failed"]
 
 
+def is_database_unavailable(exc: BaseException) -> bool:
+    """Keep the in-memory backend independent of the optional PostgreSQL extra."""
+    try:
+        from psycopg import InterfaceError, OperationalError
+    except ImportError:
+        return False
+    return isinstance(exc, (InterfaceError, OperationalError))
+
+
 class WorkflowDispatchConflict(ValueError):
     """Admission cannot safely be repeated; messages contain no submitted data."""
 
@@ -455,7 +464,7 @@ class PostgresWorkflowQueue:
         self, *, owner_client_id: str, project_id: str | None = None, limit: int = 20
     ) -> list[WorkflowAccessContext]:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 SELECT workflow_id, project_id, owner_client_id
@@ -483,11 +492,36 @@ class PostgresWorkflowQueue:
         self._deployment_fingerprint: str | None = None
         self._installation_required = False
 
+    @asynccontextmanager
+    async def _connection(self) -> AsyncGenerator[None, None]:
+        """Reconnect between operations; never replay a possibly committed write."""
+        from psycopg import AsyncConnection
+
+        async with self._lock:
+            assert self._conn is not None
+            if self._conn.closed:
+                self._conn = await AsyncConnection.connect(self._dsn, connect_timeout=5)
+            try:
+                yield
+            except BaseException as exc:
+                # A failed/ambiguous operation reaches its caller unchanged. A
+                # later request gets a fresh connection, with the same schema
+                # and durable admission/lease identities already in PostgreSQL.
+                if not self._conn.closed:
+                    if is_database_unavailable(exc):
+                        await self._conn.close()
+                    else:
+                        try:
+                            await self._conn.rollback()
+                        except Exception:  # noqa: BLE001
+                            await self._conn.close()
+                raise
+
     async def setup(self) -> None:
         from psycopg import AsyncConnection
 
-        self._conn = await AsyncConnection.connect(self._dsn)
-        async with self._lock:
+        self._conn = await AsyncConnection.connect(self._dsn, connect_timeout=5)
+        async with self._connection():
             await self._conn.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':workflow-setup'))")
             await self._conn.execute(
                 """
@@ -636,7 +670,7 @@ class PostgresWorkflowQueue:
 
     async def dispatch_scope(self) -> str:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             async with self._conn.transaction():
                 cur = await self._conn.execute(
                     "SELECT namespace FROM workflow_dispatch_identity WHERE singleton"
@@ -653,7 +687,7 @@ class PostgresWorkflowQueue:
     ) -> str:
         assert self._conn is not None
         copied, digest = _start_payload(payload, workflow_id, project_id, owner_client_id)
-        async with self._lock:
+        async with self._connection():
             async with self._conn.transaction():
                 await self._enable_installation_locked()
                 cur = await self._conn.execute(
@@ -726,7 +760,7 @@ class PostgresWorkflowQueue:
     ) -> tuple[str, bool]:
         assert self._conn is not None
         repository = repository.lower()
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 INSERT INTO workflow_idempotency (
@@ -776,7 +810,7 @@ class PostgresWorkflowQueue:
 
     async def installation_jobs(self, fingerprint: str | None) -> dict[str, int]:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute("""
                 SELECT COUNT(*) FILTER (WHERE required_fingerprint IS NOT NULL
                           AND required_fingerprint IS DISTINCT FROM %s),
@@ -790,7 +824,7 @@ class PostgresWorkflowQueue:
 
     async def installation_workers(self, fingerprint: str | None) -> dict[str, int]:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute("""
                 SELECT COUNT(*),
                     COUNT(*) FILTER (WHERE deployment_fingerprint=%s),
@@ -806,7 +840,7 @@ class PostgresWorkflowQueue:
 
     async def touch_worker(self, worker_id: str) -> None:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             await self._enable_installation_locked()
             await self._conn.execute(
                 """
@@ -829,7 +863,7 @@ class PostgresWorkflowQueue:
         payload: dict[str, Any] | str,
     ) -> WorkflowJob:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             await self._enable_installation_locked()
             cur = await self._conn.execute(
                 """
@@ -908,7 +942,7 @@ class PostgresWorkflowQueue:
         if self._installation_required and self._deployment_fingerprint is None:
             await asyncio.sleep(poll_interval_seconds)
             return None
-        async with self._lock:
+        async with self._connection():
             async with self._conn.transaction():
                 await self._requeue_expired_locked()
                 cur = await self._conn.execute(
@@ -966,7 +1000,7 @@ class PostgresWorkflowQueue:
         assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 UPDATE workflow_jobs
@@ -986,7 +1020,7 @@ class PostgresWorkflowQueue:
         assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 UPDATE workflow_jobs
@@ -1009,7 +1043,7 @@ class PostgresWorkflowQueue:
         assert self._conn is not None
         if job.locked_by is None:
             return False
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 UPDATE workflow_jobs
@@ -1031,7 +1065,7 @@ class PostgresWorkflowQueue:
 
     async def cancel(self, workflow_id: str) -> bool:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 UPDATE workflow_jobs
@@ -1051,7 +1085,7 @@ class PostgresWorkflowQueue:
 
     async def get_state(self, workflow_id: str) -> WorkflowJobState | None:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 SELECT status, error
@@ -1074,7 +1108,7 @@ class PostgresWorkflowQueue:
 
     async def get_access(self, workflow_id: str) -> WorkflowAccessContext | None:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 SELECT project_id, owner_client_id
@@ -1097,7 +1131,7 @@ class PostgresWorkflowQueue:
 
     async def get_work_order(self, workflow_id: str) -> dict[str, Any] | None:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 SELECT payload -> 'work_order'
@@ -1116,7 +1150,7 @@ class PostgresWorkflowQueue:
 
     async def ping(self) -> bool:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute("SELECT 1")
             row = await cur.fetchone()
             await self._conn.commit()
@@ -1124,7 +1158,7 @@ class PostgresWorkflowQueue:
 
     async def get_stats(self) -> WorkflowQueueStats:
         assert self._conn is not None
-        async with self._lock:
+        async with self._connection():
             cur = await self._conn.execute(
                 """
                 SELECT
