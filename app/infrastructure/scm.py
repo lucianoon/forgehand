@@ -297,7 +297,9 @@ class GitHubSCMClient:
         source_url: str,
     ) -> GitHubIssueSnapshot:
         """Lê uma issue usando apenas a credencial da instalação ativa."""
-        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+        if len(repository) > 140 or not re.fullmatch(
+            r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repository
+        ):
             raise ValueError("Repositório deve usar o formato owner/name.")
         if issue_number <= 0:
             raise ValueError("Número da issue deve ser positivo.")
