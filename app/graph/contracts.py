@@ -9,6 +9,7 @@ app/providers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -39,8 +40,11 @@ class Planner(Protocol):
 
 
 class Executor(Protocol):
-    async def execute(self, task: AgentTask, context: dict[str, Any]) -> dict[str, Any]:
-        """Retorna {"result": dict, "agent": str, "model": str, "tokens": int, "cost_usd": float}."""
+    async def execute(
+        self, task: AgentTask, context: dict[str, Any]
+    ) -> dict[str, Any] | ExecutionOutcome:
+        """Retorna {"result": dict, "agent": str, "model": str, "tokens": int,
+        "cost_usd": float, "budget_blocked_reason"?: str} ou um ExecutionOutcome."""
         ...
 
 
@@ -111,6 +115,40 @@ class ExecutionPayload(BaseModel):
     owner_client_id: str = ""
     token_allowance: int | None = Field(default=None, ge=0)
     cost_allowance_usd: float | None = Field(default=None, ge=0)
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    """Resultado tipado de Executor.execute, lido pelo worker do grafo.
+
+    O dict do protocolo continua aceito (é o que os executores devolvem);
+    from_executor aplica os mesmos defaults e coerções que o worker fazia
+    com .get(...). Não é persistido: o que vai ao checkpoint continua sendo
+    a TaskAttempt e o resultado da tarefa.
+    """
+
+    result: Any = None
+    agent: str = "unknown"
+    model: str = "unknown"
+    tokens: int = 0
+    cost_usd: float = 0.0
+    budget_blocked_reason: str | None = None
+
+    @classmethod
+    def from_executor(
+        cls, raw: ExecutionOutcome | Mapping[str, Any]
+    ) -> ExecutionOutcome:
+        if isinstance(raw, ExecutionOutcome):
+            return raw
+        blocked = raw.get("budget_blocked_reason")
+        return cls(
+            result=raw.get("result"),
+            agent=raw.get("agent", "unknown"),
+            model=raw.get("model", "unknown"),
+            tokens=int(raw.get("tokens", 0)),
+            cost_usd=float(raw.get("cost_usd", 0.0)),
+            budget_blocked_reason=str(blocked) if blocked else None,
+        )
 
 
 class UsageReport(BaseModel):
