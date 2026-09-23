@@ -26,6 +26,9 @@ import pytest
 from app.factory.git_auth import GitAuthentication
 from app.factory.workspace import GitCommandError, SafeGitRunner
 
+# SafeGitRunner é do factory mode (POSIX), e o fixture executa diretamente um
+# wrapper "#!/bin/sh" como executável do Git, o que o Windows não sabe fazer.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 
 _TOKEN = "forgehand-local-fake-token-497d6d"
 

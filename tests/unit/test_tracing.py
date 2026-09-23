@@ -1,9 +1,5 @@
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
 
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.settings import Settings
@@ -23,6 +19,16 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.registry import ModelTier, ProviderRouter, TierBinding
+
+
+def otel_in_memory():
+    """Exporter em memória; pula o teste sem o extra otel instalado."""
+    export = pytest.importorskip("opentelemetry.sdk.trace.export")
+    memory = pytest.importorskip(
+        "opentelemetry.sdk.trace.export.in_memory_span_exporter"
+    )
+    exporter = memory.InMemorySpanExporter()
+    return exporter, export.SimpleSpanProcessor(exporter)
 
 
 class RecordingTracer:
@@ -119,10 +125,8 @@ async def test_router_without_tracer_keeps_working():
 
 @pytest.mark.asyncio
 async def test_otel_tracer_nests_generation_under_workflow_span():
-    exporter = InMemorySpanExporter()
-    tracer = OtelWorkflowTracer(
-        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
-    )
+    exporter, processor = otel_in_memory()
+    tracer = OtelWorkflowTracer("forgehand-test", span_processor=processor)
 
     assert current_trace_id() is None
     with tracer.span("workflow", {"forgehand.workflow_id": "wf-1"}):
@@ -152,10 +156,8 @@ async def test_otel_tracer_nests_generation_under_workflow_span():
 
 @pytest.mark.asyncio
 async def test_otel_tracer_marks_errors():
-    exporter = InMemorySpanExporter()
-    tracer = OtelWorkflowTracer(
-        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
-    )
+    exporter, processor = otel_in_memory()
+    tracer = OtelWorkflowTracer("forgehand-test", span_processor=processor)
     tracer.record_generation(
         provider="fake",
         model="m1",
@@ -215,10 +217,8 @@ async def test_trace_id_reaches_task_attempts_through_parallel_fanout():
         async def persist(self, state):
             return None
 
-    exporter = InMemorySpanExporter()
-    tracer = OtelWorkflowTracer(
-        "forgehand-test", span_processor=SimpleSpanProcessor(exporter)
-    )
+    exporter, processor = otel_in_memory()
+    tracer = OtelWorkflowTracer("forgehand-test", span_processor=processor)
     app = build_workflow(
         TwoTaskPlanner(),
         Registry(),

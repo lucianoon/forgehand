@@ -5,6 +5,7 @@ code is never imported or executed on the host.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,15 @@ from tests.unit.test_judge_build_evidence import NoLLM, report, task
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/python_shadowed_tests.json"
 
+# A leitura do gate usa descritores relativos (dir_fd) com O_NOFOLLOW e, por
+# desenho, exige POSIX (docs/python-test-integrity.md). Fora dele o gate falha
+# fechado; esse contrato é coberto por test_reader_fails_closed_without_posix.
+posix_reader = pytest.mark.skipif(
+    os.name != "posix", reason="leitura do python_test_integrity exige POSIX"
+)
 
+
+@posix_reader
 @pytest.mark.asyncio
 async def test_real_green_pr_with_shadowed_classes_is_vetoed_and_gets_repair_feedback(tmp_path):
     observed = json.loads(FIXTURE.read_text())
@@ -45,6 +54,7 @@ async def test_real_green_pr_with_shadowed_classes_is_vetoed_and_gets_repair_fee
     assert "python_test_integrity" in outcome.evaluation.validated_by
 
 
+@posix_reader
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source,name", [
     ("def test_total(): pass\ndef test_total(): pass\n", "test_total"),
@@ -68,6 +78,7 @@ async def test_duplicate_definitions_in_one_scope_are_rejected(tmp_path, source,
     assert "linhas" in signal.details
 
 
+@posix_reader
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", [
     "class TestA:\n def test_one(self): pass\nclass TestB:\n def test_one(self): pass\n",
@@ -89,6 +100,20 @@ async def test_valid_scopes_and_parametrization_do_not_trigger_gate(tmp_path, so
         capability=Capability.TESTING, applied_files=["test_sample.py"],
     )
     assert signal.passed is True
+
+
+@pytest.mark.skipif(os.name == "posix", reason="contrato do host sem POSIX")
+@pytest.mark.asyncio
+async def test_reader_fails_closed_without_posix(tmp_path):
+    from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator
+    from app.models.task import Capability
+
+    (tmp_path / "test_sample.py").write_text("def test_one(): pass\n")
+    signal = await PythonTestIntegrityValidator(str(tmp_path)).run(
+        capability=Capability.TESTING, applied_files=["test_sample.py"],
+    )
+    assert signal.passed is False
+    assert "PosixRequired" in signal.details
 
 
 def changed_task(path, *, changed=True, change_type="modified"):
@@ -131,9 +156,13 @@ async def test_judge_rereads_source_instead_of_trusting_cached_pass(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("unsafe", ["traversal", "absolute", "file_symlink", "directory_symlink", "hardlink", "fifo"])
+@pytest.mark.parametrize("unsafe", [
+    "traversal", "absolute", "hardlink",
+    pytest.param("file_symlink", marks=posix_reader),
+    pytest.param("directory_symlink", marks=posix_reader),
+    pytest.param("fifo", marks=posix_reader),
+])
 async def test_unsafe_sources_are_rejected_without_reading_outside_workspace(tmp_path, unsafe):
-    import os
     from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator
 
     outside = tmp_path / "outside"
@@ -162,7 +191,10 @@ async def test_unsafe_sources_are_rejected_without_reading_outside_workspace(tmp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["def test_x(: SECRET_VALUE\n", "x" * (128 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "source", ["def test_x(: SECRET_VALUE\n", "x" * (128 * 1024 + 1)],
+    ids=["invalid_syntax", "oversized"],
+)
 async def test_invalid_or_oversized_source_fails_closed(tmp_path, source):
     from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator
 
@@ -175,7 +207,7 @@ async def test_invalid_or_oversized_source_fails_closed(tmp_path, source):
 @pytest.mark.asyncio
 async def test_unchanged_duplicate_test_file_does_not_trigger_autocorrection(tmp_path):
     duplicate = "def test_total(): pass\ndef test_total(): pass\n"
-    (tmp_path / "test_existing.py").write_text(duplicate)
+    (tmp_path / "test_existing.py").write_bytes(duplicate.encode())
     settings = Settings(_env_file=None, executor_workspace_root=str(tmp_path), executor_apply_files_enabled=True)
     pipeline = build_objective_validation_pipeline(settings, [])
     runtime = build_workspace_runtime(settings, pipeline)
@@ -186,6 +218,7 @@ async def test_unchanged_duplicate_test_file_does_not_trigger_autocorrection(tmp
     assert result["workspace"]["command_feedback"] == []
 
 
+@posix_reader
 @pytest.mark.asyncio
 async def test_feedback_drives_existing_autocorrection_and_repair_clears_veto(tmp_path):
     from app.agents.executor import LLMExecutor
@@ -261,6 +294,7 @@ async def test_delete_only_edits_still_run_command_checks(tmp_path):
     assert [item["name"] for item in result["workspace"]["command_feedback"]] == ["pytest"]
 
 
+@posix_reader
 @pytest.mark.asyncio
 async def test_modified_source_disappearing_during_validation_fails_closed(tmp_path):
     from app.infrastructure.workspace_runtime import CommandObjectiveValidator
