@@ -16,6 +16,14 @@ registradas:
 | 1 | 2/4 concluídos, US$ 0,95 | o carregador de `--env-file` do `uv` parou na primeira variável com espaços; validadores, `run_command` e referências web ficaram desligados. Ambiente, não produto. |
 | 2 | 0/4 concluídos, US$ 0,58 | o caso `package-with-tests` reprovou `file_created` porque a evidência cumulativa da autocorreção marcava um arquivo criado na rodada 1 e editado na rodada 2 como `modified` (bug real, corrigido no mesmo PR com teste); os três casos seguintes falharam com HTTP 400 "credit balance is too low" da Anthropic. |
 
+## 2026-09-22 — tentativa sem rodada
+
+Antes de rodar a suíte, uma chamada mínima de verificação (`claude-haiku-4-5`,
+`max_tokens=1`) voltou HTTP 400 "credit balance is too low". A suíte não foi
+executada e nenhum relatório novo foi gerado; custo US$ 0,00.
+
+**Estado da linha de base: nenhuma rodada fechou o gate até aqui.**
+
 Próxima rodada válida: após recarregar os créditos do provedor, rodar
 
 ```bash
