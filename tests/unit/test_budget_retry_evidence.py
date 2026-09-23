@@ -1,5 +1,7 @@
 """Budget stops must retain applied edits and their attempt evidence."""
 
+import os
+
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -308,6 +310,7 @@ async def test_error_after_execution_keeps_new_result_instead_of_original_task(
     assert task.status == TaskStatus.ESCALATED
 
 
+@pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 @pytest.mark.asyncio
 async def test_budget_failure_after_build_retains_fresh_report_and_attempt(
     tmp_path, monkeypatch

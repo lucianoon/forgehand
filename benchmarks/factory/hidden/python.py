@@ -58,19 +58,20 @@ if case == "defect":
                 raise AssertionError(f"Invalid discount accepted: {invalid!r}")
     assert run_submitted_tests() == 0, "Submitted tests must pass before mutation"
     path = Path("orders.py")
-    original = path.read_text()
+    # Bytes, not text mode: the restore must be byte for byte on any host.
+    original = path.read_bytes().decode()
     try:
         # Existing smoke tests pass when discounts are ignored. A requested
         # regression must fail if this original defect is reintroduced.
-        path.write_text(
+        path.write_bytes((
             original
             + "\n\ndef total(prices, discount=0):\n    return round(sum(prices), 2)\n"
-        )
+        ).encode())
         assert run_submitted_tests() == 1, (
             "Submitted tests did not detect the ignored-discount mutation"
         )
     finally:
-        path.write_text(original)
+        path.write_bytes(original.encode())
 elif case == "tests":
     suite = unittest.defaultTestLoader.discover("tests")
     assert suite.countTestCases() >= 5, "Add at least three regression cases"
@@ -80,7 +81,7 @@ elif case == "tests":
     # Counting test names is not enough: each requested regression must catch
     # a corresponding behavior defect. Mutations exist only in this sandbox.
     path = Path("orders.py")
-    original = path.read_text()
+    original = path.read_bytes().decode()
     mutations = [
         ("if quantity < 0:", "if False:"),
         ("return round(price * quantity, 2)", "return int(price * quantity)"),
@@ -92,12 +93,12 @@ elif case == "tests":
     try:
         for before, after in mutations:
             assert before in original
-            path.write_text(original.replace(before, after))
+            path.write_bytes(original.replace(before, after).encode())
             assert run_submitted_tests() == 1, (
                 "Regression tests did not catch an injected defect"
             )
     finally:
-        path.write_text(original)
+        path.write_bytes(original.encode())
 elif case == "configuration":
     assert json.loads(Path("config.json").read_text())["currency"] == "EUR"
     assert "EUR 12.00" in Path("README.md").read_text()

@@ -180,7 +180,10 @@ async def test_retry_rejects_artifact_replaced_with_symlink_outside_runtime(tmp_
     outside = tmp_path / "outside.py"
     outside.write_text("unrelated source")
     (root / "orders.py").unlink()
-    (root / "orders.py").symlink_to(outside)
+    try:
+        (root / "orders.py").symlink_to(outside)
+    except OSError as exc:  # Windows sem modo desenvolvedor: WinError 1314.
+        pytest.skip(f"host não permite criar links simbólicos: {exc}")
     with pytest.raises(ValueError, match="fora do workspace"):
         await execute(root, checkpoint_retry(current, first), [])
 

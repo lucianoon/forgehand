@@ -1,5 +1,6 @@
 """Sandbox phase evidence reaches typed criteria before subjective review."""
 
+import os
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
@@ -164,6 +165,7 @@ async def test_successful_validator_never_erases_failure_with_same_signal(legacy
     assert evaluation.criteria_scores == {"Testes passam": 0.0}
 
 
+@pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
 @pytest.mark.asyncio
 async def test_factory_wiring_requires_current_build_evidence(tmp_path):
     router = Mock(spec=ProviderRouter)

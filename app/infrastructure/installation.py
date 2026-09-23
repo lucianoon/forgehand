@@ -91,12 +91,17 @@ def installation_descriptor(settings: Settings) -> dict[str, Any]:
 
 
 def _docker_socket_accessible(path: str) -> bool:
+    # getattr: os stubs do Windows não declaram AF_UNIX, e o mypy estrito
+    # precisa ficar limpo nas duas plataformas.
+    family: int | None = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        return False
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        with socket.socket(family, socket.SOCK_STREAM) as client:
             client.settimeout(1)
             client.connect(path)
         return True
-    except (OSError, AttributeError):
+    except OSError:
         return False
 
 
