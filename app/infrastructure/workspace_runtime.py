@@ -673,11 +673,14 @@ class LocalWorkspaceRuntime:
                     "e use op=replace para uma alteração localizada."
                 )
             path.parent.mkdir(parents=True, exist_ok=True)
+            # newline="" grava o conteúdo byte a byte como o agente o enviou:
+            # sem isso o Windows traduz \n em \r\n, e o create idêntico
+            # seguinte deixa de bater com read_bytes().
             if legacy_full_file:
-                path.write_text(content, encoding="utf-8")
+                path.write_text(content, encoding="utf-8", newline="")
             else:
                 try:
-                    with path.open("x", encoding="utf-8") as created:
+                    with path.open("x", encoding="utf-8", newline="") as created:
                         created.write(content)
                 except FileExistsError as exc:
                     raise OperationApplyError(
@@ -700,7 +703,7 @@ class LocalWorkspaceRuntime:
                 replacement,
                 occurrence if isinstance(occurrence, int) else None,
             )
-            path.write_text(after, encoding="utf-8")
+            path.write_text(after, encoding="utf-8", newline="")
             return before, after
         if op == "delete":
             if before is None:

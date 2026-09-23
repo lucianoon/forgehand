@@ -253,6 +253,26 @@ async def test_repeated_identical_create_is_a_no_write_success(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_written_files_keep_the_exact_line_endings_sent(tmp_path: Path):
+    """No Windows, o modo texto traduzia \\n em \\r\\n ao gravar."""
+    runtime = _runtime(tmp_path)
+    await runtime.apply(_task(), {"operations": [
+        {"op": "create", "path": "lf.py", "content": "a = 1\nb = 2\n"},
+        {"op": "create", "path": "crlf.py", "content": "a = 1\r\nb = 2\r\n"},
+    ]})
+    assert (tmp_path / "lf.py").read_bytes() == b"a = 1\nb = 2\n"
+    assert (tmp_path / "crlf.py").read_bytes() == b"a = 1\r\nb = 2\r\n"
+
+    await runtime.apply(_task(), {"operations": [
+        {"op": "replace", "path": "lf.py", "search": "b = 2", "replace": "b = 3"},
+    ]})
+    assert (tmp_path / "lf.py").read_bytes() == b"a = 1\nb = 3\n"
+
+    await runtime.apply(_task(), {"files": [{"path": "legacy.py", "content": "x = 1\n"}]})
+    assert (tmp_path / "legacy.py").read_bytes() == b"x = 1\n"
+
+
+@pytest.mark.asyncio
 async def test_legacy_full_file_update_does_not_relax_following_create(tmp_path: Path):
     target = tmp_path / "existing.py"
     target.write_text("original\n")
