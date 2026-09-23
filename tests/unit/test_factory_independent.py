@@ -16,6 +16,8 @@ from app.evaluation.factory_qualification import FactoryCase, FactoryResult
 from app.factory.workspace import LocalGitWorkspaceManager
 from app.models.build_execution import BuildOutcome, BuildPhaseResult, BuildRunResult
 
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="factory mode exige POSIX")
+
 FIXTURES = Path(__file__).resolve().parents[2] / "benchmarks/factory"
 MARKER = "FORGEHAND_VERIFIER_OK"
 
@@ -143,6 +145,9 @@ def scenario(tmp_path, monkeypatch):
 
     monkeypatch.setattr(qualification, "LocalGitWorkspaceManager", manager)
     monkeypatch.setattr(qualification, "DockerBuildRunner", Runner)
+    # The fake Runner never talks to Docker, but the real DockerCLI is built as its
+    # argument and fails closed without the binary; the suite must not need Docker.
+    monkeypatch.setattr(qualification, "DockerCLI", lambda **kwargs: object())
 
     def handler(request):
         if request.url.path.endswith("/pulls/7"):
