@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -19,6 +18,8 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any, IO, Iterator
+
+from app.infrastructure import posix
 
 FORMAT_VERSION = 1
 LOCK_NAME = ".maintenance.lock"
@@ -61,16 +62,17 @@ def maintenance_lock(root: Path, *, shared: bool = False) -> Iterator[int]:
     """Nonblocking lock shared by managed runtimes and exclusive maintenance."""
     if not root.is_dir() or root.is_symlink():
         raise BackupError("Data root must be an existing ordinary directory.")
-    fd = os.open(root / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    posix.require_posix("team_maintenance_lock")
+    fd = os.open(root / LOCK_NAME, os.O_RDWR | os.O_CREAT | posix.O_NOFOLLOW, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise BackupError("Invalid maintenance lock.")
-        os.fchmod(fd, 0o600)
-        if os.geteuid() == 0:
+        posix.fchmod(fd, 0o600)
+        if posix.effective_uid() == 0:
             owner = root.stat()
-            os.fchown(fd, owner.st_uid, owner.st_gid)
+            posix.fchown(fd, owner.st_uid, owner.st_gid)
         try:
-            fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+            posix.flock_nonblocking(fd, shared=shared, feature="team_maintenance_lock")
         except BlockingIOError:
             raise BackupError("API, worker, child process or maintenance is still active.") from None
         yield fd
@@ -190,10 +192,10 @@ def _idle_factory(root: Path) -> Iterator[None]:
         control = root / "factory" / "control"
         if control.exists():
             for path in sorted(control.glob("*.lock")):
-                fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+                fd = os.open(path, os.O_RDWR | posix.O_NOFOLLOW)
                 stack.callback(os.close, fd)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    posix.flock_nonblocking(fd, feature="team_backup")
                 except BlockingIOError:
                     raise BackupError("A factory child still holds a workspace lock.") from None
             journal = control / "lifecycle.sqlite3"
@@ -417,7 +419,7 @@ def restore(
         raise BackupError("Restoring the original path requires --original-path on an isolated offline host.")
     if root.is_relative_to(bundle) or bundle.is_relative_to(root):
         raise BackupError("Restore data root and backup bundle must be separate.")
-    if os.geteuid() not in {0, source["uid"]}:
+    if posix.effective_uid("team_restore") not in {0, source["uid"]}:
         raise BackupError("Restore must run as the recorded data owner or root.")
     target = _database(dsn, empty=True)
     if target["name"] == source["database"]:
@@ -452,11 +454,11 @@ def restore(
         _write_json(root / RESTORE_INFO, {"backup_id": manifest["backup_id"],
                                         "required_runtime_data_root": source["data_root"],
                                         "restored_database": target["name"]})
-        if os.geteuid() == 0:
+        if posix.effective_uid("team_restore") == 0:
             for directory, dirs, files in os.walk(root, followlinks=False):
                 for name in [*dirs, *files]:
-                    os.chown(Path(directory) / name, source["uid"], source["gid"], follow_symlinks=False)
-            os.chown(root, source["uid"], source["gid"])
+                    posix.lchown(Path(directory) / name, source["uid"], source["gid"])
+            posix.lchown(root, source["uid"], source["gid"])
         (root / RESTORE_MARKER).unlink()
     return {"backup_id": manifest["backup_id"], "database": target["name"], "data_root": str(root),
             "required_runtime_data_root": source["data_root"],
