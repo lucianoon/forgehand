@@ -22,6 +22,8 @@ OTel observability.
 | Operational limits | Token, cost, time and attempt circuit breakers |
 | Durable execution | PostgreSQL checkpoints and restart recovery |
 | Observability | OTel/Langfuse spans per job and LLM call |
+| Continuous evaluation | `evals/` with a real LLM, a hard budget and gates; reports versioned in `evals/baseline/`. **Current state: no run has passed the gate yet** — the recorded runs failed, with causes documented in [`evals/baseline/README.md`](evals/baseline/README.md) |
+| Tests | Hundreds of unit and integration tests (`uv run pytest --collect-only -q` prints the current count); CI runs everything on Linux |
 
 ## Measured result
 
@@ -97,7 +99,7 @@ POST /workflows
       │
 dedicated worker → load_context → create_plan → [route_to_execution]
                                     │ Send × N (parallel, ready_tasks only)
-                              execute_task (per-task timeout + budget,
+                              execute_task (executor timeout + budget,
                                     │        incremental judge on the branch)
                                     │ join
                             evaluate_results (consolidation + judge_router)
@@ -131,7 +133,7 @@ Each rule is backed by a mechanism, not by convention:
 | Agents never call a provider | `ProviderRouter` is the only port; an agent asks for a tier, not a model |
 | Structured output | `response_schema` + Pydantic validation inside the provider |
 | Acceptance criteria are mandatory | `min_length=1` in the planner schema + `AgentTask` validator |
-| Timeouts | `asyncio.wait_for(task.timeout_seconds)` in the worker |
+| Timeouts | `asyncio.wait_for(task.timeout_seconds)` in the worker, wrapping the executor call (agent + tools). Sandbox build validation has its own per-phase profile timeouts and the judge runs afterwards, outside that clock; `max_wall_clock_seconds` bounds the whole workflow and is checked between steps (it does not interrupt a running step) |
 | Bounded parallelism | `AgentProfile.max_parallel_tasks` caps fan-out per agent |
 | Idempotency | deterministic `idempotency_key()` per (project, task, attempt) |
 | The judge is not just an LLM | the `EvaluationResult` validator rejects approval while any objective signal fails |
@@ -343,6 +345,10 @@ Configuration is per capability:
 ```bash
 uv run pytest tests/unit tests/integration
 ```
+
+The full suite assumes Linux: factory tests (locks, process groups,
+`O_NOFOLLOW`) are skipped outside POSIX, and some of them need the `docker`
+executable on PATH. On Windows, use WSL with the clone on a native filesystem.
 
 The PostgreSQL restart tests and the Neo4j memory tests are opt-in so the
 default suite stays portable. With local databases available:

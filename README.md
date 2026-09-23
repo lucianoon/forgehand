@@ -14,7 +14,8 @@ e observabilidade OTel.
 
 ## Em 30 segundos
 
-- **530 funções de teste** entre cenários unitários e de integração.
+- Suíte com centenas de testes unitários e de integração (`uv run pytest --collect-only -q`
+  mostra a contagem atual); a CI roda tudo em Linux.
 - CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
 - `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
 - Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
@@ -32,7 +33,7 @@ e observabilidade OTel.
 | Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
 | Hooks de ferramentas | [Políticas pre/post/error](docs/tool-hooks.md), bloqueio e auditoria configuráveis |
 | Acesso à web | URLs do pedido viram evidências citáveis `[W1]` e a ferramenta `fetch_url` deixa planner e executor buscarem páginas durante a tarefa; tudo pelo controlador, com guarda anti-SSRF, allowlist e hooks ([opt-in](docs/configuration.md#referências-web-na-solicitação)) |
-| Avaliação contínua | `evals/` com LLM real, orçamento fechado e gates; relatório versionado em `evals/baseline/` ([como rodar](docs/configuration.md#avaliação-contínua)) |
+| Avaliação contínua | `evals/` com LLM real, orçamento fechado e gates; relatório versionado em `evals/baseline/` ([como rodar](docs/configuration.md#avaliação-contínua)). **Estado atual: nenhuma rodada fechou o gate ainda** — as rodadas registradas reprovaram, com as causas documentadas em [`evals/baseline/README.md`](evals/baseline/README.md) |
 | Interoperabilidade | servidores MCP como ferramentas dos agentes, CLI `forgehand`, SSE no dashboard e `forgehand.toml` ([quickstart](docs/quickstart.md)) |
 
 ## Resultado medido
@@ -179,7 +180,7 @@ POST /workflows
       │
 worker dedicado → load_context → create_plan → [route_to_execution]
                                     │ Send × N (paralelo, só ready_tasks)
-                              execute_task (timeout + budget por tarefa,
+                              execute_task (timeout do executor + budget,
                                     │        judge incremental no branch)
                                     │ join
                             evaluate_results (consolidação + judge_router)
@@ -216,7 +217,7 @@ e veto de publicação. A política é aprovada pelo operador, não pelo agente 
 | Agente não chama fornecedor | `ProviderRouter` é a única porta; agente pede tier, não modelo |
 | Saída estruturada | `response_schema` + validação Pydantic no provider |
 | Critério de aceitação obrigatório | `min_length=1` no schema do planner + validator do `AgentTask` |
-| Timeout | `asyncio.wait_for(task.timeout_seconds)` no worker |
+| Timeout | `asyncio.wait_for(task.timeout_seconds)` no worker, envolvendo a chamada ao executor (agente + ferramentas). A validação de build no sandbox tem timeouts próprios por fase do perfil e o judge roda depois, fora desse relógio; `max_wall_clock_seconds` limita o workflow inteiro, checado entre etapas (não interrompe uma etapa em andamento) |
 | Paralelismo | `AgentProfile.max_parallel_tasks` limita o fan-out por agente |
 | Idempotência | `idempotency_key()` determinística por (projeto, tarefa, tentativa) |
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando; critérios tipados (arquivo criado, só criações, conteúdo, testes/lint/tipos, citations) são decididos por código e o LLM só vê os subjetivos |
@@ -231,6 +232,10 @@ e veto de publicação. A política é aprovada pelo operador, não pelo agente 
 ```bash
 uv run pytest tests/unit tests/integration
 ```
+
+A suíte completa assume Linux: os testes da factory (locks, grupos de processo,
+`O_NOFOLLOW`) são pulados fora do POSIX, e parte deles precisa do executável
+`docker` no PATH. No Windows, use WSL com o clone num sistema de arquivos nativo.
 
 Os testes de restart com PostgreSQL e de memória com Neo4j são opt-in para
 que a suíte padrão seja portável. Com os bancos locais disponíveis:
