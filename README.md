@@ -171,6 +171,150 @@ curl -X POST localhost:8000/workflows/{workflow_id}/cancel \
   -H 'X-API-Key: dev-key'
 ```
 
+```bash
+curl localhost:8000/health
+curl localhost:8000/readyz
+curl localhost:8000/metrics
+curl localhost:8000/metrics/prometheus
+curl localhost:8000/audit/events -H 'X-API-Key: dev-key'
+```
+
+O corpo de `POST /workflows` precisa ser UTF-8. Em terminais Windows (Git Bash,
+PowerShell) texto acentuado digitado inline chega corrompido e a API responde
+`There was an error parsing the body`; salve o JSON num arquivo e envie com
+`curl --data-binary @req.json -H 'content-type: application/json; charset=utf-8'`.
+
+### Mission control
+
+```text
+http://localhost:8000/dashboard
+```
+
+O dashboard permite autenticar com API key, iniciar workflows, acompanhar
+etapas, tarefas, tokens e custo, responder ao gate humano e copiar o entregável
+final sem usar `curl`. O histórico recente por projeto permite retomar uma
+execução anterior sem guardar IDs na mão.
+
+## Provedores de LLM
+
+OpenRouter é o caminho recomendado:
+
+```bash
+export LLM_PROVIDER_BACKEND=openrouter
+export OPENROUTER_API_KEY=sk-or-v1-...
+export OPENROUTER_BASE_URL=https://openrouter.ai/api
+```
+
+Com `LLM_PROVIDER_BACKEND=openrouter`, o projeto usa o provider
+OpenAI-compatible com binding padrão explícito para `openai/gpt-4o-mini`,
+JSON Schema estrito, roteamento que exige parâmetros compatíveis e recuperação
+de resposta. Respostas estruturadas inválidas são retentadas pelo provider antes
+de a falha escalar para o workflow.
+
+Anthropic continua disponível como alternativa:
+
+```bash
+export LLM_PROVIDER_BACKEND=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+## Backends opcionais
+
+**Memória de projeto persistente (Fase 4)** é opt-in — sem ela o backend é
+memória em processo:
+
+```bash
+# no .env: MEMORY_BACKEND=neo4j e NEO4J_PASSWORD=<senha>
+docker compose --profile neo4j up --build
+```
+
+**Worker dedicado com Postgres:**
+
+```bash
+export CHECKPOINTER_BACKEND=postgres
+export WORKFLOW_QUEUE_BACKEND=postgres
+export RUN_EMBEDDED_WORKFLOW_WORKERS=false
+export LLM_PROVIDER_BACKEND=openrouter
+uvicorn app.main:app --reload
+
+# em outro terminal
+export CHECKPOINTER_BACKEND=postgres
+export WORKFLOW_QUEUE_BACKEND=postgres
+python -m app.worker
+```
+
+**Tracing OTel/Langfuse (Fase 7)** também é opt-in. Uma única integração OTLP
+cobre qualquer backend OTel — para Langfuse, basta apontar para o endpoint OTLP:
+
+```bash
+export TRACING_BACKEND=otlp
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(pk-lf:sk-lf)>"
+```
+
+Cada chamada de LLM vira um span `gen_ai` (modelo, tier, tokens, custo,
+latência, erro) aninhado no span do job; o `trace_id` é gravado em cada
+`TaskAttempt` para correlação.
+
+## Configuração
+
+Ajuste de fila e worker:
+
+```bash
+export WORKFLOW_QUEUE_POLL_INTERVAL_SECONDS=0.25
+export WORKFLOW_QUEUE_LEASE_SECONDS=30
+export WORKFLOW_QUEUE_MAX_DELIVERY_ATTEMPTS=3
+export AUDIT_LOG_MAX_EVENTS=500
+export DEFAULT_TASK_MAX_TOKENS=100000
+export DEFAULT_TASK_MAX_COST_USD=3.0
+```
+
+### Executor operacional (opt-in)
+
+```bash
+export EXECUTOR_WORKSPACE_ROOT=.
+export EXECUTOR_APPLY_FILES_ENABLED=true
+export EXECUTOR_MAX_AUTOCORRECT_ROUNDS=1
+export PYTEST_VALIDATION_COMMAND="uv run pytest"
+export RUFF_VALIDATION_COMMAND="uv run ruff check ."
+export MYPY_VALIDATION_COMMAND="uv run mypy app"
+export OBJECTIVE_VALIDATION_PIPELINES_JSON='{"backend":["ruff","mypy","pytest"],"frontend":["pytest"],"documentation":[]}'
+export EXECUTOR_STRATEGIES_JSON='{"backend":{"apply_files":true,"run_objective_validation":true,"allow_autocorrect":true},"documentation":{"apply_files":true,"run_objective_validation":false,"allow_autocorrect":false},"review":{"apply_files":false,"run_objective_validation":false,"allow_autocorrect":false}}'
+```
+
+Quando habilitado, o executor:
+
+- grava no workspace local os arquivos devolvidos pelo LLM (os caminhos são
+  resolvidos e confinados a `EXECUTOR_WORKSPACE_ROOT`), e o judge recebe sinais
+  objetivos de `pytest`, `ruff` e `mypy` sempre que esses comandos estiverem
+  configurados;
+- roda esses mesmos comandos logo após aplicar os arquivos e anexa o feedback do
+  terminal ao resultado da tarefa. Nas retentativas o executor recebe o feedback
+  operacional da tentativa anterior no próprio prompt, então a correção é guiada
+  por um erro real do ambiente;
+- registra `file_diffs` e `operation_history` no resultado da tarefa e persiste
+  um `operational_summary` em cada `TaskAttempt` — dá para inspecionar o que
+  mudou em cada tentativa sem depender só do estado final da tarefa;
+- preserva `command`, `exit_code`, `stdout` e `stderr` truncados de cada comando
+  objetivo executado. Quando o workspace está dentro de um repositório Git,
+  anexa também um snapshot de `git status` e `git diff` tirado depois de aplicar
+  os artefatos;
+- pode rodar um pequeno laço interno de autocorreção dentro da mesma tentativa do
+  workflow: com `EXECUTOR_MAX_AUTOCORRECT_ROUNDS` maior que zero, as falhas
+  objetivas das checagens pós-aplicação alimentam uma nova rodada do LLM com o
+  feedback operacional da iteração anterior, limitada pelo valor configurado.
+
+A configuração é por capability:
+
+- `OBJECTIVE_VALIDATION_PIPELINES_JSON` define a ordem e o conjunto de checagens
+  por capability. Runtime e judge compartilham o mesmo pipeline, o que evita
+  rodar todos os validadores em toda tarefa e permite tratamento adequado para
+  `backend`, `frontend`, `documentation` e outros perfis;
+- `EXECUTOR_STRATEGIES_JSON` define a estratégia de execução por capability: se a
+  tarefa grava arquivos no workspace, se roda validação objetiva e se pode usar
+  autocorreção interna. Isso deixa `review`/`research` como tarefas puramente
+  analíticas enquanto `backend`/`devops` percorrem o caminho operacional completo.
+
 ## Arquitetura
 
 ```
@@ -295,3 +439,15 @@ repositório. Testes verdes ou aprovação do modelo não substituem os casos ex
 - [x] **Fase 7** — tracing OTel/Langfuse via OTLP: span `gen_ai` por chamada na
   porta única do `ProviderRouter`, span raiz por job no worker e `trace_id`
   gravado em cada `TaskAttempt`
+
+## Docs
+
+- `docs/integrations.md` — GitHub/PR, sandbox, webhooks, benchmark e RBAC;
+- `docs/security-model.md` — fronteiras, controles e riscos residuais;
+- `docs/go-to-market.md` — design partner, piloto, demo e métricas de ROI;
+- `docs/production-runbook.md` — deploy, alertas, incidente e rollback;
+- [`CHANGELOG.md`](CHANGELOG.md) — histórico de versões e mudanças previstas.
+
+## Licença
+
+MIT
