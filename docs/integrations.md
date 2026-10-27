@@ -114,12 +114,13 @@ fila, worker, grafo e provider configurado no ambiente.
 
 ### Benchmark via GitHub Actions
 
-O workflow manual `.github/workflows/benchmark.yml` roda o mesmo comando em
-modo `--in-process` e publica os JSONs de `reports/` como artifact
-(`benchmark-reports`, retenção de 90 dias). Ele nunca dispara em push — o
-benchmark chama LLMs reais e custa dinheiro. Antes do primeiro uso, cadastre o
-secret `OPENROUTER_API_KEY` no repositório (Settings > Secrets and variables >
-Actions). Para disparar:
+O workflow `.github/workflows/benchmark.yml` tem um job barato em push para
+`main` (valida `benchmarks/cases.json`, sem LLM) para o badge do README ter
+status. O job pago só roda em `workflow_dispatch` e no modo `--in-process`;
+publica os JSONs de `reports/` como artifact (`benchmark-reports`, retenção de
+90 dias). Sem o secret `OPENROUTER_API_KEY` o job pago é pulado e não gasta
+nada. Antes do primeiro uso pago, cadastre a chave no repositório (Settings >
+Secrets and variables > Actions). Para disparar:
 
 ```bash
 gh workflow run benchmark.yml
