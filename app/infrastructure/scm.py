@@ -334,6 +334,26 @@ class GitHubSCMClient:
         except (KeyError, TypeError, ValueError) as exc:
             raise SCMError("Resposta da issue está incompleta ou inválida.") from exc
 
+    async def post_issue_comment(
+        self,
+        *,
+        repository: str,
+        issue_number: int,
+        body: str,
+    ) -> dict[str, Any]:
+        """Publica um comentário em uma Issue ou Pull Request via REST API do GitHub."""
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+            raise ValueError("Repositório deve usar o formato owner/name.")
+        if issue_number <= 0:
+            raise ValueError("Número da issue/PR deve ser positivo.")
+        if not body.strip():
+            raise ValueError("Corpo do comentário não pode ser vazio.")
+        return await self._request(
+            "POST",
+            f"/repos/{repository}/issues/{issue_number}/comments",
+            json={"body": body},
+        )
+
     async def delivery_base(
         self, repository: str, branch: str, ancestor: str | None = None
     ) -> str:

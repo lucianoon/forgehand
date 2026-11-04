@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 import httpx
@@ -63,3 +64,89 @@ def test_status_json_decide_cancel_and_errors(capsys) -> None:
     assert _run(api, "cancel", "wf-1") == 0
     assert _run(api, "status", "wf-404") == 2
     assert "erro 404" in capsys.readouterr().err
+
+
+def test_code_subcommand_shows_diff_and_supports_auto_approve(capsys) -> None:
+    class _DiffApi(_Api):
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/workflows/wf-1":
+                self.polls += 1
+                if self.polls == 1:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "workflow_id": "wf-1",
+                            "status": "awaiting_decision",
+                            "current_stage": "human_gate",
+                            "iteration": 1,
+                            "tasks": [],
+                            "usage": {"cost_usd": 0.05},
+                            "pending_decision": {"reason": "budget", "options": ["accept_partial", "abort"]},
+                            "final_output": None,
+                        },
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "workflow_id": "wf-1",
+                        "status": "completed",
+                        "current_stage": "completed",
+                        "iteration": 1,
+                        "tasks": [
+                            {
+                                "result": {
+                                    "workspace": {
+                                        "applied_files": ["pkg/mod.py"],
+                                        "file_diffs": [
+                                            {"path": "pkg/mod.py", "diff": "--- a/pkg/mod.py\n+++ b/pkg/mod.py\n@@ -1 +1 @@\n-x=1\n+x=2"}
+                                        ],
+                                    }
+                                }
+                            }
+                        ],
+                        "usage": {"cost_usd": 0.08},
+                        "pending_decision": None,
+                        "final_output": "# Pronto",
+                    },
+                )
+            return super().handler(request)
+
+    api = _DiffApi()
+    code = _run(
+        api,
+        "code",
+        "Refatore pkg/mod.py para usar x=2",
+        "--project",
+        "demo",
+        "--show-diff",
+        "--auto-approve",
+        "--poll-seconds",
+        "0",
+    )
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert api.decisions == ["accept_partial"]
+    assert "--- a/pkg/mod.py" in out
+    assert "arquivos modificados (1): pkg/mod.py" in err
+
+
+def test_chat_repl_multi_turn_and_slash_commands(monkeypatch, capsys) -> None:
+    api = _Api()
+    script = "\n".join(
+        [
+            "Adicione validação de entrada no módulo principal",
+            "/status",
+            "/diff",
+            "Agora adicione testes unitários para essa validação",
+            "/clear",
+            "/exit",
+        ]
+    ) + "\n"
+    monkeypatch.setattr("sys.stdin", io.StringIO(script))
+    code = _run(api, "chat", "--project", "demo", "--poll-seconds", "0")
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert len(api.created) == 2
+    assert "Contexto recente da sessão interativa" in api.created[1]["request"]
+    assert "histórico de sessão limpo" in err
+    assert "# Entrega" in out

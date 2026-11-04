@@ -401,3 +401,37 @@ async def test_cleanup_rejects_workspace_owned_by_another_workflow(
 
     assert own_workspace.is_dir()
     assert sentinel.read_text(encoding="utf-8") == "other workflow"
+
+
+@pytest.mark.asyncio
+async def test_manager_worktree_mode_provisions_and_cleans_up_isolated_worktrees(
+    tmp_path: Path,
+) -> None:
+    remote, _ = await _seed_remote(tmp_path)
+    manager = LocalGitWorkspaceManager(
+        tmp_path / "factory",
+        approved_hosts=["github.com"],
+        repository_url_resolver=lambda _: str(remote),
+        allow_local_repositories=True,
+        checkout_mode="worktree",
+    )
+
+    first, second = await asyncio.gather(
+        manager.provision("wt-a", _order()),
+        manager.provision("wt-b", _order()),
+    )
+    # Em modo worktree, .git no checkout é um arquivo apontando para o bare cache
+    assert Path(first.local_path, ".git").is_file()
+    assert Path(second.local_path, ".git").is_file()
+    Path(first.local_path, "README.md").write_text("wt-changed\n", encoding="utf-8")
+    assert Path(second.local_path, "README.md").read_text() == "base\n"
+
+    resumed = await manager.reconstruct(first)
+    assert resumed.state == WorkspaceLifecycle.ACTIVE
+
+    released_a = await manager.cleanup(resumed)
+    released_b = await manager.cleanup(second)
+    assert released_a.state == WorkspaceLifecycle.RELEASED
+    assert released_b.state == WorkspaceLifecycle.RELEASED
+    assert not Path(first.local_path).exists()
+    assert not Path(second.local_path).exists()

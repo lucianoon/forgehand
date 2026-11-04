@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -318,17 +319,285 @@ class RunCheckTool:
         return _truncate("\n".join(parts), self._max_output_chars)
 
 
+_active_mutations: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "_active_mutations", default=None
+)
+
+
+def _record_mutation(
+    op: str, relative_path: str, before: str | None, after: str | None
+) -> None:
+    bucket = _active_mutations.get()
+    if bucket is not None:
+        bucket.append(
+            {
+                "op": op,
+                "path": relative_path,
+                "before": before,
+                "after": after,
+            }
+        )
+
+
+def _tool_line_offsets(text: str) -> list[int]:
+    offsets = [0]
+    for line in text.split("\n")[:-1]:
+        offsets.append(offsets[-1] + len(line) + 1)
+    return offsets
+
+
+def _tool_find_line_tolerant_spans(
+    text: str, search: str, *, ignore_indent: bool = False
+) -> list[tuple[int, int]]:
+    text_lines = text.split("\n")
+
+    def normalize(line: str) -> str:
+        return line.strip() if ignore_indent else line.rstrip()
+
+    search_lines = [normalize(line) for line in search.strip("\n").split("\n")]
+    if not search_lines or not any(search_lines):
+        return []
+    offsets = _tool_line_offsets(text)
+    spans: list[tuple[int, int]] = []
+    width = len(search_lines)
+    for index in range(len(text_lines) - width + 1):
+        window = text_lines[index : index + width]
+        if all(normalize(a) == b for a, b in zip(window, search_lines, strict=True)):
+            start = offsets[index]
+            end = offsets[index + width - 1] + len(text_lines[index + width - 1])
+            spans.append((start, end))
+    return spans
+
+
+def _tool_first_indent(block: str) -> str:
+    for line in block.split("\n"):
+        if line.strip():
+            return line[: len(line) - len(line.lstrip())]
+    return ""
+
+
+def _tool_reindent_replacement(original: str, search: str, replacement: str) -> str:
+    target, source = _tool_first_indent(original), _tool_first_indent(search)
+    if target == source:
+        return replacement
+    lines: list[str] = []
+    for line in replacement.split("\n"):
+        if not line.strip():
+            lines.append(line)
+        elif source and line.startswith(source):
+            lines.append(target + line[len(source) :])
+        elif not source:
+            lines.append(target + line)
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _tool_apply_replace(
+    before: str, search: str, replacement: str, occurrence: int | None
+) -> str:
+    if not search:
+        raise ToolError("`search` vazio.")
+    indent_tolerant = False
+    spans = [
+        (match.start(), match.end()) for match in re.finditer(re.escape(search), before)
+    ]
+    if not spans and "\n" in search:
+        spans = _tool_find_line_tolerant_spans(before, search)
+    if not spans and "\n" in search:
+        spans = _tool_find_line_tolerant_spans(before, search, ignore_indent=True)
+        indent_tolerant = bool(spans)
+    if not spans:
+        raise ToolError(
+            "trecho `search` não encontrado no arquivo atual; use read_file "
+            "para conferir o conteúdo exato."
+        )
+    if occurrence is None:
+        if len(spans) > 1:
+            raise ToolError(
+                f"trecho `search` aparece {len(spans)} vezes; amplie o trecho "
+                "para torná-lo único ou informe `occurrence`."
+            )
+        start, end = spans[0]
+    else:
+        if occurrence < 1 or occurrence > len(spans):
+            raise ToolError(
+                f"`occurrence`={occurrence}, mas o trecho aparece apenas "
+                f"{len(spans)} vez(es)."
+            )
+        start, end = spans[occurrence - 1]
+    if indent_tolerant:
+        replacement = _tool_reindent_replacement(before[start:end], search, replacement)
+    return before[:start] + replacement + before[end:]
+
+
+class WriteFileTool(_WorkspaceBound):
+    """Cria ou sobrescreve um arquivo de texto dentro do workspace."""
+
+    name = "write_file"
+    description = (
+        "Cria um arquivo novo ou sobrescreve um arquivo existente no workspace "
+        "imediatamente no disco. Para editar apenas um trecho de um arquivo "
+        "existente, prefira `edit_file`."
+    )
+    input_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path relativo à raiz."},
+            "content": {
+                "type": "string",
+                "description": "Conteúdo completo a gravar no arquivo.",
+            },
+        },
+        "required": ["path", "content"],
+    }
+
+    async def run(self, arguments: dict[str, Any]) -> str:
+        path = self.resolve(arguments.get("path"))
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            raise ToolError("`content` é obrigatório e deve ser string.")
+        if path.exists() and path.is_dir():
+            raise ToolError("path é um diretório; informe um caminho de arquivo.")
+        before: str | None = None
+        if path.exists():
+            try:
+                before = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ToolError("arquivo existente é binário ou fora de UTF-8.") from exc
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        rel = path.relative_to(self.root).as_posix()
+        _record_mutation(
+            "create" if before is None else "replace",
+            rel,
+            before,
+            content,
+        )
+        action = "criado" if before is None else "atualizado"
+        return f"arquivo {action}: {rel} ({len(content.splitlines())} linhas)"
+
+
+class EditFileTool(_WorkspaceBound):
+    """Substitui um trecho específico em um arquivo existente no disco."""
+
+    name = "edit_file"
+    description = (
+        "Edita um arquivo existente no disco substituindo `search` por `replace` "
+        "(suporta casamento exato ou tolerante a espaços/indentação em blocos "
+        "multilinha). Permite rodar `run_check` ou `run_command` logo em seguida "
+        "para validar a alteração na mesma sessão."
+    )
+    input_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path relativo do arquivo existente."},
+            "search": {
+                "type": "string",
+                "description": "Trecho literal a localizar no arquivo.",
+            },
+            "replace": {
+                "type": "string",
+                "description": "Novo trecho que substitui `search`.",
+            },
+            "occurrence": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Qual ocorrência substituir (1 = primeira) se `search` repetir.",
+            },
+        },
+        "required": ["path", "search", "replace"],
+    }
+
+    async def run(self, arguments: dict[str, Any]) -> str:
+        path = self.resolve(arguments.get("path"))
+        if not path.exists():
+            raise ToolError(
+                f"arquivo não encontrado: {arguments.get('path')}; use write_file para criar."
+            )
+        if path.is_dir():
+            raise ToolError("path é um diretório.")
+        search = arguments.get("search")
+        replacement = arguments.get("replace")
+        if not isinstance(search, str) or not search:
+            raise ToolError("`search` é obrigatório e não pode ser vazio.")
+        if not isinstance(replacement, str):
+            raise ToolError("`replace` deve ser string.")
+        occ_raw = arguments.get("occurrence")
+        occurrence = int(occ_raw) if isinstance(occ_raw, int) and not isinstance(occ_raw, bool) else None
+        try:
+            before = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ToolError("arquivo binário ou fora de UTF-8.") from exc
+        after = _tool_apply_replace(before, search, replacement, occurrence)
+        path.write_text(after, encoding="utf-8")
+        rel = path.relative_to(self.root).as_posix()
+        _record_mutation("replace", rel, before, after)
+        return (
+            f"arquivo editado: {rel} "
+            f"({len(before.splitlines())} -> {len(after.splitlines())} linhas)"
+        )
+
+
+class DeleteFileTool(_WorkspaceBound):
+    """Remove um arquivo existente do workspace."""
+
+    name = "delete_file"
+    description = "Remove um arquivo existente do workspace imediatamente no disco."
+    input_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path relativo do arquivo a remover."},
+        },
+        "required": ["path"],
+    }
+
+    async def run(self, arguments: dict[str, Any]) -> str:
+        path = self.resolve(arguments.get("path"))
+        if not path.exists():
+            raise ToolError(f"arquivo não encontrado: {arguments.get('path')}")
+        if path.is_dir():
+            raise ToolError("path é um diretório; delete_file remove apenas arquivos.")
+        try:
+            before = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            before = ""
+        path.unlink()
+        rel = path.relative_to(self.root).as_posix()
+        _record_mutation("delete", rel, before, None)
+        return f"arquivo removido: {rel}"
+
+
+WRITE_TOOLS_GUIDANCE = """
+
+Ferramentas de edição interativa disponíveis: write_file, edit_file, delete_file. \
+Você pode criar, editar ou remover arquivos diretamente no disco durante o loop de \
+ferramentas e em seguida chamar run_check ou run_command para validar (pytest, ruff, \
+mypy) e corrigir eventuais erros na mesma sessão antes de emitir a resposta final. \
+Mudanças já aplicadas via write_file/edit_file/delete_file são rastreadas \
+automaticamente pelo runtime."""
+
+
 def build_workspace_tools(
     root: str,
     *,
     max_output_chars: int = 12_000,
     validators: list[ObjectiveCheck] | None = None,
+    allow_write: bool = False,
 ) -> list[AgentTool]:
     tools: list[AgentTool] = [
         ReadFileTool(root, max_output_chars=max_output_chars),
         ListDirectoryTool(root),
         SearchRepositoryTool(root, max_output_chars=max_output_chars),
     ]
+    if allow_write:
+        tools.extend(
+            [
+                WriteFileTool(root),
+                EditFileTool(root),
+                DeleteFileTool(root),
+            ]
+        )
     if validators:
         tools.append(RunCheckTool(validators, max_output_chars=max_output_chars))
     return tools
@@ -350,16 +619,20 @@ class ToolLoopOutcome:
     rounds: int = 1
     stopped_reason: str = "final_answer"
     trace: list[dict[str, Any]] = field(default_factory=list)
+    mutations: list[dict[str, Any]] = field(default_factory=list)
 
     def exploration_summary(self) -> dict[str, Any]:
         """Vai para o payload da tarefa: rastreável no checkpoint e visível ao
         judge/advisor sem inundar o prompt (só previews)."""
-        return {
+        summary: dict[str, Any] = {
             "tool_calls": self.tool_calls,
             "rounds": self.rounds,
             "stopped_reason": self.stopped_reason,
             "trace": self.trace,
         }
+        if self.mutations:
+            summary["mutations"] = len(self.mutations)
+        return summary
 
 
 _FINAL_ANSWER_NOTE = (
@@ -426,86 +699,90 @@ class ToolLoop:
         calls_made = 0
         rounds = 0
         trace: list[dict[str, Any]] = []
+        mutations: list[dict[str, Any]] = []
         force_final = False
         stopped_reason = "final_answer"
         run_id = str(uuid4())
-
-        while True:
-            rounds += 1
-            result = await self._router.complete(
-                tier,
-                request.model_copy(
-                    update={
-                        "messages": messages,
-                        "tools": self._specs,
-                        "force_final": force_final,
-                    }
-                ),
-            )
-            tokens += result.usage.total_tokens
-            cost += result.cost_usd
-            if result.parsed is not None or not result.tool_calls:
-                break
-            if force_final:
-                raise ToolError(
-                    "Provider ignored final-answer limit; tool loop stopped."
+        token = _active_mutations.set(mutations)
+        try:
+            while True:
+                rounds += 1
+                result = await self._router.complete(
+                    tier,
+                    request.model_copy(
+                        update={
+                            "messages": messages,
+                            "tools": self._specs,
+                            "force_final": force_final,
+                        }
+                    ),
                 )
-
-            tool_results: list[ToolResult] = []
-            for call in result.tool_calls:
-                if calls_made >= self._max_tool_calls or (
-                    token_ceiling is not None and tokens >= token_ceiling
-                ):
-                    content, ok = (
-                        "Limite de exploração atingido; ferramenta não executada.",
-                        False,
+                tokens += result.usage.total_tokens
+                cost += result.cost_usd
+                if result.parsed is not None or not result.tool_calls:
+                    break
+                if force_final:
+                    raise ToolError(
+                        "Provider ignored final-answer limit; tool loop stopped."
                     )
-                else:
-                    calls_made += 1
-                    hook_call = ToolHookCall(
-                        run_id=run_id,
-                        ordinal=calls_made,
-                        tool=call.name if call.name in self._tools else "<unknown>",
-                        agent=self._agent_name,
-                        task_id=task_id,
-                    )
-                    content, ok = await self._execute_with_hooks(call, hook_call)
-                trace.append(
-                    {
-                        "round": rounds,
-                        "name": call.name,
-                        "arguments": call.arguments,
-                        "ok": ok,
-                        "chars": len(content),
-                        "preview": content[: self._preview_chars],
-                    }
-                )
-                tool_results.append(
-                    ToolResult(
-                        tool_call_id=call.id,
-                        name=call.name,
-                        content=content,
-                        is_error=not ok,
-                    )
-                )
 
-            budget_hit = token_ceiling is not None and tokens >= token_ceiling
-            calls_hit = calls_made >= self._max_tool_calls
-            if budget_hit or calls_hit:
-                force_final = True
-                stopped_reason = "token_ceiling" if budget_hit else "max_tool_calls"
-            messages.append(
-                Message(
-                    role="assistant", content=result.text, tool_calls=result.tool_calls
+                tool_results: list[ToolResult] = []
+                for call in result.tool_calls:
+                    if calls_made >= self._max_tool_calls or (
+                        token_ceiling is not None and tokens >= token_ceiling
+                    ):
+                        content, ok = (
+                            "Limite de exploração atingido; ferramenta não executada.",
+                            False,
+                        )
+                    else:
+                        calls_made += 1
+                        hook_call = ToolHookCall(
+                            run_id=run_id,
+                            ordinal=calls_made,
+                            tool=call.name if call.name in self._tools else "<unknown>",
+                            agent=self._agent_name,
+                            task_id=task_id,
+                        )
+                        content, ok = await self._execute_with_hooks(call, hook_call)
+                    trace.append(
+                        {
+                            "round": rounds,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                            "ok": ok,
+                            "chars": len(content),
+                            "preview": content[: self._preview_chars],
+                        }
+                    )
+                    tool_results.append(
+                        ToolResult(
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=content,
+                            is_error=not ok,
+                        )
+                    )
+
+                budget_hit = token_ceiling is not None and tokens >= token_ceiling
+                calls_hit = calls_made >= self._max_tool_calls
+                if budget_hit or calls_hit:
+                    force_final = True
+                    stopped_reason = "token_ceiling" if budget_hit else "max_tool_calls"
+                messages.append(
+                    Message(
+                        role="assistant", content=result.text, tool_calls=result.tool_calls
+                    )
                 )
-            )
-            messages.append(
-                Message(
-                    role="user",
-                    content=_FINAL_ANSWER_NOTE if force_final else "",
-                    tool_results=tool_results,
+                messages.append(
+                    Message(
+                        role="user",
+                        content=_FINAL_ANSWER_NOTE if force_final else "",
+                        tool_results=tool_results,
+                    )
                 )
-            )
+        finally:
+            _active_mutations.reset(token)
 
         return ToolLoopOutcome(
             result=result,
@@ -515,6 +792,7 @@ class ToolLoop:
             rounds=rounds,
             stopped_reason=stopped_reason,
             trace=trace,
+            mutations=mutations,
         )
 
     async def _execute_with_hooks(
