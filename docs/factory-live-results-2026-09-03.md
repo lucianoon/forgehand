@@ -29,6 +29,10 @@ Generated commits have one author and no coauthor trailer.
   base `0c7366b6cf69b2f5fca6229c48928f52d9609cfe`.
 - Node: [fixture repository](https://github.com/lucianoon/forgehand-fixture-node),
   base `bbb1d7dbff357e1075e978941f98ee5d02c56693`.
+- The fixture repositories were made private on 2026-09-22 to keep them out of
+  the public profile. Their PRs and CI runs are preserved; the links below
+  need access to the repositories, and the commit SHAs remain the durable
+  reference.
 
 Both main branches retain their seeded commits. These fixtures are test inputs,
 not additional products or forks of the Forgehand application.

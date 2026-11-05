@@ -1,6 +1,7 @@
-"""O teste que justifica o Postgres: workflow pausa no human_gate,
-o PROCESSO morre (container novo, zero memoria compartilhada), e a
-decisao humana retoma do checkpoint no banco. Auditoria via SQL no final."""
+"""Persistência após recriar componentes no mesmo processo.
+
+O teste SIGKILL com processos distintos está em test_worker_crash.py.
+"""
 
 import asyncio
 import json
@@ -70,7 +71,7 @@ def handler(request):
             },
             model,
         )
-    if "files" in props:
+    if "files" in props or "operations" in props:
         return tool_result({"summary": "ok", "files": [], "notes": []}, model)
     if "diagnosis" in props:  # advisor consultado no replan (Fase 3)
         return tool_result(
@@ -136,7 +137,7 @@ def make_client():
     reason="defina RUN_POSTGRES_TESTS=1 com PostgreSQL local disponível",
 )
 async def test_postgres_restart():
-    # ---- Processo 1: cria workflow, chega ao gate, MORRE ----
+    # ---- Instância 1: cria workflow, chega ao gate, encerra normalmente ----
     async with checkpointer_context(SETTINGS) as cp1:
         async with workflow_queue_context(SETTINGS) as q1:
             c1 = build_container(
@@ -152,12 +153,12 @@ async def test_postgres_restart():
                     break
             assert st["pending_decision"]["reason"] == "tasks_escalated"
             print(
-                f"1. processo 1 OK — workflow {wid[:8]}... pausado no gate, checkpoint no Postgres"
+                f"1. instância 1 OK — workflow {wid[:8]}... pausado no gate, checkpoint no Postgres"
             )
             await c1.workflow_service.shutdown()
-    # context manager fechou: pool encerrado, "processo morto"
+    # context manager fechou: pool encerrado, mesmo processo Python
 
-    # ---- Processo 2: instancia NOVA, mesmo banco ----
+    # ---- Instância 2: componentes novos, mesmo banco e processo ----
     async with checkpointer_context(SETTINGS) as cp2:
         async with workflow_queue_context(SETTINGS) as q2:
             c2 = build_container(
@@ -172,7 +173,7 @@ async def test_postgres_restart():
                 backend["status"] == TaskStatus.ESCALATED and backend["attempts"] == 3
             )
             print(
-                "2. restart OK — processo novo leu interrupt pendente e estado completo do banco"
+                "2. restart OK — instância nova leu interrupt pendente e estado completo do banco"
             )
 
             await c2.workflow_service.decide(wid, "accept_partial")
@@ -183,7 +184,7 @@ async def test_postgres_restart():
                     break
             assert "PARCIAL" in st3["final_output"]
             print(
-                "3. retomada OK — decisão humana em outro processo concluiu o workflow"
+                "3. retomada OK — decisão humana em outra instância concluiu o workflow"
             )
             await c2.workflow_service.shutdown()
 

@@ -14,7 +14,8 @@ e observabilidade OTel.
 
 ## Em 30 segundos
 
-- **530 funções de teste** entre cenários unitários e de integração.
+- Suíte com centenas de testes unitários e de integração (`uv run pytest --collect-only -q`
+  mostra a contagem atual); a CI roda tudo em Linux.
 - CI com PostgreSQL 16 e Neo4j 5, incluindo restart, lease e heartbeat.
 - `pytest`, `ruff` e `mypy` podem vetar uma entrega mesmo quando o judge LLM aprova.
 - Tokens, custo, latência, falhas e tentativas são rastreados por workflow.
@@ -32,7 +33,7 @@ e observabilidade OTel.
 | Observabilidade | Spans OTel/Langfuse por job e chamada de LLM |
 | Hooks de ferramentas | [Políticas pre/post/error](docs/tool-hooks.md), bloqueio e auditoria configuráveis |
 | Acesso à web | URLs do pedido viram evidências citáveis `[W1]` e a ferramenta `fetch_url` deixa planner e executor buscarem páginas durante a tarefa; tudo pelo controlador, com guarda anti-SSRF, allowlist e hooks ([opt-in](docs/configuration.md#referências-web-na-solicitação)) |
-| Avaliação contínua | `evals/` com LLM real, orçamento fechado e gates; relatório versionado em `evals/baseline/` ([como rodar](docs/configuration.md#avaliação-contínua)) |
+| Avaliação contínua | `evals/` com LLM real, orçamento fechado e gates; relatório versionado em `evals/baseline/` ([como rodar](docs/configuration.md#avaliação-contínua)). **Estado atual: nenhuma rodada fechou o gate ainda** — as rodadas registradas reprovaram, com as causas documentadas em [`evals/baseline/README.md`](evals/baseline/README.md) |
 | Interoperabilidade | servidores MCP como ferramentas dos agentes, CLI `forgehand`, SSE no dashboard e `forgehand.toml` ([quickstart](docs/quickstart.md)) |
 
 ## Resultado medido
@@ -51,6 +52,19 @@ executados com LLM via OpenRouter após as correções de regressão.
 **Gate final: aprovado.** Consulte a [metodologia, diagnóstico das falhas e
 matriz completa](docs/pilot-report-2026-07-20.md). Os números são um piloto
 interno reproduzível, não um benchmark público independente.
+
+## Para equipes com repositório existente
+
+O dashboard e o comando `forgehand deliver` enviam uma mudança ou issue à
+fábrica, com critérios, orçamento, build e entrega por PR. A CLI oferece prévia
+sem execução (`--dry-run`) e acompanhamento retomável (`forgehand wait ID`).
+Veja o [fluxo pelo terminal](docs/developer-delivery-cli.md) e seus pré-requisitos.
+
+Para operação persistente em um host Linux, use a [instalação para uma equipe](docs/team-installation.md):
+API, PostgreSQL e dois workers com dados compartilhados. `forgehand doctor --json`
+verifica a instalação e a compatibilidade dos workers sem chamar modelos. O
+[procedimento de backup e restauração](docs/team-backup.md) preserva histórico,
+idempotência e aprovações pendentes em um destino isolado.
 
 ## Mission control
 
@@ -126,6 +140,7 @@ Para usar a chave OpenAI em `.env.local`, consulte [OpenAI direto](docs/openai.m
 Integrações e produto:
 
 - [`docs/integrations.md`](docs/integrations.md) — GitHub/PR, sandbox, webhooks, benchmark e RBAC;
+- [`docs/private-repositories.md`](docs/private-repositories.md) — checkout privado, credenciais e retomada;
 - [`docs/security-model.md`](docs/security-model.md) — fronteiras, controles e riscos residuais;
 - [`docs/go-to-market.md`](docs/go-to-market.md) — design partner, piloto, demo e métricas de ROI.
 - [`docs/production-runbook.md`](docs/production-runbook.md) — deploy, alertas, incidente e rollback.
@@ -156,6 +171,150 @@ curl -X POST localhost:8000/workflows/{workflow_id}/cancel \
   -H 'X-API-Key: dev-key'
 ```
 
+```bash
+curl localhost:8000/health
+curl localhost:8000/readyz
+curl localhost:8000/metrics
+curl localhost:8000/metrics/prometheus
+curl localhost:8000/audit/events -H 'X-API-Key: dev-key'
+```
+
+O corpo de `POST /workflows` precisa ser UTF-8. Em terminais Windows (Git Bash,
+PowerShell) texto acentuado digitado inline chega corrompido e a API responde
+`There was an error parsing the body`; salve o JSON num arquivo e envie com
+`curl --data-binary @req.json -H 'content-type: application/json; charset=utf-8'`.
+
+### Mission control
+
+```text
+http://localhost:8000/dashboard
+```
+
+O dashboard permite autenticar com API key, iniciar workflows, acompanhar
+etapas, tarefas, tokens e custo, responder ao gate humano e copiar o entregável
+final sem usar `curl`. O histórico recente por projeto permite retomar uma
+execução anterior sem guardar IDs na mão.
+
+## Provedores de LLM
+
+OpenRouter é o caminho recomendado:
+
+```bash
+export LLM_PROVIDER_BACKEND=openrouter
+export OPENROUTER_API_KEY=sk-or-v1-...
+export OPENROUTER_BASE_URL=https://openrouter.ai/api
+```
+
+Com `LLM_PROVIDER_BACKEND=openrouter`, o projeto usa o provider
+OpenAI-compatible com binding padrão explícito para `openai/gpt-4o-mini`,
+JSON Schema estrito, roteamento que exige parâmetros compatíveis e recuperação
+de resposta. Respostas estruturadas inválidas são retentadas pelo provider antes
+de a falha escalar para o workflow.
+
+Anthropic continua disponível como alternativa:
+
+```bash
+export LLM_PROVIDER_BACKEND=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+## Backends opcionais
+
+**Memória de projeto persistente (Fase 4)** é opt-in — sem ela o backend é
+memória em processo:
+
+```bash
+# no .env: MEMORY_BACKEND=neo4j e NEO4J_PASSWORD=<senha>
+docker compose --profile neo4j up --build
+```
+
+**Worker dedicado com Postgres:**
+
+```bash
+export CHECKPOINTER_BACKEND=postgres
+export WORKFLOW_QUEUE_BACKEND=postgres
+export RUN_EMBEDDED_WORKFLOW_WORKERS=false
+export LLM_PROVIDER_BACKEND=openrouter
+uvicorn app.main:app --reload
+
+# em outro terminal
+export CHECKPOINTER_BACKEND=postgres
+export WORKFLOW_QUEUE_BACKEND=postgres
+python -m app.worker
+```
+
+**Tracing OTel/Langfuse (Fase 7)** também é opt-in. Uma única integração OTLP
+cobre qualquer backend OTel — para Langfuse, basta apontar para o endpoint OTLP:
+
+```bash
+export TRACING_BACKEND=otlp
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(pk-lf:sk-lf)>"
+```
+
+Cada chamada de LLM vira um span `gen_ai` (modelo, tier, tokens, custo,
+latência, erro) aninhado no span do job; o `trace_id` é gravado em cada
+`TaskAttempt` para correlação.
+
+## Configuração
+
+Ajuste de fila e worker:
+
+```bash
+export WORKFLOW_QUEUE_POLL_INTERVAL_SECONDS=0.25
+export WORKFLOW_QUEUE_LEASE_SECONDS=30
+export WORKFLOW_QUEUE_MAX_DELIVERY_ATTEMPTS=3
+export AUDIT_LOG_MAX_EVENTS=500
+export DEFAULT_TASK_MAX_TOKENS=100000
+export DEFAULT_TASK_MAX_COST_USD=3.0
+```
+
+### Executor operacional (opt-in)
+
+```bash
+export EXECUTOR_WORKSPACE_ROOT=.
+export EXECUTOR_APPLY_FILES_ENABLED=true
+export EXECUTOR_MAX_AUTOCORRECT_ROUNDS=1
+export PYTEST_VALIDATION_COMMAND="uv run pytest"
+export RUFF_VALIDATION_COMMAND="uv run ruff check ."
+export MYPY_VALIDATION_COMMAND="uv run mypy app"
+export OBJECTIVE_VALIDATION_PIPELINES_JSON='{"backend":["ruff","mypy","pytest"],"frontend":["pytest"],"documentation":[]}'
+export EXECUTOR_STRATEGIES_JSON='{"backend":{"apply_files":true,"run_objective_validation":true,"allow_autocorrect":true},"documentation":{"apply_files":true,"run_objective_validation":false,"allow_autocorrect":false},"review":{"apply_files":false,"run_objective_validation":false,"allow_autocorrect":false}}'
+```
+
+Quando habilitado, o executor:
+
+- grava no workspace local os arquivos devolvidos pelo LLM (os caminhos são
+  resolvidos e confinados a `EXECUTOR_WORKSPACE_ROOT`), e o judge recebe sinais
+  objetivos de `pytest`, `ruff` e `mypy` sempre que esses comandos estiverem
+  configurados;
+- roda esses mesmos comandos logo após aplicar os arquivos e anexa o feedback do
+  terminal ao resultado da tarefa. Nas retentativas o executor recebe o feedback
+  operacional da tentativa anterior no próprio prompt, então a correção é guiada
+  por um erro real do ambiente;
+- registra `file_diffs` e `operation_history` no resultado da tarefa e persiste
+  um `operational_summary` em cada `TaskAttempt` — dá para inspecionar o que
+  mudou em cada tentativa sem depender só do estado final da tarefa;
+- preserva `command`, `exit_code`, `stdout` e `stderr` truncados de cada comando
+  objetivo executado. Quando o workspace está dentro de um repositório Git,
+  anexa também um snapshot de `git status` e `git diff` tirado depois de aplicar
+  os artefatos;
+- pode rodar um pequeno laço interno de autocorreção dentro da mesma tentativa do
+  workflow: com `EXECUTOR_MAX_AUTOCORRECT_ROUNDS` maior que zero, as falhas
+  objetivas das checagens pós-aplicação alimentam uma nova rodada do LLM com o
+  feedback operacional da iteração anterior, limitada pelo valor configurado.
+
+A configuração é por capability:
+
+- `OBJECTIVE_VALIDATION_PIPELINES_JSON` define a ordem e o conjunto de checagens
+  por capability. Runtime e judge compartilham o mesmo pipeline, o que evita
+  rodar todos os validadores em toda tarefa e permite tratamento adequado para
+  `backend`, `frontend`, `documentation` e outros perfis;
+- `EXECUTOR_STRATEGIES_JSON` define a estratégia de execução por capability: se a
+  tarefa grava arquivos no workspace, se roda validação objetiva e se pode usar
+  autocorreção interna. Isso deixa `review`/`research` como tarefas puramente
+  analíticas enquanto `backend`/`devops` percorrem o caminho operacional completo.
+
 ## Arquitetura
 
 ```
@@ -165,7 +324,7 @@ POST /workflows
       │
 worker dedicado → load_context → create_plan → [route_to_execution]
                                     │ Send × N (paralelo, só ready_tasks)
-                              execute_task (timeout + budget por tarefa,
+                              execute_task (timeout do executor + budget,
                                     │        judge incremental no branch)
                                     │ join
                             evaluate_results (consolidação + judge_router)
@@ -202,7 +361,7 @@ e veto de publicação. A política é aprovada pelo operador, não pelo agente 
 | Agente não chama fornecedor | `ProviderRouter` é a única porta; agente pede tier, não modelo |
 | Saída estruturada | `response_schema` + validação Pydantic no provider |
 | Critério de aceitação obrigatório | `min_length=1` no schema do planner + validator do `AgentTask` |
-| Timeout | `asyncio.wait_for(task.timeout_seconds)` no worker |
+| Timeout | `asyncio.wait_for(task.timeout_seconds)` no worker, envolvendo a chamada ao executor (agente + ferramentas). A validação de build no sandbox tem timeouts próprios por fase do perfil e o judge roda depois, fora desse relógio; `max_wall_clock_seconds` limita o workflow inteiro, checado entre etapas (não interrompe uma etapa em andamento) |
 | Paralelismo | `AgentProfile.max_parallel_tasks` limita o fan-out por agente |
 | Idempotência | `idempotency_key()` determinística por (projeto, tarefa, tentativa) |
 | Judge não é só LLM | validator do `EvaluationResult` rejeita aprovação com sinal objetivo falhando; critérios tipados (arquivo criado, só criações, conteúdo, testes/lint/tipos, citations) são decididos por código e o LLM só vê os subjetivos |
@@ -217,6 +376,10 @@ e veto de publicação. A política é aprovada pelo operador, não pelo agente 
 ```bash
 uv run pytest tests/unit tests/integration
 ```
+
+A suíte completa assume Linux: os testes da factory (locks, grupos de processo,
+`O_NOFOLLOW`) são pulados fora do POSIX, e parte deles precisa do executável
+`docker` no PATH. No Windows, use WSL com o clone num sistema de arquivos nativo.
 
 Os testes de restart com PostgreSQL e de memória com Neo4j são opt-in para
 que a suíte padrão seja portável. Com os bancos locais disponíveis:
@@ -233,10 +396,15 @@ worker que recebeu o job. Workers externos também registram heartbeat no
 PostgreSQL; `/readyz` deixa de responder 200 quando nenhum worker registrado
 está ativo. A CI sobe PostgreSQL 16 e Neo4j 5 e executa esses cenários.
 
-O consumo agregado inclui chamadas de planner, executores e judge. O budget
-por tarefa é verificado antes da execução e qualquer ultrapassagem vira
-escalation; uma decisão humana `retry` concede headroom para uma tentativa
-adicional e fica registrada no checkpoint.
+O consumo agregado inclui planner, executores, judge e advisor. Antes de cada
+tentativa de chamada, o provider reserva uma estimativa conservadora da entrada
+completa e do máximo de saída; a chamada só começa se couber no saldo do
+workflow e da tarefa. Branches paralelos dividem esse saldo. A estimativa pode
+interromper o trabalho antes do teto de tokens medidos; não é garantia de
+faturamento do fornecedor. Uso sem confirmação após erro ou timeout fica em
+`unconfirmed_tokens` / `unconfirmed_cost_usd`, separado do consumo medido e
+descontado do saldo. Uma decisão humana `retry` concede headroom e fica
+registrada no checkpoint. Veja [limites e recuperação](docs/configuration.md#reserva-de-orçamento-por-chamada).
 
 Os testes de integração exercitam o grafo completo com providers reais sobre
 transporte HTTP mockado — o request de verdade é montado e o response de
@@ -271,3 +439,15 @@ repositório. Testes verdes ou aprovação do modelo não substituem os casos ex
 - [x] **Fase 7** — tracing OTel/Langfuse via OTLP: span `gen_ai` por chamada na
   porta única do `ProviderRouter`, span raiz por job no worker e `trace_id`
   gravado em cada `TaskAttempt`
+
+## Docs
+
+- `docs/integrations.md` — GitHub/PR, sandbox, webhooks, benchmark e RBAC;
+- `docs/security-model.md` — fronteiras, controles e riscos residuais;
+- `docs/go-to-market.md` — design partner, piloto, demo e métricas de ROI;
+- `docs/production-runbook.md` — deploy, alertas, incidente e rollback;
+- [`CHANGELOG.md`](CHANGELOG.md) — histórico de versões e mudanças previstas.
+
+## Licença
+
+MIT

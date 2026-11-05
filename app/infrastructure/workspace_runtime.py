@@ -7,15 +7,17 @@ import re
 import shlex
 import shutil
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.agents.executor import ExecutionStrategy
+from app.agents.executor import ExecutionStrategy, LLMExecutor
 from app.agents.validation import ObjectiveValidationPipeline, ValidationSignal
 from app.infrastructure.command_policy import CommandPolicy as CommandPolicy
 from app.models.task import AgentTask, Capability
 from app.factory.lifecycle import inherited_lock_fds
 from app.infrastructure.posix import kill_process_group
+from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator, modified_python_tests
 
 
 class CommandRunner(Protocol):
@@ -184,25 +186,35 @@ class OperationApplyError(ValueError):
     do workspace) continuam sendo ValueError comum e abortam a tarefa."""
 
 
-def normalize_operations(result_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """`operations` novo + `files` legado (arquivo inteiro → op=create), na
-    ordem: legado primeiro, depois as operações — um payload não deveria
-    misturar os dois, mas se misturar o replace vê o arquivo já criado."""
-    operations: list[dict[str, Any]] = []
+@dataclass(frozen=True)
+class _WorkspaceOperation:
+    payload: dict[str, Any]
+    legacy_full_file: bool = False
+
+
+def normalize_operations(result_payload: dict[str, Any]) -> list[_WorkspaceOperation]:
+    """Keep legacy full-file writes distinct from the model's create operation.
+
+    Legacy files run first. Their compatibility flag belongs to this internal
+    wrapper, never to a field supplied in an operation payload.
+    """
+    operations: list[_WorkspaceOperation] = []
     legacy = result_payload.get("files")
     if isinstance(legacy, list):
         for artifact in legacy:
             if isinstance(artifact, dict):
                 operations.append(
-                    {
+                    _WorkspaceOperation({
                         "op": "create",
                         "path": artifact.get("path"),
                         "content": artifact.get("content"),
-                    }
+                    }, legacy_full_file=True)
                 )
     declared = result_payload.get("operations")
     if isinstance(declared, list):
-        operations.extend(item for item in declared if isinstance(item, dict))
+        operations.extend(
+            _WorkspaceOperation(item) for item in declared if isinstance(item, dict)
+        )
     return operations
 
 
@@ -353,10 +365,11 @@ class LocalWorkspaceRuntime:
             if isinstance(raw_mutations, list)
             else []
         )
+        previous = self._previous_workspace(task)
         if (
             not self._apply_files_enabled
             or not strategy.apply_files
-            or (not operations and not tool_mutations)
+            or (not operations and not tool_mutations and not previous)
         ):
             return {
                 "workspace": {
@@ -373,8 +386,8 @@ class LocalWorkspaceRuntime:
         operation_history: list[dict[str, Any]] = []
         apply_errors: list[dict[str, Any]] = []
         published: dict[str, str] = {}
+        originals: dict[str, str | None] = {}
         deleted_paths: list[str] = []
-
         folded_mutations: dict[str, dict[str, Any]] = {}
         for mutation in tool_mutations:
             mut_type = str(mutation.get("op") or "replace")
@@ -410,6 +423,7 @@ class LocalWorkspaceRuntime:
             if before_val is None and after_val is None:
                 continue
             applied_files.append(relative_path)
+            originals.setdefault(relative_path, before_val)
             diff_entry = self._build_diff_entry(relative_path, before_val, after_val)
             diff_entry["operation"] = mut_op
             file_diffs.append(diff_entry)
@@ -429,12 +443,15 @@ class LocalWorkspaceRuntime:
                 }
             )
 
-        for operation in operations:
+        for normalized in operations:
+            operation = normalized.payload
             op: Any = operation.get("op")
             path = self._resolve_artifact_path(operation.get("path"))
             relative_path = path.relative_to(self._root).as_posix()
             try:
-                before, after = self._apply_operation(op, path, operation)
+                before, after = self._apply_operation(
+                    op, path, operation, legacy_full_file=normalized.legacy_full_file
+                )
             except OperationApplyError as exc:
                 if relative_path in folded_mutations and self._is_redundant_post_tool_op(
                     op, path, operation
@@ -455,21 +472,23 @@ class LocalWorkspaceRuntime:
                 continue
             if relative_path not in applied_files:
                 applied_files.append(relative_path)
+            originals.setdefault(relative_path, before)
+            diff_entry = self._build_diff_entry(
+                relative_path, originals[relative_path], after
+            )
             if relative_path in folded_mutations:
-                first_before = folded_mutations[relative_path]["before"]
+                first_before = originals[relative_path]
                 net_op = (
                     "delete"
                     if after is None
                     else ("create" if first_before is None else "replace")
                 )
-                diff_entry = self._build_diff_entry(relative_path, first_before, after)
                 diff_entry["operation"] = net_op
                 file_diffs = [
                     d for d in file_diffs if d.get("path") != relative_path
                 ]
                 file_diffs.append(diff_entry)
             else:
-                diff_entry = self._build_diff_entry(relative_path, before, after)
                 diff_entry["operation"] = op
                 file_diffs.append(diff_entry)
             if after is None:
@@ -480,6 +499,7 @@ class LocalWorkspaceRuntime:
                 if relative_path in deleted_paths:
                     deleted_paths.remove(relative_path)
                 published[relative_path] = after
+                deleted_paths = [item for item in deleted_paths if item != relative_path]
             operation_history.append(
                 {
                     "step": "apply_file",
@@ -490,6 +510,16 @@ class LocalWorkspaceRuntime:
                 }
             )
 
+        evidence = LLMExecutor._merge_workspace_evidence(previous, {
+            "applied_files": applied_files,
+            "file_diffs": file_diffs,
+            "published_files": [
+                {"path": path, "content": content}
+                for path, content in published.items()
+            ],
+            "deleted_paths": deleted_paths,
+        })
+        applied_files = evidence["applied_files"]
         command_feedback: list[ValidationSignal] = []
         if apply_errors:
             command_feedback.append(
@@ -507,6 +537,7 @@ class LocalWorkspaceRuntime:
                 await self._run_command_feedback(
                     task,
                     applied_files=applied_files,
+                    evidence=evidence,
                 )
             )
         for signal in command_feedback:
@@ -533,6 +564,10 @@ class LocalWorkspaceRuntime:
                     "status": git_snapshot["status"],
                 }
             )
+        # Re-read after validation: commands may also change/remove an artifact.
+        # Checkpoint contents and workspace_root never authorize filesystem reads.
+        self._refresh_artifacts(evidence)
+        prior_history = previous.get("operation_history", []) if previous else []
         return {
             "workspace": {
                 "apply_files_enabled": True,
@@ -543,17 +578,14 @@ class LocalWorkspaceRuntime:
                 "command_feedback": [
                     signal.model_dump(mode="json") for signal in command_feedback
                 ],
-                "file_diffs": file_diffs,
+                "file_diffs": evidence.get("file_diffs", []),
                 "apply_errors": apply_errors,
                 # Conteúdo FINAL dos arquivos tocados — o que a publicação de PR
                 # envia. Com replace o payload do executor não carrega o
                 # arquivo inteiro, então ele precisa viver aqui.
-                "published_files": [
-                    {"path": item_path, "content": content}
-                    for item_path, content in published.items()
-                ],
-                "deleted_paths": deleted_paths,
-                "operation_history": operation_history,
+                "published_files": evidence["published_files"],
+                "deleted_paths": evidence["deleted_paths"],
+                "operation_history": [*prior_history, *operation_history],
                 "command_executions": [
                     {
                         "name": signal.name,
@@ -569,11 +601,70 @@ class LocalWorkspaceRuntime:
             }
         }
 
+    @staticmethod
+    def _previous_workspace(task: AgentTask) -> dict[str, Any] | None:
+        if not isinstance(task.result, dict):
+            return None
+        workspace = task.result.get("workspace")
+        if (
+            not isinstance(workspace, dict)
+            or workspace.get("task_id") != str(task.id)
+            or workspace.get("apply_files_enabled") is not True
+        ):
+            return None
+        return workspace
+
+    def _refresh_artifacts(self, evidence: dict[str, Any]) -> None:
+        diffs = {item["path"]: item for item in evidence.get("file_diffs", [])}
+        previous_contents = {
+            item["path"]: item["content"]
+            for item in evidence.get("published_files", [])
+        }
+        published: list[dict[str, str]] = []
+        deleted: list[str] = []
+        refreshed: list[dict[str, Any]] = []
+        retained_paths = set(diffs) | set(previous_contents) | set(
+            evidence.get("deleted_paths", [])
+        )
+        for relative_path in evidence["applied_files"]:
+            if relative_path not in retained_paths:
+                continue  # Historical create/delete already cancelled out.
+            path = self._resolve_artifact_path(relative_path)
+            after = path.read_text(encoding="utf-8") if path.exists() else None
+            old_diff = diffs.get(relative_path, {})
+            if "before_content" in old_diff or old_diff.get("change_type") == "created":
+                before = old_diff.get("before_content")
+                if before is None and after is None:
+                    continue  # Created then deleted: no net publication.
+                diff = self._build_diff_entry(relative_path, before, after)
+                if "operation" in old_diff:
+                    diff["operation"] = old_diff["operation"]
+            else:
+                # Compatibility with older checkpoints: re-read bytes without
+                # inventing a task-start baseline that was never recorded.
+                diff = dict(old_diff)
+                if after != previous_contents.get(relative_path):
+                    diff.update(self._build_diff_entry(
+                        relative_path, previous_contents.get(relative_path), after
+                    ))
+                    if old_diff.get("change_type") == "created" and after is None:
+                        continue
+            if after is None:
+                deleted.append(relative_path)
+            else:
+                published.append({"path": relative_path, "content": after})
+            if diff:
+                refreshed.append(diff)
+        evidence["file_diffs"] = refreshed
+        evidence["published_files"] = published
+        evidence["deleted_paths"] = deleted
+
     async def _run_command_feedback(
         self,
         task: AgentTask,
         *,
         applied_files: list[str],
+        evidence: dict[str, Any],
     ) -> list[ValidationSignal]:
         signals: list[ValidationSignal] = []
         for runner in self._validation_pipeline.validators_for_capability(
@@ -584,7 +675,12 @@ class LocalWorkspaceRuntime:
                 continue
             signal = await run(
                 capability=task.capability,
-                applied_files=applied_files,
+                # Static source inspection excludes known deletions/unchanged
+                # files. Command validators must still run after delete-only
+                # edits, using their original applied-path contract.
+                applied_files=(modified_python_tests(evidence)
+                               if isinstance(runner, PythonTestIntegrityValidator)
+                               else applied_files),
             )
             if signal is not None:
                 signals.append(signal)
@@ -643,7 +739,7 @@ class LocalWorkspaceRuntime:
 
     @staticmethod
     def _apply_operation(
-        op: Any, path: Path, operation: dict[str, Any]
+        op: Any, path: Path, operation: dict[str, Any], *, legacy_full_file: bool = False
     ) -> tuple[str | None, str | None]:
         """Executa uma operação e devolve (before, after). after=None é remoção."""
         before = path.read_text(encoding="utf-8") if path.exists() else None
@@ -651,8 +747,27 @@ class LocalWorkspaceRuntime:
             content = operation.get("content")
             if not isinstance(content, str):
                 raise ValueError(f"Operação create em {path.name} sem content.")
+            if before is not None and not legacy_full_file:
+                if path.read_bytes() == content.encode("utf-8"):
+                    return before, before
+                raise OperationApplyError(
+                    "arquivo já existe com conteúdo diferente; leia o arquivo atual "
+                    "e use op=replace para uma alteração localizada."
+                )
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            # newline="" grava o conteúdo byte a byte como o agente o enviou:
+            # sem isso o Windows traduz \n em \r\n, e o create idêntico
+            # seguinte deixa de bater com read_bytes().
+            if legacy_full_file:
+                path.write_text(content, encoding="utf-8", newline="")
+            else:
+                try:
+                    with path.open("x", encoding="utf-8", newline="") as created:
+                        created.write(content)
+                except FileExistsError as exc:
+                    raise OperationApplyError(
+                        "arquivo passou a existir; leia o arquivo atual e use op=replace."
+                    ) from exc
             return before, content
         if op == "replace":
             if before is None:
@@ -670,7 +785,7 @@ class LocalWorkspaceRuntime:
                 replacement,
                 occurrence if isinstance(occurrence, int) else None,
             )
-            path.write_text(after, encoding="utf-8")
+            path.write_text(after, encoding="utf-8", newline="")
             return before, after
         if op == "delete":
             if before is None:
@@ -737,6 +852,7 @@ class LocalWorkspaceRuntime:
         )
         return {
             "path": relative_path,
+            "before_content": before,
             "change_type": change_type,
             "changed": changed,
             "diff": "\n".join(diff_lines)[:8000],

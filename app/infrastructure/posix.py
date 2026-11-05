@@ -42,13 +42,45 @@ def require_posix(feature: str) -> None:
         raise PosixRequired(feature)
 
 
-def flock_exclusive_nonblocking(fd: int) -> None:
-    """Trava exclusiva sem bloqueio; BlockingIOError quando outro dono já a tem."""
-    require_posix("factory_workspace_lock")
+def flock_nonblocking(fd: int, *, shared: bool = False, feature: str = "file_lock") -> None:
+    """Trava sem bloqueio (exclusiva ou compartilhada); BlockingIOError quando
+    outro dono já tem uma trava incompatível."""
+    require_posix(feature)
     if sys.platform != "win32":
         import fcntl
 
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+
+
+def flock_exclusive_nonblocking(fd: int) -> None:
+    """Trava exclusiva sem bloqueio; BlockingIOError quando outro dono já a tem."""
+    flock_nonblocking(fd, feature="factory_workspace_lock")
+
+
+def effective_uid(feature: str = "effective_uid") -> int:
+    require_posix(feature)
+    if sys.platform != "win32":
+        return os.geteuid()
+    raise PosixRequired(feature)
+
+
+def fchmod(fd: int, mode: int, feature: str = "fchmod") -> None:
+    require_posix(feature)
+    if sys.platform != "win32":
+        os.fchmod(fd, mode)
+
+
+def fchown(fd: int, uid: int, gid: int, feature: str = "fchown") -> None:
+    require_posix(feature)
+    if sys.platform != "win32":
+        os.fchown(fd, uid, gid)
+
+
+def lchown(path: str | os.PathLike[str], uid: int, gid: int, feature: str = "chown") -> None:
+    """chown sem seguir links simbólicos."""
+    require_posix(feature)
+    if sys.platform != "win32":
+        os.chown(path, uid, gid, follow_symlinks=False)
 
 
 def kill_process_group(process: asyncio.subprocess.Process) -> None:

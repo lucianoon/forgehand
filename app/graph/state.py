@@ -104,10 +104,14 @@ def add_usage(
     existing: dict[str, float], incoming: dict[str, float]
 ) -> dict[str, float]:
     """Reducer aditivo: branches paralelas somam {tokens, cost_usd} sem colisão."""
-    return {
+    totals = {
         "tokens": existing.get("tokens", 0) + incoming.get("tokens", 0),
         "cost_usd": existing.get("cost_usd", 0.0) + incoming.get("cost_usd", 0.0),
     }
+    for key in ("unconfirmed_tokens", "unconfirmed_cost_usd"):
+        if key in existing or key in incoming:
+            totals[key] = existing.get(key, 0) + incoming.get(key, 0)
+    return totals
 
 
 class WorkflowPhase(str, Enum):
@@ -208,6 +212,7 @@ class WorkflowState(BaseModel):
     context: Annotated[dict[str, Any], keep_latest] = Field(default_factory=dict)
     final_output: Annotated[str | None, keep_latest] = None
     error: Annotated[str | None, keep_latest] = None
+    budget_blocked_reason: Annotated[str | None, keep_latest] = None
     human_decision: Annotated[str | None, keep_latest] = (
         None  # preenchido pós-interrupt
     )
@@ -268,8 +273,11 @@ class WorkflowState(BaseModel):
     def budget_exhausted(self) -> bool:
         elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()
         return (
-            self.usage.get("tokens", 0) >= self.budget.max_tokens
-            or self.usage.get("cost_usd", 0.0) >= self.budget.max_cost_usd
+            self.budget_blocked_reason is not None
+            or self.usage.get("tokens", 0) + self.usage.get("unconfirmed_tokens", 0)
+            >= self.budget.max_tokens
+            or self.usage.get("cost_usd", 0.0) + self.usage.get("unconfirmed_cost_usd", 0.0)
+            >= self.budget.max_cost_usd
             or elapsed >= self.budget.max_wall_clock_seconds
         )
 
@@ -290,6 +298,8 @@ def judge_router(state: WorkflowState) -> str:
     vai para o gate humano (interrupt), que decide entre aceitar parcial,
     autorizar mais iterações ou abortar.
     """
+    if state.budget_blocked_reason is not None:
+        return "human_gate"
     if state.all_approved:
         return "synthesize"
     if state.escalated_tasks or state.budget_exhausted:

@@ -3,9 +3,12 @@ name: Benchmark
 permissions:
   contents: read
 
-# Somente manual: o benchmark chama LLMs reais via OpenRouter e custa dinheiro.
-# Nunca adicione gatilhos de push/pull_request aqui.
+# Job barato em push para main: valida cases.json e dá status ao badge do README.
+# O job pago (LLM via OpenRouter) só roda em workflow_dispatch e só se o secret
+# OPENROUTER_API_KEY existir; sem a chave o job termina sem gastar nada.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       case_ids:
@@ -27,29 +30,56 @@ on:
         type: boolean
 
 jobs:
+  cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate benchmark cases
+        run: |
+          python <<'PY'
+          import json, pathlib
+          path = pathlib.Path("benchmarks/cases.json")
+          data = json.loads(path.read_text())
+          assert isinstance(data, list) and data, "cases.json vazio"
+          for case in data:
+              assert case.get("id"), "caso sem id"
+              assert case.get("request"), "caso sem request"
+          print(f"{len(data)} casos validos")
+          PY
+
   benchmark:
+    if: github.event_name == 'workflow_dispatch'
+    needs: cases
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Verify OPENROUTER_API_KEY secret
+      - name: Check OPENROUTER_API_KEY secret
+        id: key
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "::error::Secret OPENROUTER_API_KEY ausente. Cadastre-o em Settings > Secrets and variables > Actions."
-            exit 1
+            echo "OPENROUTER_API_KEY ausente: benchmark pago pulado (sem gasto)."
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/checkout@v7
+        if: steps.key.outputs.has_key == 'true'
 
       - uses: astral-sh/setup-uv@v7
+        if: steps.key.outputs.has_key == 'true'
         with:
           python-version: "3.12"
           enable-cache: true
 
       - run: uv sync --extra dev --extra postgres --extra neo4j --extra otel --locked
+        if: steps.key.outputs.has_key == 'true'
 
       - name: Run benchmark (in-process)
+        if: steps.key.outputs.has_key == 'true'
         env:
           LLM_PROVIDER_BACKEND: openrouter
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -78,7 +108,7 @@ jobs:
             "${args[@]}"
 
       - name: Upload benchmark reports
-        if: always()
+        if: always() && steps.key.outputs.has_key == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-reports

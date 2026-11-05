@@ -58,12 +58,12 @@ def summarize(
     policy = policy or BenchmarkPolicy()
     total = len(results)
     completed = sum(result.completed for result in results)
-    first_pass = sum(result.first_pass for result in results)
+    first_pass = sum(result.completed and result.first_pass for result in results)
     completion_rate = completed / total if total else 0.0
     first_pass_rate = first_pass / total if total else 0.0
     average_cost = sum(result.cost_usd for result in results) / total if total else 0.0
     p95_elapsed = _percentile([result.elapsed_seconds for result in results], 0.95)
-    completed_cost = sum(result.cost_usd for result in results if result.completed)
+    total_cost = sum(result.cost_usd for result in results)
     human_interventions = sum(
         result.outcome == "awaiting_decision" for result in results
     )
@@ -72,6 +72,7 @@ def summarize(
         for result in results
     )
     checks = {
+        "has_cases": total > 0,
         "completion_rate": completion_rate >= policy.min_completion_rate,
         "first_pass_rate": first_pass_rate >= policy.min_first_pass_rate,
         "average_cost_usd": average_cost <= policy.max_average_cost_usd,
@@ -90,7 +91,9 @@ def summarize(
         "timeouts": sum(result.error == "timeout" for result in results),
         "human_intervention_rate": human_interventions / total if total else 0.0,
         "technical_failure_rate": technical_failures / total if total else 0.0,
-        "cost_per_completed_usd": completed_cost / completed if completed else 0.0,
+        # O custo de obter uma entrega inclui também as tentativas sem sucesso.
+        # Sem entregas, a razão é indefinida; zero sugeriria entrega gratuita.
+        "cost_per_completed_usd": total_cost / completed if completed else None,
         "quality_gate": {
             "passed": all(checks.values()),
             "checks": checks,
@@ -159,7 +162,8 @@ async def run_case(
                 workflow_id=workflow_id,
                 outcome=state["status"],
                 completed=state["status"] in {"completed", "ready_for_human_review"},
-                first_pass=bool(tasks)
+                first_pass=state["status"] in {"completed", "ready_for_human_review"}
+                and bool(tasks)
                 and all(task.get("attempts") == 1 for task in tasks),
                 cost_usd=float(usage.get("cost_usd", 0)),
                 tokens=int(usage.get("tokens", 0)),

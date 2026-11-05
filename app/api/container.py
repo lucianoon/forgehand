@@ -8,6 +8,7 @@ transporte mockado sem tocar em variáveis de ambiente.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
@@ -32,16 +33,20 @@ from app.agents.mcp_tools import discover_mcp_tools
 from app.agents.validation import ObjectiveValidationPipeline
 from app.api.service import WorkflowService
 from app.factory.build_strategy import BuildProfileRegistry
+from app.factory.git_auth import GitHubRepositoryAccess
 from app.factory.sandbox import DockerBuildRunner, DockerCLI
 from app.factory.workspace import LocalGitWorkspaceManager
 from app.graph.workflow import build_serde, build_workflow
 from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audit_event
 from app.infrastructure.memory import InMemoryProjectMemory
+from app.infrastructure.python_test_integrity import PythonTestIntegrityValidator
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.web_references import WebReferenceCollector
 from app.infrastructure.scm import (
+    GitHubAppTokenProvider,
     GitHubDeliveryService,
     GitHubSCMClient,
+    TokenProvider,
     build_token_provider_from_env,
 )
 from app.infrastructure.settings import Settings
@@ -73,12 +78,45 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
     if settings.checkpointer_backend == "postgres":
         # import tardio: dependência opcional (extra [postgres])
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
 
         async with AsyncPostgresSaver.from_conn_string(
             settings.database_url, serde=build_serde()
         ) as saver:
-            await saver.setup()  # idempotente: cria tabelas se não existem
-            yield saver
+            # from_conn_string mantém uma conexão autocommit dedicada. A trava
+            # de sessão serializa migrações entre API/workers sem envolver os
+            # índices CONCURRENTLY em uma transação. O runtime não retém a trava.
+            connection = saver.conn
+            assert isinstance(connection, AsyncConnection)
+            # Uma espera SQL bloqueante retém snapshot e pode causar deadlock
+            # com CREATE INDEX CONCURRENTLY. Cada tentativa termina antes da pausa.
+            while True:
+                cursor = await connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(current_schema() || ':forgehand-checkpointer-setup')) AS acquired"
+                )
+                row = await cursor.fetchone()
+                if row is not None and row["acquired"]:
+                    break
+                await asyncio.sleep(0.05)
+            try:
+                await saver.setup()
+            finally:
+                await connection.execute(
+                    "SELECT pg_advisory_unlock(hashtext(current_schema() || ':forgehand-checkpointer-setup'))"
+                )
+        # Migration locks belong to the dedicated setup connection above. The
+        # runtime borrows checked connections so a database restart does not
+        # poison the saver for the lifetime of the API/worker process.
+        async with AsyncConnectionPool[AsyncConnection[dict[str, Any]]](
+            settings.database_url, min_size=1, max_size=2, open=False,
+            timeout=5, check=AsyncConnectionPool.check_connection,
+            kwargs={"autocommit": True, "prepare_threshold": 0,
+                    "row_factory": dict_row, "connect_timeout": 5},
+        ) as pool:
+            await pool.wait(timeout=5)
+            yield AsyncPostgresSaver(pool, serde=build_serde())
     else:
         from langgraph.checkpoint.memory import MemorySaver
 
@@ -92,6 +130,7 @@ class Container:
         job_queue: Any,
         audit_log: Any,
         product_studio: ProductStudio | None = None,
+        repository_token_provider: TokenProvider | None = None,
         *,
         superagent_store: SuperAgentStore | None = None,
         superagent_router: SuperAgentRouter | None = None,
@@ -104,6 +143,27 @@ class Container:
         self.superagent_store = superagent_store
         self.superagent_router = superagent_router
         self.event_publisher = event_publisher
+        # This provider belongs only to checkout; publication owns its own providers.
+        self._repository_token_provider = repository_token_provider
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
+
+    async def shutdown(self) -> None:
+        """Stop workflows before releasing credentials used by their checkout."""
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            try:
+                await self.workflow_service.shutdown()
+            finally:
+                try:
+                    if isinstance(
+                        self._repository_token_provider, GitHubAppTokenProvider
+                    ):
+                        await self._repository_token_provider.close()
+                finally:
+                    self._repository_token_provider = None
+                    self._shutdown_complete = True
 
 
 class LeaseBoundRuntimeFactory:
@@ -186,6 +246,7 @@ class LeaseBoundRuntimeFactory:
         judge = LLMJudge(
             self._router,
             validation_pipeline=pipeline,
+            require_build_evidence=True,
             tools=build_agent_tools(settings, lease.local_path, role="judge"),
             max_tool_calls=settings.agent_tools_max_calls_judge,
             hooks=self._hooks,
@@ -327,10 +388,18 @@ def build_container(
             )
         )
 
+    repository_token_provider = (
+        build_token_provider_from_env() if settings.factory_mode_enabled else None
+    )
+    repository_access = (
+        GitHubRepositoryAccess(repository_token_provider)
+        if repository_token_provider is not None else None
+    )
     workspace_manager = (
         LocalGitWorkspaceManager(
             settings.factory_workspace_root,
             approved_hosts=settings.factory_approved_scm_hosts,
+            repository_access=repository_access,
             checkout_mode=settings.factory_workspace_checkout_mode,
         )
         if settings.factory_mode_enabled
@@ -479,6 +548,7 @@ def build_container(
         ProductStudio(router, ProductStore(settings.product_studio_database))
         if settings.product_studio_enabled
         else None,
+        repository_token_provider=repository_token_provider,
         superagent_store=superagent_store,
         superagent_router=superagent_router,
         event_publisher=event_publisher,
@@ -633,9 +703,11 @@ def build_objective_validation_pipeline(
             capability = Capability(raw_capability)
         except ValueError:
             continue
-        capability_pipelines[capability] = validator_names
+        capability_pipelines[capability] = list(dict.fromkeys([
+            *validator_names, PythonTestIntegrityValidator.name,
+        ]))
     return ObjectiveValidationPipeline(
-        validators,
+        [*validators, PythonTestIntegrityValidator(settings.executor_workspace_root)],
         capability_pipelines=capability_pipelines,
     )
 

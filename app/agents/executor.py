@@ -21,6 +21,7 @@ from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.command_tool import COMMAND_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
 from app.agents.validation import format_validation_feedback
+from app.infrastructure.llm_budget import BudgetAdmissionError, active_call_budget
 
 from app.models.task import AgentTask, Capability, format_criteria
 from app.providers.base import CompletionRequest, Message
@@ -42,6 +43,11 @@ informe `occurrence`;
   - remover arquivo: op=delete;
 - não edite trechos que você não viu nas evidências: se o arquivo alvo não \
 está no grounding, registre isso em notes em vez de adivinhar o conteúdo;
+- leituras atuais de read_file prevalecem sobre o grounding inicial para \
+editar. Copie somente o código, sem os números de linha. stdout/stderr e \
+saída TAP são diagnósticos, nunca trechos de código para search;
+- ao editar testes, preserve o framework e os imports observados nos arquivos; \
+não presuma que expect, assert ou outro símbolo está disponível;
 - os acceptance_criteria são o contrato: o judge vai reprovar qualquer \
 critério não atendido. Critérios marcados com [tipo] são verificados por \
 código (testes, lint, arquivos criados/alterados, conteúdo, citations), sem \
@@ -177,40 +183,58 @@ class LLMExecutor:
         total_cost = 0.0
         last_model = "unknown"
         payload: dict[str, Any] = {}
-        cumulative_workspace: dict[str, Any] | None = None
+        call_budget = active_call_budget()
+        initial_tokens = call_budget.tokens if call_budget is not None else 0
+        initial_cost = call_budget.cost_usd if call_budget is not None else 0.0
+        budget_blocked_reason: str | None = None
+        runtime_task = task
         autocorrect_iterations: list[dict[str, Any]] = []
         stopped_reason = "completed_without_runtime"
         max_rounds = self._max_autocorrect_rounds if strategy.allow_autocorrect else 0
 
         cache_prefix = build_grounding_prefix(context)
+        refresh_paths = self._recovery_paths(task.result)
         for iteration_index in range(max_rounds + 1):
-            remaining_tokens = max(
-                1,
-                task.budget.max_tokens - task.budget.consumed_tokens - total_tokens,
+            available_tokens = (
+                task.budget.max_tokens - task.budget.consumed_tokens - total_tokens
             )
-            loop_outcome = await self._tool_loop.run(
-                self.tier,
-                CompletionRequest(
-                    model="",
-                    cache_prefix=cache_prefix,
-                    system=self._system_prompt(task),
-                    messages=[
-                        Message(
-                            role="user",
-                            content=self._build_user_content(
-                                task,
-                                context,
-                                previous_feedback=previous_feedback,
-                                current_iteration_feedback=current_iteration_feedback,
-                            ),
-                        )
-                    ],
-                    response_schema=ExecutionOutput,
-                    max_tokens=min(16384, remaining_tokens),
-                ),
-                token_ceiling=remaining_tokens,
-                task_id=str(task.id),
-            )
+            remaining_tokens = max(1, available_tokens)
+            try:
+                loop_outcome = await self._tool_loop.run(
+                    self.tier,
+                    CompletionRequest(
+                        model="",
+                        cache_prefix=cache_prefix,
+                        system=self._system_prompt(task),
+                        messages=[
+                            Message(
+                                role="user",
+                                content=self._build_user_content(
+                                    task,
+                                    context,
+                                    previous_feedback=previous_feedback,
+                                    current_iteration_feedback=current_iteration_feedback,
+                                ),
+                            )
+                        ],
+                        response_schema=ExecutionOutput,
+                        max_tokens=min(16384, remaining_tokens),
+                    ),
+                    token_ceiling=remaining_tokens,
+                    task_id=str(task.id),
+                    refresh_paths=refresh_paths if available_tokens > 0 else None,
+                )
+            except BudgetAdmissionError as exc:
+                if not autocorrect_iterations or not isinstance(payload.get("workspace"), dict):
+                    raise
+                # Earlier corrections already changed the workspace. Return
+                # their evidence for the checkpoint, but leave admission blocked.
+                budget_blocked_reason = str(exc)
+                stopped_reason = "budget_blocked"
+                if call_budget is not None:
+                    total_tokens = max(total_tokens, call_budget.tokens - initial_tokens)
+                    total_cost = max(total_cost, call_budget.cost_usd - initial_cost)
+                break
             result = loop_outcome.result
             total_tokens += loop_outcome.tokens
             total_cost += loop_outcome.cost_usd
@@ -226,15 +250,12 @@ class LLMExecutor:
             self._ensure_grounded_citations(task, context, payload)
             if self._workspace_runtime is not None:
                 payload.update(
-                    await self._workspace_runtime.apply(task, payload, strategy)
+                    await self._workspace_runtime.apply(runtime_task, payload, strategy)
                 )
-                # Uma rodada de autocorreção sem operações devolvia um workspace
-                # vazio e apagava os arquivos aplicados na rodada anterior — a
-                # entrega (PR) publicaria nada. A evidência é cumulativa.
-                cumulative_workspace = self._merge_workspace_evidence(
-                    cumulative_workspace, payload.get("workspace")
-                )
-                payload["workspace"] = cumulative_workspace
+                # The runtime owns reconciliation against its configured root.
+                # Inner corrections and checkpointed graph retries use the same
+                # task-result boundary, without replaying previous operations.
+                runtime_task = task.model_copy(update={"result": payload})
 
             iteration_record = self._build_autocorrect_iteration(
                 iteration_number=iteration_index + 1,
@@ -259,6 +280,7 @@ class LLMExecutor:
                     stopped_reason = "max_autocorrect_rounds_exhausted"
                 break
             current_iteration_feedback = self._feedback_from_payload(payload)
+            refresh_paths = self._recovery_paths(payload)
 
         workspace = payload.get("workspace")
         if isinstance(workspace, dict):
@@ -276,6 +298,7 @@ class LLMExecutor:
             "model": last_model,
             "tokens": total_tokens,
             "cost_usd": total_cost,
+            **({"budget_blocked_reason": budget_blocked_reason} if budget_blocked_reason else {}),
         }
 
     def _system_prompt(self, task: AgentTask) -> str:
@@ -337,6 +360,35 @@ class LLMExecutor:
         return user_content
 
     @staticmethod
+    def _recovery_paths(payload: Any) -> list[str]:
+        """Prefer failed edit targets, then files touched by the prior attempt.
+
+        Paths are hints only. The configured read_file tool remains the sole
+        authority for access, suppression and output size. No path is inferred
+        from command output and no checkpoint workspace_root is trusted.
+        """
+        if not isinstance(payload, dict):
+            return []
+        workspace = payload.get("workspace")
+        if not isinstance(workspace, dict):
+            return []
+        paths: list[str] = []
+        for key in ("apply_errors", "operation_history"):
+            items = workspace.get(key)
+            if isinstance(items, list):
+                if key == "operation_history":
+                    items = list(reversed(items))
+                paths.extend(
+                    item["path"]
+                    for item in items
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                )
+        applied = workspace.get("applied_files")
+        if isinstance(applied, list):
+            paths.extend(path for path in reversed(applied) if isinstance(path, str))
+        return list(dict.fromkeys(path for path in paths if path.strip()))
+
+    @staticmethod
     def _build_autocorrect_iteration(
         *,
         iteration_number: int,
@@ -381,7 +433,9 @@ class LLMExecutor:
         current_ws = dict(current) if isinstance(current, dict) else {}
         if not previous:
             return current_ws
-        merged = {**previous, **current_ws}
+        # Only artifact evidence carries over. Checks, errors and snapshots
+        # must always describe this attempt, even when it has no operations.
+        merged = dict(current_ws)
 
         def str_list(source: dict[str, Any], key: str) -> list[str]:
             value = source.get(key)
@@ -412,6 +466,15 @@ class LLMExecutor:
         for item in path_items(current_ws, "file_diffs"):
             path = item["path"]
             net = dict(item)
+            if "before_content" in previous_diffs.get(path, {}):
+                net["before_content"] = previous_diffs[path]["before_content"]
+            elif path in previous_diffs:
+                if previous_diffs[path].get("change_type") == "created":
+                    net["before_content"] = None
+                else:
+                    # An old checkpoint has no original bytes. The current
+                    # round's baseline must not masquerade as task-start data.
+                    net.pop("before_content", None)
             before = previous_diffs.get(path, {}).get("change_type")
             now = item.get("change_type")
             if before == "created" and now in {"modified", "unchanged"}:

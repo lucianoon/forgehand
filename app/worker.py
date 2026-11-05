@@ -37,11 +37,11 @@ async def run_worker() -> None:
                         except NotImplementedError:
                             pass
 
-                    container.workflow_service.start_workers()
                     try:
+                        container.workflow_service.start_workers()
                         await stop.wait()
                     finally:
-                        await container.workflow_service.shutdown()
+                        await container.shutdown()
 
 
 def main() -> None:

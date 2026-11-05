@@ -196,7 +196,11 @@ def build_workflow(
         },
     )
 
-    graph.add_edge("authorize_retry", "replan")
+    graph.add_conditional_edges(
+        "authorize_retry",
+        lambda state: "replan" if state.plan else "create_plan",
+        ["replan", "create_plan"],
+    )
 
     # Entrega: synthesize → (publica PR + espera CI) → persiste; CI vermelho
     # reabre as tarefas que publicaram e volta ao replan (bounded por

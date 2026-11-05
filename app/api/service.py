@@ -18,9 +18,12 @@ from typing import Any
 from typing import cast
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from app.graph.state import DeliveryConfig, WorkflowBudget, WorkflowPhase
 from app.infrastructure.settings import Settings
-from app.infrastructure.workflow_queue import WorkflowAccessContext
+from app.infrastructure.installation import installation_descriptor, local_installation_checks
+from app.infrastructure.workflow_queue import WorkflowAccessContext, is_database_unavailable
 from app.models.factory import WorkOrder
 from app.models.factory import WorkspaceLifecycle, WorkspaceRetention
 from app.factory.lifecycle import WorkspaceBusy
@@ -62,6 +65,22 @@ def _latest_build_validation(plan: list[Any]) -> dict[str, Any] | None:
     return None
 
 
+def _snapshot_interrupts(snapshot: Any) -> list[Any]:
+    interrupts = list(getattr(snapshot, "interrupts", ()) or ())
+    if not interrupts:
+        for task in getattr(snapshot, "tasks", ()) or ():
+            interrupts.extend(getattr(task, "interrupts", ()) or ())
+    return interrupts
+
+
+class _ResumePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    checkpoint_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    resume_count: int = Field(ge=0, strict=True)
+
+
 class WorkflowNotFound(LookupError):
     pass
 
@@ -76,6 +95,10 @@ class WorkflowLeaseLost(RuntimeError):
 
 class WorkflowCancelled(RuntimeError):
     pass
+
+
+class WorkflowResumeUncertain(RuntimeError):
+    """The pending approval cannot be bound safely to its intended gate."""
 
 
 class WorkflowAlreadyTerminal(ValueError):
@@ -113,6 +136,14 @@ class WorkflowService:
         self._audit_log = audit_log
         self._superagent_store = superagent_store
         self._reconciler: asyncio.Task[Any] | None = None
+        self._refresh_installation()
+
+    def _refresh_installation(self) -> dict[str, Any]:
+        descriptor = installation_descriptor(self._settings)
+        configure = getattr(self._job_queue, "configure_installation", None)
+        if callable(configure):
+            configure(descriptor["fingerprint"], required=descriptor["required"])
+        return descriptor
 
     # ------------------------------------------------------------------
     def _config(self, workflow_id: str) -> dict[str, Any]:
@@ -165,52 +196,214 @@ class WorkflowService:
 
     async def _worker_loop(self, index: int) -> None:
         worker_id = f"{self._worker_id_prefix}:worker-{index}"
+        retry_delay = max(self._settings.workflow_queue_poll_interval_seconds, 0.1)
         while True:
-            failed = False
-            await self._job_queue.touch_worker(worker_id)
-            job = await self._job_queue.dequeue(
-                worker_id=worker_id,
-                poll_interval_seconds=self._settings.workflow_queue_poll_interval_seconds,
-            )
-            if job is None:
-                continue
-            self._running[job.workflow_id] = f"worker-{index}"
             try:
-                await self._run_job_with_heartbeat(job)
-            except asyncio.CancelledError:
-                raise
-            except WorkflowLeaseLost:
-                failed = True
-                logger.warning(
-                    "Worker perdeu o lease do workflow %s; execução cancelada.",
-                    job.workflow_id,
+                failed = False
+                self._refresh_installation()
+                await self._job_queue.touch_worker(worker_id)
+                job = await self._job_queue.dequeue(
+                    worker_id=worker_id,
+                    poll_interval_seconds=self._settings.workflow_queue_poll_interval_seconds,
                 )
-            except WorkflowCancelled:
-                failed = True
-                await self._publish_event(
-                    "workflow.cancelled", {"workflow_id": job.workflow_id}
-                )
+                retry_delay = max(self._settings.workflow_queue_poll_interval_seconds, 0.1)
+                if job is None:
+                    continue
+                self._running[job.workflow_id] = f"worker-{index}"
+                try:
+                    await self._run_job_with_heartbeat(job)
+                except asyncio.CancelledError:
+                    # Shutdown interrupted execution. Leave the delivery leased so
+                    # another worker can reclaim it; never ACK unfinished work.
+                    failed = True
+                    raise
+                except WorkflowLeaseLost:
+                    failed = True
+                    logger.warning(
+                        "Worker perdeu o lease do workflow %s; execução cancelada.",
+                        job.workflow_id,
+                    )
+                except WorkflowResumeUncertain:
+                    failed = True
+                    # Preserve the checkpoint and its human gate. A fresh explicit
+                    # decision can enqueue a bound resume; never mark the graph failed.
+                    await self._job_queue.fail(job, "resume_decision_unbound")
+                    await self._publish_event(
+                        "workflow.resume_blocked", {"workflow_id": job.workflow_id}
+                    )
+                    logger.warning("Resume requires a fresh decision: %s", job.workflow_id)
+                except WorkflowCancelled:
+                    failed = True
+                    await self._publish_event(
+                        "workflow.cancelled", {"workflow_id": job.workflow_id}
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed = True
+                    if is_database_unavailable(exc):
+                        raise
+                    await self._mark_failed(job.workflow_id, exc)
+                    await self._job_queue.fail(job, type(exc).__name__)
+                    await self._publish_event(
+                        "workflow.failed",
+                        {"workflow_id": job.workflow_id, "error": type(exc).__name__},
+                    )
+                else:
+                    self._failures.pop(job.workflow_id, None)
+                    await self._publish_event(
+                        "workflow.processed", {"workflow_id": job.workflow_id}
+                    )
+                finally:
+                    self._running.pop(job.workflow_id, None)
+                    if not failed:
+                        await self._job_queue.acknowledge(job)
             except Exception as exc:  # noqa: BLE001
-                failed = True
-                await self._mark_failed(job.workflow_id, exc)
-                await self._job_queue.fail(job, type(exc).__name__)
-                await self._publish_event(
-                    "workflow.failed",
-                    {"workflow_id": job.workflow_id, "error": type(exc).__name__},
-                )
-            else:
-                self._failures.pop(job.workflow_id, None)
-                await self._publish_event(
-                    "workflow.processed", {"workflow_id": job.workflow_id}
-                )
-            finally:
-                self._running.pop(job.workflow_id, None)
-                if not failed:
-                    await self._job_queue.acknowledge(job)
+                if not is_database_unavailable(exc):
+                    raise
+                # Keep consumers alive, but do not replay the failed database
+                # statement or invoke the graph immediately. Any acquired job
+                # remains leased and normal checkpoint recovery owns re-delivery.
+                logger.warning("Worker aguardando PostgreSQL: %s", type(exc).__name__)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
 
-    async def _invoke_job(self, job: Any) -> None:
+    async def _interrupt_positions(self, snapshot: Any) -> dict[str, _ResumePosition]:
+        """Bind a gate to its task-local persisted resume ordinal, not just its ID.
+
+        LangGraph reuses interrupt IDs (and checkpoint IDs) for sequential
+        interrupts in a node. Its task-local __resume__ pending write records
+        how many earlier values that node has consumed. Never export the values.
+        """
+        config = getattr(snapshot, "config", None) or {}
+        checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
+        checkpointer = getattr(self._app, "checkpointer", None)
+        if not isinstance(checkpoint_id, str) or not checkpoint_id or not checkpointer:
+            raise WorkflowResumeUncertain("approval_position_unavailable")
+        saved = await checkpointer.aget_tuple(config)
+        if saved is None:
+            raise WorkflowResumeUncertain("approval_position_unavailable")
+        positions: dict[str, _ResumePosition] = {}
+        for task in snapshot.tasks:
+            if not task.interrupts:
+                continue
+            # Nested checkpoint namespaces need their own ordinal resolution.
+            # Do not silently treat a child's gate as ordinal zero of its parent.
+            if task.state is not None:
+                raise WorkflowResumeUncertain("nested_approval_position_unavailable")
+            resumes = [
+                value for task_id, channel, value in saved.pending_writes or []
+                if task_id == task.id and channel == "__resume__"
+            ]
+            if len(resumes) > 1 or (resumes and not isinstance(resumes[0], list)):
+                raise WorkflowResumeUncertain("approval_position_unavailable")
+            position = _ResumePosition(
+                checkpoint_id=checkpoint_id, task_id=task.id,
+                resume_count=len(resumes[0]) if resumes else 0,
+            )
+            for item in task.interrupts:
+                if item.id in positions:
+                    raise WorkflowResumeUncertain("approval_position_unavailable")
+                positions[item.id] = position
+        if set(positions) != {item.id for item in _snapshot_interrupts(snapshot)}:
+            raise WorkflowResumeUncertain("approval_position_unavailable")
+        return positions
+
+    async def _job_invocation(self, job: Any) -> tuple[bool, Any]:
         from langgraph.types import Command
 
+        config = self._config(job.workflow_id)
+        if job.kind == "start":
+            if job.attempt_count > 1:
+                snapshot = await self._app.aget_state(config)
+                if getattr(snapshot, "created_at", None) or snapshot.values:
+                    # None continues checkpointed work; a new payload restarts it.
+                    if _snapshot_interrupts(snapshot) or not snapshot.next:
+                        return False, None
+                    return True, None
+            return True, job.payload
+
+        payload = job.payload
+        if isinstance(payload, dict):
+            if (
+                type(payload.get("resume_version")) is not int
+                or payload["resume_version"] not in {1, 2}
+                or not isinstance(payload.get("decision"), str)
+                or not payload["decision"].strip()
+            ):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            ids = payload.get("interrupt_ids")
+            if (
+                not isinstance(ids, list)
+                or not ids
+                or not all(isinstance(i, str) and i for i in ids)
+            ):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            positions: dict[str, _ResumePosition] = {}
+            if payload["resume_version"] == 2:
+                raw_positions = payload.get("interrupt_positions")
+                if not isinstance(raw_positions, dict) or set(raw_positions) != set(ids):
+                    raise WorkflowResumeUncertain(job.workflow_id)
+                try:
+                    positions = {
+                        key: _ResumePosition.model_validate(value)
+                        for key, value in raw_positions.items()
+                    }
+                except ValidationError:
+                    raise WorkflowResumeUncertain(job.workflow_id) from None
+            snapshot = await self._app.aget_state(config)
+            if not (getattr(snapshot, "created_at", None) or snapshot.values):
+                raise WorkflowResumeUncertain(job.workflow_id)
+            interrupts = _snapshot_interrupts(snapshot)
+            pending_ids = {item.id for item in interrupts}
+            matching = [identifier for identifier in ids if identifier in pending_ids]
+            if matching:
+                if payload["resume_version"] == 1:
+                    if job.attempt_count > 1:
+                        # ID-only envelopes cannot distinguish later gates in
+                        # the same task. Preserve ambiguity for a fresh decision.
+                        raise WorkflowResumeUncertain(job.workflow_id)
+                else:
+                    current = await self._interrupt_positions(snapshot)
+                    unchanged: list[str] = []
+                    consumed = False
+                    for identifier in matching:
+                        before, now = positions[identifier], current[identifier]
+                        if (before.checkpoint_id, before.task_id) != (
+                            now.checkpoint_id, now.task_id
+                        ):
+                            continue
+                        if now.resume_count < before.resume_count:
+                            raise WorkflowResumeUncertain(job.workflow_id)
+                        if now.resume_count == before.resume_count:
+                            unchanged.append(identifier)
+                        else:
+                            consumed = True
+                    matching = unchanged
+                    if not matching:
+                        # Continue with already persisted values when necessary;
+                        # never append the old decision to the next interrupt.
+                        return consumed, None
+                return True, Command(
+                    resume={identifier: payload["decision"] for identifier in matching}
+                )
+            if interrupts or not snapshot.next:
+                # The approval was consumed or the graph is now at a different
+                # human gate. An old job must never approve that new decision.
+                return False, None
+            return True, None
+        if not isinstance(payload, str) or not payload.strip():
+            raise WorkflowResumeUncertain(job.workflow_id)
+        if job.attempt_count > 1:
+            snapshot = await self._app.aget_state(config)
+            if (
+                getattr(snapshot, "created_at", None) or snapshot.values
+            ) and not _snapshot_interrupts(snapshot):
+                return bool(snapshot.next), None
+            # Old string jobs cannot identify which pending gate was approved.
+            # Preserve state and require an explicit fresh decision.
+            raise WorkflowResumeUncertain(job.workflow_id)
+        return True, Command(resume=payload)
+
+    async def _invoke_job(self, job: Any) -> None:
         # Span raiz do job: os spans de LLM do grafo aninham aqui via
         # contexto do OTel (contextvars sobrevivem ao fan-out paralelo).
         span = (
@@ -236,7 +429,15 @@ class WorkflowService:
                 client_id=job.owner_client_id,
             )
         ):
-            if manager and job.kind == "resume" and job.payload == "retry":
+            should_invoke, graph_input = await self._job_invocation(job)
+            if not should_invoke:
+                return
+            decision = (
+                job.payload.get("decision")
+                if isinstance(job.payload, dict) and job.payload.get("resume_version") in {1, 2}
+                else job.payload
+            )
+            if manager and job.kind == "resume" and decision == "retry":
                 retained = manager.journal.get(job.workflow_id)
                 if retained and retained.state in {
                     WorkspaceLifecycle.RELEASED,
@@ -255,12 +456,7 @@ class WorkflowService:
             if manager and self._build_runner is not None:
                 if not await self._build_runner.retry_cleanup(job.workflow_id):
                     raise WorkspaceBusy("sandbox_cleanup_pending")
-            if job.kind == "start":
-                await self._app.ainvoke(job.payload, self._config(job.workflow_id))
-            else:
-                await self._app.ainvoke(
-                    Command(resume=job.payload), self._config(job.workflow_id)
-                )
+            await self._app.ainvoke(graph_input, self._config(job.workflow_id))
         await self._auto_subscribe_published_pr(job)
 
     async def _auto_subscribe_published_pr(self, job: Any) -> None:
@@ -377,6 +573,8 @@ class WorkflowService:
             await asyncio.sleep(interval)
             if not await self._job_queue.heartbeat(job):
                 raise WorkflowLeaseLost(job.workflow_id)
+            if job.locked_by is not None:
+                await self._job_queue.touch_worker(job.locked_by)
 
     async def _run_job_with_heartbeat(self, job: Any) -> None:
         invocation = asyncio.create_task(self._invoke_job(job))
@@ -432,13 +630,19 @@ class WorkflowService:
             await self._event_publisher.publish(event, payload)
 
     async def readiness(self) -> dict[str, Any]:
+        descriptor = self._refresh_installation()
         queue_error = None
+        queue_stats = None
+        workers = {"active": 0, "compatible": 0, "incompatible": 0, "legacy": 0}
         try:
             queue_ready = await self._job_queue.ping()
+            if queue_ready:
+                queue_stats = await self._job_queue.get_stats()
+                if descriptor["required"]:
+                    workers = await self._job_queue.installation_workers(descriptor["fingerprint"])
         except Exception as exc:  # noqa: BLE001
             queue_ready = False
             queue_error = type(exc).__name__
-        queue_stats = await self._job_queue.get_stats() if queue_ready else None
         expected_workers = (
             self._settings.workflow_worker_concurrency if self._run_workers else 0
         )
@@ -451,9 +655,16 @@ class WorkflowService:
             or self._settings.workflow_queue_backend != "postgres"
             or (queue_stats is not None and queue_stats.active_workers > 0)
         )
-        ready = queue_ready and embedded_worker_health and external_worker_health
+        installation_compatible = not descriptor["required"] or (
+            descriptor["fingerprint"] is not None
+            and workers["compatible"] >= self._settings.installation_expected_workers
+        )
+        ready = queue_ready and embedded_worker_health and external_worker_health and installation_compatible
         return {
             "ready": ready,
+            "installation_compatible": installation_compatible,
+            "compatible_workers": workers["compatible"],
+            "incompatible_workers": workers["incompatible"],
             "queue_ready": queue_ready,
             "queue_error": queue_error,
             "embedded_workers_enabled": self._run_workers,
@@ -464,6 +675,31 @@ class WorkflowService:
             "registered_workers": (
                 queue_stats.active_workers if queue_stats is not None else 0
             ),
+        }
+
+    async def installation_diagnostics(self) -> dict[str, Any]:
+        """Administrative, non-secret diagnostics; no model or SCM request."""
+        descriptor = self._refresh_installation()
+        readiness = await self.readiness()
+        checks = await local_installation_checks(self._settings, descriptor)
+        workers = {"active": 0, "compatible": 0, "incompatible": 0, "legacy": 0}
+        jobs = {"incompatible": 0, "legacy_unbound": 0, "unconfigured": 0}
+        if readiness["queue_ready"]:
+            workers = await self._job_queue.installation_workers(descriptor["fingerprint"])
+            if descriptor["required"]:
+                jobs = await self._job_queue.installation_jobs(descriptor["fingerprint"])
+        checks.append({"name": "queue", "status": "pass" if readiness["queue_ready"] else "fail", "code": "ok" if readiness["queue_ready"] else "queue_unavailable"})
+        checks.append({"name": "workers", "status": "pass" if readiness["installation_compatible"] and readiness["external_worker_health"] else "fail", "code": "ok" if readiness["installation_compatible"] and readiness["external_worker_health"] else "compatible_workers_missing"})
+        if jobs["incompatible"]:
+            checks.append({"name": "pending_jobs", "status": "fail", "code": "jobs_require_reconciliation"})
+        return {
+            "schema_version": 1,
+            "ready": readiness["ready"] and all(check["status"] != "fail" for check in checks),
+            "factory_mode": self._settings.factory_mode_enabled,
+            "revision": descriptor["revision"], "fingerprint": descriptor["fingerprint"],
+            "checks": checks, "workers": workers, "jobs": jobs,
+            "expected_workers": self._settings.installation_expected_workers,
+            "configuration": descriptor["configuration"],
         }
 
     async def metrics(self) -> dict[str, Any]:
@@ -501,6 +737,7 @@ class WorkflowService:
         workflow_id: str | None = None,
         expected_dispatch_scope: str | None = None,
     ) -> str:
+        self._refresh_installation()
         workflow_id = workflow_id or str(uuid4())
         initial: dict[str, Any] = {
             "request": request,
@@ -636,7 +873,10 @@ class WorkflowService:
 
     # ------------------------------------------------------------------
     async def decide(self, workflow_id: str, decision: str) -> None:
-        status = await self.get(workflow_id)  # levanta WorkflowNotFound
+        self._refresh_installation()
+        await self.get(workflow_id)  # levanta WorkflowNotFound
+        snapshot = await self._app.aget_state(self._config(workflow_id))
+        interrupts = _snapshot_interrupts(snapshot)
         if decision == "retry" and self._workspace_manager is not None:
             lease = self._workspace_manager.journal.get(workflow_id)
             if lease and lease.state in {
@@ -646,10 +886,16 @@ class WorkflowService:
                 raise NoPendingDecision(
                     "Workspace expirado; crie uma nova ordem de trabalho."
                 )
-        if status["pending_decision"] is None:
+        if not interrupts:
             raise NoPendingDecision(
                 f"Workflow {workflow_id} não está aguardando decisão."
             )
+        try:
+            positions = await self._interrupt_positions(snapshot)
+        except WorkflowResumeUncertain:
+            raise NoPendingDecision(
+                "Não foi possível identificar com segurança a posição da aprovação."
+            ) from None
         access = await self.get_access_context(workflow_id)
         self._failures.pop(workflow_id, None)
         self._ensure_workers_started()
@@ -658,7 +904,14 @@ class WorkflowService:
             project_id=access.project_id,
             owner_client_id=access.owner_client_id,
             kind="resume",
-            payload=decision,
+            payload={
+                "resume_version": 2,
+                "decision": decision,
+                "interrupt_ids": [item.id for item in interrupts],
+                "interrupt_positions": {
+                    key: value.model_dump() for key, value in positions.items()
+                },
+            },
         )
 
     async def cancel(self, workflow_id: str) -> None:

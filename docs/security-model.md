@@ -17,7 +17,9 @@
 - headers HTTP de hardening e request ID;
 - audit log persistente JSONL para single-node;
 - budgets, timeout, lease ownership e gate humano;
-- structured outputs e evidências grounded.
+- structured outputs e evidências grounded;
+- checkout privado com token efêmero, destino validado e autorização reconsultada
+  na retomada; [escopo e limites](private-repositories.md).
 
 ## Riscos residuais antes de produção enterprise
 

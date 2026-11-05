@@ -225,11 +225,43 @@ chaves, credenciais) são bloqueados, e `run_check` só executa comandos que já
 passaram pelo allowlist do `CommandPolicy` — o modelo escolhe o nome, nunca o
 comando.
 
-O loop tem dois tetos: número de chamadas por papel e o budget de tokens
-restante da tarefa. Ao atingir qualquer um, a rodada seguinte força a resposta
-final estruturada. O que foi explorado fica em `result.exploration` da tarefa
+O loop limita o número de ferramentas por papel e a exploração por tokens.
+A resposta final estruturada também precisa passar pela reserva de orçamento
+do provider; atingir o teto não autoriza uma chamada adicional sem saldo.
+O que foi explorado fica em `result.exploration` da tarefa
 (nome, argumentos, sucesso e um preview de cada chamada), visível ao judge, ao
 advisor e no checkpoint.
+
+### Reserva de orçamento por chamada
+
+Cada chamada de planner, executor, judge e advisor no workflow passa por uma
+reserva antes de alcançar o fornecedor, inclusive retries e rodadas com
+ferramentas. A estimativa inclui bytes UTF-8 do sistema, grounding, mensagens,
+schema, definições e resultados de ferramentas, mais margem de protocolo e o
+máximo de tokens de saída solicitado. É conservadora e pode parar antes do
+limite medido. O custo usa os preços configurados, considerando o maior preço
+de entrada/cache, sem presumir cache hit. Não é um teto exato de faturamento.
+
+Antes de cada chamada, o provider reduz o máximo de saída quando isso permite
+reservar a entrada completa dentro do saldo de tokens e custo. O cálculo
+considera tarefa, workflow, chamadas em andamento e consumo não confirmado.
+O pedido original e os orçamentos não aumentam; se nem a entrada mais um token
+de saída couber, a chamada continua bloqueada. Esse ajuste evita interromper
+prematuramente uma rodada de ferramentas por um teto de resposta desnecessariamente
+alto, mas não garante que a resposta menor será suficiente para concluir a tarefa.
+
+O saldo global é dividido entre as tarefas do mesmo fan-out; executor e judge
+compartilham também o saldo da tarefa. O gate registra `budget_blocked_reason`
+quando o próximo pedido não cabe. Uma decisão explícita `retry` amplia os
+limites e permite retomar inclusive um planejamento bloqueado sem plano.
+
+`usage.tokens` e `usage.cost_usd` continuam sendo consumo medido. Quando uma
+tentativa falha ou expira sem medição, a reserva permanece nos campos
+`unconfirmed_tokens` e `unconfirmed_cost_usd` e reduz o saldo disponível. O
+checkpoint preserva essas estimativas e o consumo já medido ao tratar uma
+falha. Uma morte abrupta do processo entre a resposta do fornecedor e a
+gravação do checkpoint ainda exige conciliação com o fornecedor; a reserva em
+memória não é uma transação distribuída com a API externa.
 
 ```bash
 AGENT_TOOLS_ENABLED=true                # false desliga para todos os papéis
@@ -323,6 +355,10 @@ O executor devolve `operations`, aplicadas em ordem pelo workspace runtime:
 | `replace` | `path`, `search`, `replace`, `occurrence?` | trecho de arquivo existente |
 | `delete` | `path` | remover arquivo |
 
+`create` não sobrescreve um arquivo existente. Se o conteúdo já for idêntico,
+a repetição termina sem gravar novamente; conteúdo diferente gera uma falha
+`apply`, preservando o arquivo e orientando o executor a usar `replace`.
+
 `search` precisa ser um trecho literal e único do arquivo atual; se aparecer
 mais de uma vez o executor deve ampliar o trecho ou informar `occurrence`
 (1 = primeira). O casamento é exato e, para trechos multilinha, tolera CRLF e
@@ -334,7 +370,9 @@ autocorrect e veta a aprovação do judge até ser corrigida.
 O runtime também grava `workspace.published_files` (conteúdo final de cada
 arquivo tocado) e `workspace.deleted_paths`; é isso que
 `POST /workflows/{id}/pull-request` publica. Payloads antigos com `files`
-(arquivo inteiro) continuam aceitos e são tratados como `create`.
+(arquivo inteiro) continuam aceitos em um caminho interno de compatibilidade
+que permite substituir o conteúdo completo. Essa exceção não pertence ao
+`create` de `operations` e não é oferecida no schema enviado ao modelo.
 
 Para que o executor consiga editar qualquer ponto de um arquivo, ele precisa
 O grounding é por relevância: um arquivo só entra se alguma palavra do pedido

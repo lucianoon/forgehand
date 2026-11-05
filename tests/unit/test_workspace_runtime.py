@@ -743,8 +743,12 @@ def test_build_objective_validation_pipeline_respects_settings_order(tmp_path: P
     ] == [
         "pytest",
         "ruff",
+        "python_test_integrity",
     ]
-    assert pipeline.validators_for_task(docs_task) == []
+    # The static integrity gate is mandatory, even when command checks are off.
+    assert [validator.name for validator in pipeline.validators_for_task(docs_task)] == [
+        "python_test_integrity",
+    ]
 
 
 @pytest.mark.asyncio

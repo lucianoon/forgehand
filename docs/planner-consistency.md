@@ -25,6 +25,31 @@ export to a module while using `file_unchanged` to preserve existing functions
 in that same module. Regression tests cover repair, exhaustion, factory runtime
 wiring, legacy compatibility, task-local protection and normalized paths.
 
+## Incremental task acceptance
+
+A task must be approvable before its dependent tasks can run. Prefer keeping a
+small implementation change and its regression tests together. When they are
+split, the planner must assign new coverage to the task that creates those
+tests. The judge must still establish the current task's requested behavior,
+but must not invent a new-test requirement for an implementation-only contract.
+The factory still requires every dependent task to be approved with build
+evidence before publication, and successful CI before human review.
+
+`tests_pass`, `lint_pass` and `types_pass` prove successful execution of their
+respective phase. They do not prove that a particular behavioral case is
+covered. Behavioral and coverage requirements need separate, accurately typed
+criteria; a label such as "empty input returns zero" must not use `tests_pass`
+as its sole proof.
+
+In factory mode the judge now reads the current attempt's sandbox report before
+evaluating objective criteria. It maps `test`, `lint` and `types` separately,
+without calling a model to reinterpret a successful test run. A missing phase,
+missing current report, failed command or cleanup failure cannot pass. Reports
+from earlier attempts and executor-written workspace feedback are not reused.
+This fixes the Python live-run rejection where `tests_pass` fell back to the
+model even though the runtime had already executed the test phase. Independent
+acceptance, build and publication gates remain mandatory when configured.
+
 ## Limits
 
 This is a consistency check over model declarations, not a proof of semantic

@@ -5,7 +5,8 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from app.models.task import AgentTask, Capability
+from app.models.build_execution import BuildOutcome
+from app.models.task import AgentTask, Capability, CriterionKind
 
 
 class ValidationSignal(BaseModel):
@@ -16,6 +17,83 @@ class ValidationSignal(BaseModel):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+
+
+def build_validation_signals(
+    task: AgentTask, *, required: bool = False
+) -> list[ValidationSignal]:
+    """Use only the current attempt's runtime-owned sandbox evidence.
+
+    A successful build is not evidence that tests, lint or types ran. Missing
+    required phases fail closed in factory mode; executor text, workspace
+    feedback and earlier attempts cannot substitute for a fresh report.
+    """
+    report = task.attempts[-1].build_validation if task.attempts else None
+    if report is None and not required:
+        return []
+    kinds = {criterion.kind for criterion in task.acceptance_criteria}
+    phases = {phase.phase.value: phase for phase in report.phases} if report else {}
+    failed_phases = [
+        phase.phase.value for phase in phases.values()
+        if phase.outcome != BuildOutcome.SUCCESS or phase.exit_code != 0
+        or phase.cleanup_failed or phase.error_code
+    ]
+    detail = "relatório sandbox ausente na tentativa atual"
+    if report is not None:
+        detail = report.error_code or report.outcome.value
+        if not report.phases:
+            detail = "relatório sandbox sem fases executadas"
+        elif len(phases) != len(report.phases):
+            detail = "relatório sandbox contém fases duplicadas"
+        elif failed_phases:
+            detail = "fases sandbox sem sucesso: " + ", ".join(failed_phases)
+        elif report.architecture is not None and not report.architecture.passed:
+            detail = "arquitetura reprovada no sandbox"
+        elif report.acceptance is not None and not report.acceptance.passed:
+            detail = "aceitação independente reprovada no sandbox"
+    signals = [ValidationSignal(
+        name="sandbox",
+        passed=bool(
+            report is not None
+            and report.outcome == BuildOutcome.SUCCESS
+            and not report.error_code
+            and report.phases
+            and len(phases) == len(report.phases)
+            and not failed_phases
+            and (report.architecture is None or report.architecture.passed)
+            and (report.acceptance is None or report.acceptance.passed)
+        ),
+        details=detail,
+    )]
+    for kind, phase_name, signal_name in (
+        (CriterionKind.TESTS_PASS, "test", "pytest"),
+        (CriterionKind.LINT_PASS, "lint", "ruff"),
+        (CriterionKind.TYPES_PASS, "types", "mypy"),
+    ):
+        phase = phases.get(phase_name)
+        if phase is None:
+            if kind in kinds:
+                signals.append(ValidationSignal(
+                    name=signal_name,
+                    passed=False,
+                    details=f"fase sandbox `{phase_name}` ausente na tentativa atual",
+                ))
+            continue
+        signals.append(ValidationSignal(
+            name=signal_name,
+            passed=(
+                phase.outcome == BuildOutcome.SUCCESS
+                and phase.exit_code == 0
+                and not phase.cleanup_failed
+                and not phase.error_code
+            ),
+            details=f"sandbox:{phase_name}: {phase.error_code or phase.outcome.value}",
+            command=" ".join(phase.command),
+            exit_code=phase.exit_code,
+            stdout=phase.stdout,
+            stderr=phase.stderr,
+        ))
+    return signals
 
 
 def format_validation_feedback(

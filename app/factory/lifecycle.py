@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -17,7 +19,29 @@ _lock_owner: ContextVar[str | None] = ContextVar("factory_lock_owner", default=N
 
 def inherited_lock_fds() -> tuple[int, ...]:
     fd = _lock_fd.get()
-    return () if fd is None else (fd,)
+    inherited = [] if fd is None else [fd]
+    maintenance_fd = os.environ.get("FORGEHAND_MAINTENANCE_FD")
+    maintenance_path = os.environ.get("FORGEHAND_MAINTENANCE_LOCK_PATH")
+    if maintenance_fd is not None or maintenance_path is not None:
+        try:
+            if maintenance_fd is None or maintenance_path is None:
+                raise ValueError
+            number = int(maintenance_fd)
+            if number < 3 or not Path(maintenance_path).is_absolute():
+                raise ValueError
+            descriptor = os.fstat(number)
+            path = os.lstat(maintenance_path)
+            if (
+                not stat.S_ISREG(descriptor.st_mode)
+                or not stat.S_ISREG(path.st_mode)
+                or (descriptor.st_dev, descriptor.st_ino) != (path.st_dev, path.st_ino)
+            ):
+                raise ValueError
+        except (ValueError, OSError):
+            raise ValueError("installation_maintenance_lock_invalid") from None
+        if number not in inherited:
+            inherited.append(number)
+    return tuple(inherited)
 
 
 class WorkspaceBusy(RuntimeError):

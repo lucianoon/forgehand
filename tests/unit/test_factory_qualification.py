@@ -185,3 +185,53 @@ def test_fixture_reset_creates_new_clean_repository_with_pinned_sha(
     )
     assert not (second / "unexpected").exists()
     assert (first / "unexpected").exists()  # Never resets user directories.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        ("publication_identity_changed", "publication_identity_changed"),
+        ("check_inventory_incomplete", "check_inventory_incomplete"),
+        ("private response payload", "scm_error"),
+    ],
+)
+async def test_verification_failure_is_classified_without_exporting_private_errors(
+    tmp_path, monkeypatch, error, expected
+):
+    from app.evaluation import factory_qualification as qualification
+    from app.infrastructure.scm import SCMError
+
+    case = FactoryCase(
+        id="case-one", ecosystem="python", base_sha="a" * 40,
+        request="Fix something useful", acceptance_criteria=["works"],
+        expected_paths=["app.py"], hidden_case="defect", max_cost_usd=1,
+        timeout_seconds=10,
+    )
+
+    async def reject(*args):
+        if error.startswith("publication_"):
+            raise qualification.QualificationVerificationError(error)
+        raise SCMError(error)
+
+    monkeypatch.setattr(qualification, "independent_check", reject)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(202, json={"workflow_id": "wf"})
+        return httpx.Response(200, json={
+            "status": "ready_for_human_review",
+            "workspace": {"base_sha": "a" * 40},
+            "delivery": {"pull_request_number": 7, "commit_sha": "b" * 40},
+        })
+
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await run_factory_case(
+            client, client, case, "acme/r", "key", tmp_path, "/socket", "run"
+        )
+    assert result.technical_failure == expected
+    assert result.outcome == "ready_for_human_review"
+    assert not result.green
+    assert "private response payload" not in result.model_dump_json()
