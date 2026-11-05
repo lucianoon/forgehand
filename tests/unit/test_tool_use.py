@@ -14,17 +14,21 @@ from app.agents.executor import LLMExecutor
 from app.agents.judge import LLMJudge
 from app.agents.planner import LLMPlanner
 from app.agents.tools import (
+    DeleteFileTool,
+    EditFileTool,
     ListDirectoryTool,
     ReadFileTool,
     RunCheckTool,
     SearchRepositoryTool,
     ToolError,
     ToolLoop,
+    WriteFileTool,
     build_workspace_tools,
 )
 from app.agents.validation import ValidationSignal
 from app.api.container import build_agent_tools
 from app.infrastructure.settings import Settings
+from app.infrastructure.workspace_runtime import LocalWorkspaceRuntime
 from app.models.task import AgentTask, Capability
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import (
@@ -756,3 +760,170 @@ async def test_planner_uses_tools(tmp_path: Path):
     assert len(outcome.plan) == 1
     assert outcome.usage.tokens == 20
     assert "Ferramentas disponíveis" in router.requests[0].system
+
+
+@pytest.mark.asyncio
+async def test_write_edit_and_delete_file_tools(tmp_path: Path):
+    _workspace(tmp_path)
+    writer = WriteFileTool(str(tmp_path))
+    editor = EditFileTool(str(tmp_path))
+    deleter = DeleteFileTool(str(tmp_path))
+
+    created_msg = await writer.run({"path": "pkg/new_mod.py", "content": "def calc():\n    return 1\n"})
+    assert "arquivo criado: pkg/new_mod.py" in created_msg
+    assert (tmp_path / "pkg" / "new_mod.py").read_text(encoding="utf-8") == "def calc():\n    return 1\n"
+
+    edited_msg = await editor.run(
+        {
+            "path": "pkg/new_mod.py",
+            "search": "return 1",
+            "replace": "return 42",
+        }
+    )
+    assert "arquivo editado: pkg/new_mod.py" in edited_msg
+    assert "return 42" in (tmp_path / "pkg" / "new_mod.py").read_text(encoding="utf-8")
+
+    # Bloqueio de path sensível e fora do root
+    with pytest.raises(ToolError, match="sensível"):
+        await writer.run({"path": ".env", "content": "SECRET=1"})
+    with pytest.raises(ToolError, match="fora do workspace"):
+        await writer.run({"path": "../escape.py", "content": "x = 1"})
+
+    deleted_msg = await deleter.run({"path": "pkg/new_mod.py"})
+    assert "arquivo removido: pkg/new_mod.py" in deleted_msg
+    assert not (tmp_path / "pkg" / "new_mod.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_executor_interactive_edit_and_check_in_tool_loop(tmp_path: Path):
+    _workspace(tmp_path)
+    target = tmp_path / "app" / "svc.py"
+
+    class LiveModCheck:
+        name = "pytest"
+
+        async def execute(self) -> ValidationSignal:
+            text = target.read_text(encoding="utf-8")
+            passed = "return a + b + 10" in text
+            return ValidationSignal(
+                name="pytest",
+                passed=passed,
+                details="passed" if passed else "assert add(1, 0) == 11 failed",
+                command="pytest -q",
+                exit_code=0 if passed else 1,
+                stdout="1 passed" if passed else "FAILED app/svc.py",
+                stderr="",
+            )
+
+    tools = build_workspace_tools(
+        str(tmp_path),
+        validators=[LiveModCheck()],
+        allow_write=True,
+    )
+    assert [t.name for t in tools] == [
+        "read_file",
+        "list_directory",
+        "search_repository",
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "run_check",
+    ]
+
+    router = ScriptedRouter(
+        [
+            # 1) Edita o arquivo com um bug (a + b + 2)
+            (
+                [
+                    ToolCall(
+                        id="c1",
+                        name="edit_file",
+                        arguments={
+                            "path": "app/svc.py",
+                            "search": "return a + b",
+                            "replace": "return a + b + 2",
+                        },
+                    )
+                ],
+                None,
+            ),
+            # 2) Roda pytest e vê que falhou
+            (
+                [ToolCall(id="c2", name="run_check", arguments={"name": "pytest"})],
+                None,
+            ),
+            # 3) Corrige interativamente no mesmo ToolLoop (a + b + 10)
+            (
+                [
+                    ToolCall(
+                        id="c3",
+                        name="edit_file",
+                        arguments={
+                            "path": "app/svc.py",
+                            "search": "return a + b + 2",
+                            "replace": "return a + b + 10",
+                        },
+                    )
+                ],
+                None,
+            ),
+            # 4) Roda pytest novamente e confirma que passou
+            (
+                [ToolCall(id="c4", name="run_check", arguments={"name": "pytest"})],
+                None,
+            ),
+            # 5) Emite resposta estruturada sem precisar repetir operations
+            (
+                [],
+                {
+                    "summary": "Ajustado add para somar 10 e validado com pytest.",
+                    "operations": [],
+                    "notes": ["Validado interativamente via edit_file + run_check."],
+                    "citations": [],
+                },
+            ),
+        ]
+    )
+
+    runtime = LocalWorkspaceRuntime(str(tmp_path), apply_files_enabled=True)
+    executor = LLMExecutor(
+        router,
+        agent_name="backend_executor",
+        workspace_runtime=runtime,
+        tools=tools,
+        max_tool_calls=8,
+    )
+    task = AgentTask(
+        title="Ajustar add",
+        description="Faça add somar +10.",
+        capability=Capability.BACKEND,
+        acceptance_criteria=["add adiciona 10"],
+    )
+    outcome = await executor.execute(task, {})
+    result_payload = outcome["result"]
+    assert "write_file, edit_file, delete_file" in router.requests[0].system
+    assert result_payload["exploration"]["mutations"] == 2
+    workspace = result_payload["workspace"]
+    assert workspace["applied_files"] == ["app/svc.py"]
+    assert len(workspace["file_diffs"]) == 1
+    diff_entry = workspace["file_diffs"][0]
+    assert diff_entry["path"] == "app/svc.py"
+    assert diff_entry["change_type"] == "modified"
+    assert "-    return a + b" in diff_entry["diff"]
+    assert "+    return a + b + 10" in diff_entry["diff"]
+    assert workspace["published_files"] == [
+        {
+            "path": "app/svc.py",
+            "content": "def add(a, b):\n    return a + b + 10\n\n\ndef sub(a, b):\n    return a - b\n",
+        }
+    ]
+
+
+def test_build_agent_tools_enables_write_only_for_executor(tmp_path: Path):
+    settings = Settings(agent_tools_allow_write=True)
+    exec_tools = [t.name for t in build_agent_tools(settings, str(tmp_path), role="executor")]
+    plan_tools = [t.name for t in build_agent_tools(settings, str(tmp_path), role="planner")]
+    judge_tools = [t.name for t in build_agent_tools(settings, str(tmp_path), role="judge")]
+    assert "edit_file" in exec_tools and "write_file" in exec_tools and "delete_file" in exec_tools
+    assert "edit_file" not in plan_tools
+    assert "edit_file" not in judge_tools

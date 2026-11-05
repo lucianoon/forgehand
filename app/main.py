@@ -19,6 +19,7 @@ from app.api.routes.operations import router as operations_router
 from app.api.routes.workflows import router as workflows_router
 from app.api.routes.products import router as products_router
 from app.api.routes.product_deliveries import router as product_deliveries_router
+from app.api.routes.superagent import router as superagent_router
 from app.infrastructure.memory import project_memory_context
 from app.infrastructure.settings import get_settings
 from app.infrastructure.telemetry import HttpMetrics
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router)
     app.include_router(products_router)
     app.include_router(product_deliveries_router)
+    app.include_router(superagent_router)
     app.mount(
         "/dashboard/assets",
         StaticFiles(directory=WEB_ROOT),

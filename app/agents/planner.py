@@ -95,7 +95,13 @@ Para pedidos de análise do repositório/código:
 - prefira no máximo 2 tarefas quando possível;
 - use uma tarefa factual para mapear evidências e uma segunda, dependente da primeira,
   apenas se a síntese final realmente precisar ser separada;
-- evite planos amplos que reavaliem a mesma evidência em múltiplas tarefas."""
+- evite planos amplos que reavaliem a mesma evidência em múltiplas tarefas.
+
+Para saudações ou mensagens conversacionais curtas (ex.: "oi", "olá", "ajuda", "o que você faz?"):
+- crie 1 única tarefa (capability="documentation", write_paths=[]) para responder de
+  forma cordial ao usuário, apresentar um panorama rápido do repositório atual (usando
+  as evidências do grounding, se houver) e sugerir exemplos práticos do que o Forgehand
+  pode implementar, testar ou refatorar; nunca responda dizendo apenas que a requisição é vaga."""
 
 TOOLS_GUIDANCE = """
 

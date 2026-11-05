@@ -294,6 +294,10 @@ class Settings(BaseSettings):
     agent_tools_max_calls_judge: int = Field(default=4, ge=0, le=32)
     agent_tools_max_output_chars: int = Field(default=12_000, ge=1_000, le=100_000)
     agent_tools_allow_checks: bool = True
+    # write_file, edit_file, delete_file: edição interativa diretamente no
+    # loop de ferramentas do executor, permitindo editar → run_check → corrigir
+    # na mesma sessão (estilo Claude Code / Codex). Só executor.
+    agent_tools_allow_write: bool = False
     # run_command: comandos da allowlist (git, python, pytest, ruff, mypy, uv)
     # sem shell, sem rede, com timeout e sem segredos no ambiente. Só executor.
     agent_tools_allow_commands: bool = False
@@ -373,10 +377,25 @@ class Settings(BaseSettings):
     factory_success_retention_seconds: int = Field(default=0, ge=0)
     factory_failure_retention_seconds: int = Field(default=86_400, ge=0)
     factory_command_backend: Literal["local", "docker"] = "docker"
+    factory_workspace_checkout_mode: Literal["clone", "worktree"] = "clone"
     factory_sandbox_image: str = "python:3.12-slim"
     factory_sandbox_network_enabled: bool = False
     factory_build_profiles_json: str = "{}"
     factory_repository_profiles_json: str = "{}"
+
+    # Super-Agent (Ingress proativo, Router 2 níveis, Subscription Direct e Outbox)
+    superagent_enabled: bool = False
+    superagent_database: str = ":memory:"
+    superagent_proactive_mode: Literal["off", "observe", "auto"] = "off"
+    superagent_allowed_senders_json: str = '["*"]'
+    superagent_approved_repositories_json: str = '["*"]'
+    superagent_bot_handle: str = "forgehand"
+    superagent_router_confidence_threshold: float = Field(
+        default=0.75, ge=0.0, le=1.0
+    )
+    superagent_router_use_llm: bool = False
+    superagent_auto_ack_comments: bool = False
+    superagent_default_client_id: str = "dev-client"
 
     @field_validator(
         "pricing_json",
@@ -389,6 +408,8 @@ class Settings(BaseSettings):
         "factory_approved_scm_hosts_json",
         "factory_build_profiles_json",
         "factory_repository_profiles_json",
+        "superagent_allowed_senders_json",
+        "superagent_approved_repositories_json",
     )
     @classmethod
     def _must_be_json(cls, v: str) -> str:
@@ -526,6 +547,22 @@ class Settings(BaseSettings):
         if not isinstance(raw, dict):
             raise ValueError("FACTORY_REPOSITORY_PROFILES_JSON deve ser um objeto.")
         return {str(repository): str(profile) for repository, profile in raw.items()}
+
+    @property
+    def superagent_allowed_senders(self) -> list[str]:
+        raw = json.loads(self.superagent_allowed_senders_json)
+        if not isinstance(raw, list):
+            raise ValueError("SUPERAGENT_ALLOWED_SENDERS_JSON deve ser uma lista.")
+        return [str(item) for item in raw]
+
+    @property
+    def superagent_approved_repositories(self) -> list[str]:
+        raw = json.loads(self.superagent_approved_repositories_json)
+        if not isinstance(raw, list):
+            raise ValueError(
+                "SUPERAGENT_APPROVED_REPOSITORIES_JSON deve ser uma lista."
+            )
+        return [str(item) for item in raw]
 
 
 @lru_cache

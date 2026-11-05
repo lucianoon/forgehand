@@ -94,6 +94,7 @@ class WorkflowService:
         workspace_manager: LocalGitWorkspaceManager | None = None,
         build_runner: Any | None = None,
         audit_log: Any | None = None,
+        superagent_store: Any | None = None,
     ):
         self._app = graph_app
         self._settings = settings
@@ -110,6 +111,7 @@ class WorkflowService:
         self._workspace_manager = workspace_manager
         self._build_runner = build_runner
         self._audit_log = audit_log
+        self._superagent_store = superagent_store
         self._reconciler: asyncio.Task[Any] | None = None
 
     # ------------------------------------------------------------------
@@ -259,11 +261,40 @@ class WorkflowService:
                 await self._app.ainvoke(
                     Command(resume=job.payload), self._config(job.workflow_id)
                 )
+        await self._auto_subscribe_published_pr(job)
+
+    async def _auto_subscribe_published_pr(self, job: Any) -> None:
+        if self._superagent_store is None:
+            return
+        try:
+            snapshot = await self._app.aget_state(self._config(job.workflow_id))
+            values = cast(dict[str, Any], snapshot.values or {})
+            delivery_result = _dump_model(values.get("delivery_result")) or {}
+            pr_number = delivery_result.get("pull_request_number")
+            delivery_cfg = _dump_model(values.get("delivery")) or {}
+            work_order = _dump_model(values.get("work_order")) or {}
+            repository = delivery_cfg.get("repository") or (
+                (work_order.get("repository") or {}).get("full_name")
+            )
+            if isinstance(pr_number, int) and pr_number > 0 and isinstance(repository, str) and repository:
+                self._superagent_store.subscribe_thread(
+                    repository=repository,
+                    thread_kind="pull_request",
+                    thread_number=pr_number,
+                    workflow_id=job.workflow_id,
+                    project_id=getattr(job, "project_id", repository.replace("/", "-")),
+                    owner_client_id=getattr(job, "owner_client_id", "dev-client"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("Não foi possível auto-assinar PR para workflow %s", job.workflow_id)
 
     async def _reconcile_loop(self) -> None:
         while True:
             try:
                 await self.reconcile_workspaces()
+                flush_fn = getattr(self._event_publisher, "flush_outbox", None)
+                if callable(flush_fn):
+                    await flush_fn()
             except Exception:
                 logger.exception("Workspace reconciliation failed")
             await asyncio.sleep(10)
@@ -437,7 +468,7 @@ class WorkflowService:
 
     async def metrics(self) -> dict[str, Any]:
         queue_stats = await self._job_queue.get_stats()
-        return {
+        payload: dict[str, Any] = {
             "workers": {
                 "embedded_workers_enabled": self._run_workers,
                 "configured_concurrency": self._settings.workflow_worker_concurrency,
@@ -451,6 +482,9 @@ class WorkflowService:
                 "cached_failures": len(self._failures),
             },
         }
+        if self._superagent_store is not None:
+            payload["superagent"] = self._superagent_store.stats()
+        return payload
 
     # ------------------------------------------------------------------
     async def dispatch_scope(self) -> str:

@@ -16,7 +16,7 @@ from app.agents.grounding import (
     format_evidence_focus,
     grounding_required,
 )
-from app.agents.tools import AgentTool, ToolLoop
+from app.agents.tools import WRITE_TOOLS_GUIDANCE, AgentTool, ToolLoop
 from app.agents.web_tools import WEB_TOOL_GUIDANCE
 from app.agents.command_tool import COMMAND_TOOL_GUIDANCE
 from app.agents.hooks import ToolHookDispatcher
@@ -219,6 +219,8 @@ class LLMExecutor:
             payload = output.model_dump(mode="json")
             if self._tool_loop.has_tools:
                 payload["exploration"] = loop_outcome.exploration_summary()
+            if loop_outcome.mutations:
+                payload["tool_mutations"] = loop_outcome.mutations
             if not payload.get("files"):
                 payload.pop("files", None)
             self._ensure_grounded_citations(task, context, payload)
@@ -280,6 +282,8 @@ class LLMExecutor:
         prompt = SYSTEM_PROMPT.format(capability=task.capability.value)
         if self._tool_loop.has_tools:
             prompt += TOOLS_GUIDANCE
+            if self._tool_loop.has_tool("edit_file"):
+                prompt += WRITE_TOOLS_GUIDANCE
             if self._tool_loop.has_tool("fetch_url"):
                 prompt += WEB_TOOL_GUIDANCE
             if self._tool_loop.has_tool("run_command"):

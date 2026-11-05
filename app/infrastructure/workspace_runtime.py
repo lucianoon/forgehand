@@ -347,7 +347,17 @@ class LocalWorkspaceRuntime:
     ) -> dict[str, Any]:
         strategy = strategy or ExecutionStrategy()
         operations = normalize_operations(result_payload)
-        if not self._apply_files_enabled or not strategy.apply_files or not operations:
+        raw_mutations = result_payload.get("tool_mutations")
+        tool_mutations = (
+            [m for m in raw_mutations if isinstance(m, dict)]
+            if isinstance(raw_mutations, list)
+            else []
+        )
+        if (
+            not self._apply_files_enabled
+            or not strategy.apply_files
+            or (not operations and not tool_mutations)
+        ):
             return {
                 "workspace": {
                     "apply_files_enabled": self._apply_files_enabled
@@ -364,13 +374,72 @@ class LocalWorkspaceRuntime:
         apply_errors: list[dict[str, Any]] = []
         published: dict[str, str] = {}
         deleted_paths: list[str] = []
+
+        folded_mutations: dict[str, dict[str, Any]] = {}
+        for mutation in tool_mutations:
+            mut_type = str(mutation.get("op") or "replace")
+            path = self._resolve_artifact_path(mutation.get("path"))
+            relative_path = path.relative_to(self._root).as_posix()
+            raw_before = mutation.get("before")
+            raw_after = mutation.get("after")
+            before_val = raw_before if isinstance(raw_before, str) else None
+            after_val = raw_after if isinstance(raw_after, str) else None
+            if relative_path not in folded_mutations:
+                folded_mutations[relative_path] = {
+                    "op": mut_type,
+                    "before": before_val,
+                    "after": after_val,
+                }
+            else:
+                first_before = folded_mutations[relative_path]["before"]
+                net_op = (
+                    "delete"
+                    if after_val is None
+                    else ("create" if first_before is None else "replace")
+                )
+                folded_mutations[relative_path] = {
+                    "op": net_op,
+                    "before": first_before,
+                    "after": after_val,
+                }
+
+        for relative_path, item in folded_mutations.items():
+            before_val = item["before"]
+            after_val = item["after"]
+            mut_op = item["op"]
+            if before_val is None and after_val is None:
+                continue
+            applied_files.append(relative_path)
+            diff_entry = self._build_diff_entry(relative_path, before_val, after_val)
+            diff_entry["operation"] = mut_op
+            file_diffs.append(diff_entry)
+            if after_val is None:
+                deleted_paths.append(relative_path)
+                published.pop(relative_path, None)
+            else:
+                published[relative_path] = after_val
+            operation_history.append(
+                {
+                    "step": "apply_file",
+                    "operation": mut_op,
+                    "path": relative_path,
+                    "change_type": diff_entry["change_type"],
+                    "changed": diff_entry["changed"],
+                    "source": "tool_loop",
+                }
+            )
+
         for operation in operations:
-            op = operation.get("op")
+            op: Any = operation.get("op")
             path = self._resolve_artifact_path(operation.get("path"))
             relative_path = path.relative_to(self._root).as_posix()
             try:
                 before, after = self._apply_operation(op, path, operation)
             except OperationApplyError as exc:
+                if relative_path in folded_mutations and self._is_redundant_post_tool_op(
+                    op, path, operation
+                ):
+                    continue
                 apply_errors.append(
                     {"path": relative_path, "operation": op, "error": str(exc)}
                 )
@@ -384,14 +453,32 @@ class LocalWorkspaceRuntime:
                     }
                 )
                 continue
-            applied_files.append(relative_path)
-            diff_entry = self._build_diff_entry(relative_path, before, after)
-            diff_entry["operation"] = op
-            file_diffs.append(diff_entry)
+            if relative_path not in applied_files:
+                applied_files.append(relative_path)
+            if relative_path in folded_mutations:
+                first_before = folded_mutations[relative_path]["before"]
+                net_op = (
+                    "delete"
+                    if after is None
+                    else ("create" if first_before is None else "replace")
+                )
+                diff_entry = self._build_diff_entry(relative_path, first_before, after)
+                diff_entry["operation"] = net_op
+                file_diffs = [
+                    d for d in file_diffs if d.get("path") != relative_path
+                ]
+                file_diffs.append(diff_entry)
+            else:
+                diff_entry = self._build_diff_entry(relative_path, before, after)
+                diff_entry["operation"] = op
+                file_diffs.append(diff_entry)
             if after is None:
-                deleted_paths.append(relative_path)
+                if relative_path not in deleted_paths:
+                    deleted_paths.append(relative_path)
                 published.pop(relative_path, None)
             else:
+                if relative_path in deleted_paths:
+                    deleted_paths.remove(relative_path)
                 published[relative_path] = after
             operation_history.append(
                 {
@@ -591,6 +678,23 @@ class LocalWorkspaceRuntime:
             path.unlink()
             return before, None
         raise ValueError(f"Operação desconhecida: {op!r}")
+
+    @staticmethod
+    def _is_redundant_post_tool_op(
+        op: Any, path: Path, operation: dict[str, Any]
+    ) -> bool:
+        """Se o modelo já aplicou a mudança no disco via edit_file/delete_file
+        durante o ToolLoop e ainda assim repetiu a mesma operação em
+        `operations`, evita falso positivo de erro."""
+        if op == "delete" and not path.exists():
+            return True
+        if op == "replace" and path.exists():
+            replacement = operation.get("replace")
+            if isinstance(replacement, str) and replacement:
+                current = path.read_text(encoding="utf-8")
+                if replacement in current:
+                    return True
+        return False
 
     def _resolve_artifact_path(self, raw_path: Any) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():

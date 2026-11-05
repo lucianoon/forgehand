@@ -39,8 +39,15 @@ from app.infrastructure.audit import InMemoryAuditLog, JsonlAuditLog, build_audi
 from app.infrastructure.memory import InMemoryProjectMemory
 from app.infrastructure.repository_grounding import RepositoryGroundingCollector
 from app.infrastructure.web_references import WebReferenceCollector
-from app.infrastructure.scm import GitHubDeliveryService
+from app.infrastructure.scm import (
+    GitHubDeliveryService,
+    GitHubSCMClient,
+    build_token_provider_from_env,
+)
 from app.infrastructure.settings import Settings
+from app.infrastructure.superagent_store import SuperAgentStore
+from app.agents.superagent_router import SuperAgentRouter
+from app.models.superagent import ProactiveMode
 from app.infrastructure.workspace_runtime import (
     CommandObjectiveValidator,
     CommandRunner,
@@ -79,12 +86,24 @@ async def checkpointer_context(settings: Settings) -> AsyncGenerator[Any, None]:
 
 
 class Container:
-    def __init__(self, service: WorkflowService, job_queue: Any, audit_log: Any,
-                 product_studio: ProductStudio | None = None):
+    def __init__(
+        self,
+        service: WorkflowService,
+        job_queue: Any,
+        audit_log: Any,
+        product_studio: ProductStudio | None = None,
+        *,
+        superagent_store: SuperAgentStore | None = None,
+        superagent_router: SuperAgentRouter | None = None,
+        event_publisher: WebhookDispatcher | None = None,
+    ):
         self.workflow_service = service
         self.job_queue = job_queue
         self.audit_log = audit_log
         self.product_studio = product_studio
+        self.superagent_store = superagent_store
+        self.superagent_router = superagent_router
+        self.event_publisher = event_publisher
 
 
 class LeaseBoundRuntimeFactory:
@@ -312,6 +331,7 @@ def build_container(
         LocalGitWorkspaceManager(
             settings.factory_workspace_root,
             approved_hosts=settings.factory_approved_scm_hosts,
+            checkout_mode=settings.factory_workspace_checkout_mode,
         )
         if settings.factory_mode_enabled
         else None
@@ -418,9 +438,28 @@ def build_container(
             record_build_evidence if settings.factory_mode_enabled else None
         ),
     )
+    superagent_store = SuperAgentStore(settings.superagent_database)
+
+    def _build_scm_client() -> GitHubSCMClient | None:
+        token_provider = build_token_provider_from_env()
+        if token_provider is None:
+            return None
+        return GitHubSCMClient(token_provider=token_provider)
+
     event_publisher = WebhookDispatcher(
         settings.webhook_urls,
         os.getenv("WEBHOOK_SIGNING_SECRET", ""),
+        store=superagent_store,
+        scm_client_factory=_build_scm_client,
+    )
+    superagent_router = SuperAgentRouter(
+        superagent_store,
+        provider_router=router if settings.superagent_router_use_llm else None,
+        proactive_mode=ProactiveMode(settings.superagent_proactive_mode),
+        allowed_senders=settings.superagent_allowed_senders,
+        approved_repositories=settings.superagent_approved_repositories,
+        bot_handle=settings.superagent_bot_handle,
+        confidence_threshold=settings.superagent_router_confidence_threshold,
     )
     return Container(
         WorkflowService(
@@ -433,11 +472,16 @@ def build_container(
             workspace_manager=workspace_manager,
             build_runner=factory_build_runner,
             audit_log=selected_audit_log,
+            superagent_store=superagent_store,
         ),
         job_queue,
         selected_audit_log,
         ProductStudio(router, ProductStore(settings.product_studio_database))
-        if settings.product_studio_enabled else None,
+        if settings.product_studio_enabled
+        else None,
+        superagent_store=superagent_store,
+        superagent_router=superagent_router,
+        event_publisher=event_publisher,
     )
 
 
@@ -464,6 +508,7 @@ def build_agent_tools(
         validators=list(validators)
         if validators and settings.agent_tools_allow_checks
         else None,
+        allow_write=(role == "executor" and settings.agent_tools_allow_write),
     )
     if role == "executor" and settings.agent_tools_allow_commands:
         runner: CommandRunner = (

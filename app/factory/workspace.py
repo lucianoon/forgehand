@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import urlsplit
 
 from app.factory.lifecycle import WorkspaceJournal, inherited_lock_fds
@@ -168,7 +168,10 @@ class LocalGitWorkspaceManager:
         runner: SafeGitRunner | None = None,
         repository_url_resolver: Callable[[RepositoryTarget], str] | None = None,
         allow_local_repositories: bool = False,
+        checkout_mode: Literal["clone", "worktree"] = "clone",
     ) -> None:
+        if checkout_mode not in {"clone", "worktree"}:
+            raise ValueError("checkout_mode deve ser 'clone' ou 'worktree'.")
         self._root = Path(root).expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._cache_root = self._root / "cache"
@@ -179,8 +182,39 @@ class LocalGitWorkspaceManager:
         self._runner = runner or SafeGitRunner(self._root)
         self._resolve_url = repository_url_resolver or self._default_url
         self._allow_local = allow_local_repositories
+        self._checkout_mode = checkout_mode
         self._locks: dict[str, asyncio.Lock] = {}
         self.journal = WorkspaceJournal(self._root / "control")
+
+    @property
+    def checkout_mode(self) -> Literal["clone", "worktree"]:
+        return self._checkout_mode
+
+    async def _materialize_checkout(
+        self, cache: Path, workspace: Path, branch: str, base_sha: str
+    ) -> None:
+        if self._checkout_mode == "worktree":
+            await self._runner.run(
+                ["--git-dir", str(cache), "worktree", "prune"], check=False
+            )
+            await self._runner.run(
+                [
+                    "--git-dir",
+                    str(cache),
+                    "worktree",
+                    "add",
+                    "--force",
+                    "-B",
+                    branch,
+                    str(workspace),
+                    base_sha,
+                ]
+            )
+            return
+        await self._runner.run(
+            ["clone", "--no-hardlinks", str(cache), str(workspace)]
+        )
+        await self._runner.run(["checkout", "-B", branch, base_sha], cwd=workspace)
 
     def transition(
         self, lease: WorkspaceLease, state: WorkspaceLifecycle, **updates: Any
@@ -268,10 +302,7 @@ class LocalGitWorkspaceManager:
             )
             self.transition(lease, WorkspaceLifecycle.REQUESTED)
             self.transition(lease, WorkspaceLifecycle.PROVISIONING)
-            await self._runner.run(
-                ["clone", "--no-hardlinks", str(cache), str(workspace)]
-            )
-            await self._runner.run(["checkout", "-B", branch, base_sha], cwd=workspace)
+            await self._materialize_checkout(cache, workspace, branch, base_sha)
 
         return self.transition(lease, WorkspaceLifecycle.READY)
 
@@ -318,21 +349,14 @@ class LocalGitWorkspaceManager:
             WorkspaceLifecycle.REQUESTED,
             WorkspaceLifecycle.PROVISIONING,
         }:
-            await self._materialize_partial_cache(self._cache_path(lease.repository))
+            cache = self._cache_path(lease.repository)
+            await self._materialize_partial_cache(cache)
             # Only a journaled pre-execution checkout may be rebuilt. Approved
             # work is never discarded because of a missing directory.
             if workspace.exists():
                 await asyncio.to_thread(shutil.rmtree, workspace)
-            await self._runner.run(
-                [
-                    "clone",
-                    "--no-hardlinks",
-                    str(self._cache_path(lease.repository)),
-                    str(workspace),
-                ]
-            )
-            await self._runner.run(
-                ["checkout", "-B", lease.branch, lease.base_sha], cwd=workspace
+            await self._materialize_checkout(
+                cache, workspace, lease.branch, lease.base_sha
             )
             lease = self.transition(lease, WorkspaceLifecycle.READY)
         if not (workspace / ".git").exists():
@@ -362,7 +386,25 @@ class LocalGitWorkspaceManager:
         if not workspace.exists():
             return self.transition(lease, WorkspaceLifecycle.RELEASED)
         releasing = self.transition(lease, WorkspaceLifecycle.RELEASING)
-        await asyncio.to_thread(shutil.rmtree, workspace)
+        cache = self._cache_path(lease.repository)
+        if self._checkout_mode == "worktree" and cache.exists():
+            await self._runner.run(
+                [
+                    "--git-dir",
+                    str(cache),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(workspace),
+                ],
+                check=False,
+            )
+            await self._runner.run(
+                ["--git-dir", str(cache), "worktree", "prune"],
+                check=False,
+            )
+        if workspace.exists():
+            await asyncio.to_thread(shutil.rmtree, workspace)
         return self.transition(releasing, WorkspaceLifecycle.RELEASED)
 
     def _default_url(self, repository: RepositoryTarget) -> str:
