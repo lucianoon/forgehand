@@ -36,10 +36,14 @@ e [docker run](https://docs.docker.com/reference/cli/docker/container/run/).
 
 `BuildRunResult` contém identidade/fingerprint do perfil e resultados ordenados
 das fases. Os resultados diferenciam sucesso, falha do comando, rejeição de
-política, timeout, limite de recurso e falha de infraestrutura. OOM só é
-classificado quando o Docker confirma `OOMKilled`; exit code 137 sozinho não
-comprova falta de memória. Os demais limites continuam ativos, mas nem todo
-erro do programa causado por limites pode ser distinguido de falha comum.
+política, timeout, limite de recurso e falha de infraestrutura. OOM é
+classificado quando o Docker confirma `OOMKilled` ou quando o container já
+encerrado sai com 137 (SIGKILL). Timeout e cancelamento são detectados antes
+da inspeção; nesse sandbox com `--memory` e `--memory-swap` iguais, 137 após
+um attach que o runner não matou é o killer do cgroup. Runners cgroup v2
+(incl. GitHub Actions ubuntu-24.04) frequentemente omitem `OOMKilled`. Os
+demais limites continuam ativos, mas nem todo erro do programa causado por
+limites pode ser distinguido de falha comum.
 
 A saída é drenada continuamente e limitada durante a captura, não apenas
 depois de acumular toda a resposta. O runner remove controles de terminal e

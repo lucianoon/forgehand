@@ -15,7 +15,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from app.factory.build_strategy import BuildProfileRegistry
@@ -34,6 +34,25 @@ from app.models.build_execution import (
     SandboxLimits,
 )
 from app.models.factory import BuildProfileSelection, WorkspaceLease, WorkspaceLifecycle
+
+# SIGKILL. No cgroup v2 o daemon frequentemente reporta este exit sem
+# OOMKilled=true mesmo quando o controlador de memória matou o cgroup.
+_SIGKILL_EXIT = 137
+
+
+def _memory_controller_killed(state: dict[str, Any], exit_code: int) -> bool:
+    """OOM confirmado pelo Docker, ou SIGKILL após um attach que nós não matamos.
+
+    Timeout e cancelamento já saíram deste caminho. O sandbox sempre aplica
+    `--memory`/`--memory-swap` iguais, então 137 num container já encerrado é
+    o killer do cgroup — OOMKilled sozinho falha em runners cgroup v2.
+    """
+    if state.get("OOMKilled") is True:
+        return True
+    error = state.get("Error")
+    if isinstance(error, str) and "memory" in error.lower():
+        return True
+    return exit_code == _SIGKILL_EXIT
 
 
 @dataclass(frozen=True)
@@ -488,7 +507,7 @@ class DockerBuildRunner:
                                     error_code = "sandbox_state_invalid"
                                 else:
                                     exit_code = state["ExitCode"]
-                                    if state.get("OOMKilled") is True:
+                                    if _memory_controller_killed(state, exit_code):
                                         outcome = BuildOutcome.RESOURCE_LIMIT
                                         error_code = "memory_limit_exceeded"
                                     elif exit_code != 0:

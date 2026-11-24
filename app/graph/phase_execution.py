@@ -53,6 +53,7 @@ from app.models.task import (
     TaskBudget,
     TaskStatus,
 )
+from app.providers.base import NonRetryableProviderError
 
 
 # --------------------------------------------------------------------------
@@ -288,12 +289,22 @@ async def run_build_validation(
 # --------------------------------------------------------------------------
 
 
+def _is_unrecoverable_provider_failure(exc: BaseException) -> bool:
+    """402 / créditos do OpenRouter não se recuperam repetindo o mesmo payload."""
+    if not isinstance(exc, NonRetryableProviderError):
+        return False
+    if exc.status_code == 402:
+        return True
+    return "openrouter_credits" in str(exc)
+
+
 def failed_attempt(
     payload: ExecutionPayload,
     *,
     attempt_number: int,
     started: datetime,
     reason: str,
+    escalate: bool = False,
 ) -> dict[str, Any]:
     """Tentativa que não chegou a produzir resultado: budget ou exceção."""
     task = payload.task
@@ -322,7 +333,11 @@ def failed_attempt(
         }
     )
     failed = failed.model_copy(
-        update={"status": failed.next_status_after_failure()}
+        update={
+            "status": (
+                TaskStatus.ESCALATED if escalate else failed.next_status_after_failure()
+            )
+        }
     )
     return {"plan": [failed]}
 
@@ -468,9 +483,16 @@ def _failure_update(
         if isinstance(exc, asyncio.TimeoutError)
         else f"{type(exc).__name__}: {exc}"
     )
+    escalate = isinstance(
+        exc, BudgetAdmissionError
+    ) or _is_unrecoverable_provider_failure(exc)
     if updated is None:
         return failed_attempt(
-            payload, attempt_number=attempt_number, started=started, reason=reason
+            payload,
+            attempt_number=attempt_number,
+            started=started,
+            reason=reason,
+            escalate=escalate,
         )
     attempt = updated.attempts[-1].model_copy(update={
         "outcome": TaskStatus.FAILED,
@@ -480,8 +502,7 @@ def _failure_update(
     failed = updated.model_copy(update={
         "attempts": [*updated.attempts[:-1], attempt],
         "status": (
-            TaskStatus.ESCALATED if isinstance(exc, BudgetAdmissionError)
-            else updated.next_status_after_failure()
+            TaskStatus.ESCALATED if escalate else updated.next_status_after_failure()
         ),
     })
     return {

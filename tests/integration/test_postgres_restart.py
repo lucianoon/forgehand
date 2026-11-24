@@ -214,6 +214,15 @@ async def test_postgres_queue_heartbeat_and_lease_ownership():
     workflow_id = f"lease-{uuid4()}"
 
     async with workflow_queue_context(lease_settings) as queue:
+        # O Postgres de CI é compartilhado: jobs queued/processing de
+        # testes anteriores fariam o dequeue do worker-b suceder sem o
+        # lease desta entrega ter expirado.
+        conn = queue._conn
+        assert conn is not None
+        await conn.execute(
+            "DELETE FROM workflow_jobs WHERE status IN ('queued', 'processing')"
+        )
+        await conn.commit()
         await queue.enqueue(
             workflow_id=workflow_id,
             project_id="demo",

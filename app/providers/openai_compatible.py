@@ -19,6 +19,7 @@ chegam em `usage.prompt_tokens_details.cached_tokens` e já estão contidos em
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -37,6 +38,26 @@ from app.providers.base import (
 
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _CACHE_CONTROL = {"type": "ephemeral"}
+_AFFORDABLE_COMPLETION_TOKENS = re.compile(
+    r"You requested up to (\d+) tokens, but can only afford (\d+)",
+    re.IGNORECASE,
+)
+
+
+def affordable_completion_tokens(body: str, requested: int) -> int | None:
+    """Lê o teto que o OpenRouter diz ser pagável num 402 de créditos.
+
+    Só reduz `max_tokens` quando a mensagem cita exatamente o pedido atual e
+    um orçamento estritamente menor — senão o 402 continua não-retryable.
+    """
+    match = _AFFORDABLE_COMPLETION_TOKENS.search(body)
+    if match is None:
+        return None
+    reported_requested = int(match.group(1))
+    affordable = int(match.group(2))
+    if reported_requested != requested or affordable <= 0 or affordable >= requested:
+        return None
+    return affordable
 
 
 def build_system_message(
@@ -286,6 +307,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 response.text[:500], self.name, response.status_code
             )
         if response.status_code >= 400:
+            if response.status_code == 402:
+                affordable = affordable_completion_tokens(
+                    response.text, request.max_tokens
+                )
+                if affordable is not None:
+                    return await self._do_complete(
+                        request.model_copy(update={"max_tokens": affordable})
+                    )
             raise NonRetryableProviderError(
                 response.text[:500], self.name, response.status_code
             )
