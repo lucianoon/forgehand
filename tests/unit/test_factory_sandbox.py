@@ -222,11 +222,11 @@ async def test_sandbox_uses_exact_profile_and_minimal_mounts(tmp_path):
         (0, False, BuildOutcome.SUCCESS),
         (1, False, BuildOutcome.COMMAND_FAILURE),
         (125, False, BuildOutcome.COMMAND_FAILURE),
-        (137, False, BuildOutcome.COMMAND_FAILURE),
+        (137, False, BuildOutcome.RESOURCE_LIMIT),
         (137, True, BuildOutcome.RESOURCE_LIMIT),
     ],
 )
-async def test_exit_code_137_alone_is_not_misreported_as_oom(
+async def test_sigkill_under_memory_limit_is_resource_limit(
     tmp_path, exit_code, oom, expected
 ):
     profile, docker = make_profile(), FakeDocker()

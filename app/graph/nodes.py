@@ -53,7 +53,10 @@ from app.graph.contracts import (
     UsageReport,
 )
 from app.graph.phase_delivery import build_delivery_nodes
-from app.graph.phase_execution import build_execution_nodes
+from app.graph.phase_execution import (
+    _is_unrecoverable_provider_failure,
+    build_execution_nodes,
+)
 from app.graph.phase_review import build_review_nodes
 from app.graph.phase_setup import build_setup_nodes
 
@@ -77,6 +80,7 @@ __all__ = [
     "StrategyAuditRecorder",
     "UsageReport",
     "build_nodes",
+    "_is_unrecoverable_provider_failure",
 ]
 
 
